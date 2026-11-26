@@ -6,8 +6,13 @@ import { retainTextHeadTail } from '../shared/text-truncation.js';
 import { isMemorySaveRefusalReason, type MemorySaveRefusalReason } from '../shared/memory-save-refusal.js';
 
 export type McpTextPurpose = 'save' | 'observation-add' | 'event' | 'search' | 'server-search' | 'server-timeline' | 'context' | 'job'
-  | 'observations' | 'tool-uses' | 'corpus-list' | 'corpus-build' | 'corpus-prime' | 'corpus-query';
-export type McpTextResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean; _meta?: Record<string, unknown> };
+  | 'observations' | 'tool-uses' | 'corpus-list' | 'corpus-build' | 'corpus-prime' | 'corpus-query' | 'review-stack' | 'review-import';
+export type McpTextResult = {
+  content: Array<{ type: 'text'; text: string }>;
+  isError?: boolean;
+  _meta?: Record<string, unknown>;
+  structuredContent?: Record<string, unknown>;
+};
 const MAX_TEXT_BYTES = 32 * 1024;
 // get_observations is step 3 of the mem-search workflow: the caller already
 // filtered the IDs, so every requested record is returned.
@@ -124,7 +129,7 @@ function corpusSummary(value: unknown): string {
 
 /** Words for each reason the worker refuses a save_memory write (src/shared/memory-save-refusal.ts). */
 const SAVE_REFUSAL_TEXT: Record<MemorySaveRefusalReason, string> = {
-  project_excluded: 'Not saved: this checkout is excluded by CLAUDE_MEM_EXCLUDED_PROJECTS.',
+  project_excluded: 'Not saved: this project is excluded by CLAUDE_MEM_EXCLUDED_PROJECTS.',
 };
 
 /** Select model-visible information explicitly. Unknown backend fields are never dumped into the prompt. */
@@ -133,6 +138,20 @@ export function formatMcpPayload(purpose: McpTextPurpose, payload: unknown): Mcp
   let text: string;
   let isError = false;
   switch (purpose) {
+    case 'review-stack': {
+      const deckUrl = line(data.deckUrl);
+      if (!deckUrl || !Number.isSafeInteger(data.itemCount)) return mcpTextResult('The worker returned an incomplete Review Stack summary.', true);
+      text = `Review Stack has ${data.itemCount} ${data.itemCount === 1 ? 'card' : 'cards'}. Open My Work at ${deckUrl}`;
+      return { ...mcpTextResult(text), structuredContent: { deckUrl, itemCount: data.itemCount } };
+    }
+    case 'review-import': {
+      const deckUrl = line(data.deckUrl), firstId = line(data.firstId);
+      if (!deckUrl || !firstId || !Number.isSafeInteger(data.added) || !Number.isSafeInteger(data.existing)) {
+        return mcpTextResult('The worker returned an incomplete Review Stack import receipt.', true);
+      }
+      text = `Review Stack added ${data.added} ${data.added === 1 ? 'card' : 'cards'}. ${data.existing} already existed. The first card ID is ${firstId}. Open My Work at ${deckUrl}`;
+      return { ...mcpTextResult(text), structuredContent: { added: data.added, existing: data.existing, firstId, deckUrl } };
+    }
     case 'save':
       if (data.success === false || data.skipped === true) {
         // The worker refused the write (for example project_excluded). Saying

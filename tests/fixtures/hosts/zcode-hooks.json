@@ -1,0 +1,271 @@
+{
+  "host": "ZCode Desktop 4.0.0 (macOS arm64)",
+  "source": "Raw stdin captured from real ZCode hooks by a probe script; hook docs: https://zcode.z.ai/en/docs/hooks",
+  "capturedAt": "2026-11-25",
+  "note": "Real payloads with only these changes: username, home paths, temp directories, model plan name and session/trace/turn/tool-call ids replaced. ZCode sends each field in snake_case and camelCase. transcript_path points to a temp file ZCode deletes after the hook.",
+  "payloads": {
+    "SessionStart": {
+      "cwd": "/Users/example/projects/zcode-test-project",
+      "hookEventName": "SessionStart",
+      "mode": "build",
+      "model": "account:example-plan/GLM-5.4",
+      "sessionId": "sess_00000000-0000-4000-8000-000000000001",
+      "source": "startup",
+      "timestamp": "2026-11-25T23:04:24.284Z",
+      "traceId": "00000000-0000-4000-8000-000000000001",
+      "turnId": "turn_00000000-0000-4000-8000-000000000001",
+      "hook_event_name": "SessionStart",
+      "permission_mode": "build",
+      "session_id": "sess_00000000-0000-4000-8000-000000000001",
+      "transcript_path": "/tmp/zcode-hook-000001/transcript.jsonl",
+      "transcriptPath": "/tmp/zcode-hook-000001/transcript.jsonl"
+    },
+    "UserPromptSubmit": {
+      "cwd": "/Users/example/projects/zcode-test-project",
+      "hookEventName": "UserPromptSubmit",
+      "mode": "build",
+      "prompt": "Read notes.txt and tell me what it says.",
+      "sessionId": "sess_00000000-0000-4000-8000-000000000001",
+      "timestamp": "2026-11-25T23:05:05.196Z",
+      "traceId": "00000000-0000-4000-8000-000000000001",
+      "turnId": "turn_00000000-0000-4000-8000-000000000002",
+      "hook_event_name": "UserPromptSubmit",
+      "permission_mode": "build",
+      "session_id": "sess_00000000-0000-4000-8000-000000000001",
+      "transcript_path": "/tmp/zcode-hook-000002/transcript.jsonl",
+      "transcriptPath": "/tmp/zcode-hook-000002/transcript.jsonl"
+    },
+    "PostToolUseRead": {
+      "cwd": "/Users/example/projects/zcode-test-project",
+      "hookEventName": "PostToolUse",
+      "mode": "build",
+      "sessionId": "sess_00000000-0000-4000-8000-000000000001",
+      "timestamp": "2026-11-25T23:05:10.957Z",
+      "toolCallId": "call_000000000000000000000001",
+      "toolInput": {
+        "file_path": "/Users/example/projects/zcode-test-project/notes.txt"
+      },
+      "toolName": "Read",
+      "toolResponse": {
+        "type": "text",
+        "filePath": "/Users/example/projects/zcode-test-project/notes.txt",
+        "content": "Hello from the ZCode probe project.\nline two\n",
+        "numLines": 3,
+        "startLine": 1,
+        "totalLines": 3,
+        "sizeBytes": 45,
+        "bytesRead": 45,
+        "truncated": false
+      },
+      "toolResultPreview": "{\"type\":\"text\",\"filePath\":\"/Users/example/projects/zcode-test-project/notes.txt\",\"content\":\"Hello from the ZCode probe project.\\nline two\\n\",\"numLines\":3,\"startLine\":1,\"totalLines\":3,\"sizeBytes\":45,\"bytesRead\":45,\"truncated\":false}",
+      "traceId": "00000000-0000-4000-8000-000000000001",
+      "turnId": "turn_00000000-0000-4000-8000-000000000002",
+      "hook_event_name": "PostToolUse",
+      "permission_mode": "build",
+      "session_id": "sess_00000000-0000-4000-8000-000000000001",
+      "transcript_path": "/tmp/zcode-hook-000003/transcript.jsonl",
+      "transcriptPath": "/tmp/zcode-hook-000003/transcript.jsonl",
+      "tool_name": "Read",
+      "tool_input": {
+        "file_path": "/Users/example/projects/zcode-test-project/notes.txt"
+      },
+      "tool_use_id": "call_000000000000000000000001",
+      "tool_response": {
+        "type": "text",
+        "filePath": "/Users/example/projects/zcode-test-project/notes.txt",
+        "content": "Hello from the ZCode probe project.\nline two\n",
+        "numLines": 3,
+        "startLine": 1,
+        "totalLines": 3,
+        "sizeBytes": 45,
+        "bytesRead": 45,
+        "truncated": false
+      }
+    },
+    "PostToolUseEdit": {
+      "cwd": "/Users/example/projects/zcode-test-project",
+      "hookEventName": "PostToolUse",
+      "mode": "build",
+      "sessionId": "sess_00000000-0000-4000-8000-000000000001",
+      "timestamp": "2026-11-25T23:05:37.448Z",
+      "toolCallId": "call_000000000000000000000002",
+      "toolInput": {
+        "file_path": "/Users/example/projects/zcode-test-project/notes.txt",
+        "old_string": "line two",
+        "new_string": "line two\nline three",
+        "replace_all": false
+      },
+      "toolName": "Edit",
+      "toolResponse": {
+        "filePath": "/Users/example/projects/zcode-test-project/notes.txt",
+        "oldString": "line two",
+        "newString": "line two\nline three",
+        "originalFile": "Hello from the ZCode probe project.\nline two\n",
+        "structuredPatch": [
+          {
+            "oldStart": 1,
+            "oldLines": 2,
+            "newStart": 1,
+            "newLines": 3,
+            "lines": [
+              " Hello from the ZCode probe project.",
+              " line two",
+              "+line three"
+            ]
+          }
+        ],
+        "userModified": false,
+        "replaceAll": false,
+        "matchStrategy": "exact",
+        "matchCandidateCount": 1
+      },
+      "toolResultPreview": "{\"filePath\":\"/Users/example/projects/zcode-test-project/notes.txt\",\"oldString\":\"line two\",\"newString\":\"line two\\nline three\",\"originalFile\":\"Hello from the ZCode probe project.\\nline two\\n\",\"structuredPatch\":[{\"oldStart\":1,\"oldLines\":2,\"newStart\":1,\"newLines\":3,\"lines\":[\" Hello from the ZCode probe project.\",\" line two\",\"+line three\"]}],\"userModified\":false,\"replaceAll\":false,\"matchStrategy\":\"exact\",\"matchCandidateCount\":1}",
+      "traceId": "00000000-0000-4000-8000-000000000001",
+      "turnId": "turn_00000000-0000-4000-8000-000000000003",
+      "hook_event_name": "PostToolUse",
+      "permission_mode": "build",
+      "session_id": "sess_00000000-0000-4000-8000-000000000001",
+      "transcript_path": "/tmp/zcode-hook-000004/transcript.jsonl",
+      "transcriptPath": "/tmp/zcode-hook-000004/transcript.jsonl",
+      "tool_name": "Edit",
+      "tool_input": {
+        "file_path": "/Users/example/projects/zcode-test-project/notes.txt",
+        "old_string": "line two",
+        "new_string": "line two\nline three",
+        "replace_all": false
+      },
+      "tool_use_id": "call_000000000000000000000002",
+      "tool_response": {
+        "filePath": "/Users/example/projects/zcode-test-project/notes.txt",
+        "oldString": "line two",
+        "newString": "line two\nline three",
+        "originalFile": "Hello from the ZCode probe project.\nline two\n",
+        "structuredPatch": [
+          {
+            "oldStart": 1,
+            "oldLines": 2,
+            "newStart": 1,
+            "newLines": 3,
+            "lines": [
+              " Hello from the ZCode probe project.",
+              " line two",
+              "+line three"
+            ]
+          }
+        ],
+        "userModified": false,
+        "replaceAll": false,
+        "matchStrategy": "exact",
+        "matchCandidateCount": 1
+      }
+    },
+    "PostToolUseBash": {
+      "cwd": "/Users/example/projects/zcode-test-project",
+      "hookEventName": "PostToolUse",
+      "mode": "build",
+      "sessionId": "sess_00000000-0000-4000-8000-000000000001",
+      "timestamp": "2026-11-25T23:05:48.077Z",
+      "toolCallId": "call_000000000000000000000003",
+      "toolInput": {
+        "command": "ls -la",
+        "description": "List files in current directory"
+      },
+      "toolName": "Bash",
+      "toolResponse": {
+        "stdout": "total 8\ndrwxr-xr-x@  3 example  wheel   96 Nov 26 06:05 .\ndrwxr-xr-x@ 23 example  staff  736 Nov 26 06:03 ..\n-rw-r--r--@  1 example  wheel   56 Nov 26 06:05 notes.txt\n",
+        "stderr": "",
+        "interrupted": false,
+        "isImage": false,
+        "noOutputExpected": false,
+        "status": "completed",
+        "exitCode": 0,
+        "timedOut": false,
+        "cancelled": false,
+        "stdoutTruncated": false,
+        "stderrTruncated": false,
+        "stdoutBytes": 167,
+        "stderrBytes": 0
+      },
+      "toolResultPreview": "{\"stdout\":\"total 8\\ndrwxr-xr-x@  3 example  wheel   96 Nov 26 06:05 .\\ndrwxr-xr-x@ 23 example  staff  736 Nov 26 06:03 ..\\n-rw-r--r--@  1 example  wheel   56 Nov 26 06:05 notes.txt\\n\",\"stderr\":\"\",\"interrupted\":false,\"isImage\":false,\"noOutputExpected\":false,\"status\":\"completed\",\"exitCode\":0,\"timedOut\":false,\"cancelled\":false,\"stdoutTruncated\":false,\"stderrTruncated\":false,\"stdoutBytes\":167,\"stderrBytes\":0}",
+      "traceId": "00000000-0000-4000-8000-000000000001",
+      "turnId": "turn_00000000-0000-4000-8000-000000000004",
+      "hook_event_name": "PostToolUse",
+      "permission_mode": "build",
+      "session_id": "sess_00000000-0000-4000-8000-000000000001",
+      "transcript_path": "/tmp/zcode-hook-000005/transcript.jsonl",
+      "transcriptPath": "/tmp/zcode-hook-000005/transcript.jsonl",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "ls -la",
+        "description": "List files in current directory"
+      },
+      "tool_use_id": "call_000000000000000000000003",
+      "tool_response": {
+        "stdout": "total 8\ndrwxr-xr-x@  3 example  wheel   96 Nov 26 06:05 .\ndrwxr-xr-x@ 23 example  staff  736 Nov 26 06:03 ..\n-rw-r--r--@  1 example  wheel   56 Nov 26 06:05 notes.txt\n",
+        "stderr": "",
+        "interrupted": false,
+        "isImage": false,
+        "noOutputExpected": false,
+        "status": "completed",
+        "exitCode": 0,
+        "timedOut": false,
+        "cancelled": false,
+        "stdoutTruncated": false,
+        "stderrTruncated": false,
+        "stdoutBytes": 167,
+        "stderrBytes": 0
+      }
+    },
+    "PostToolUseFailure": {
+      "cwd": "/Users/example/projects/zcode-test-project",
+      "error": "File does not exist. Note: your current working directory is /Users/example/projects/zcode-test-project.",
+      "hookEventName": "PostToolUseFailure",
+      "isInterrupt": false,
+      "mode": "build",
+      "sessionId": "sess_00000000-0000-4000-8000-000000000001",
+      "timestamp": "2026-11-25T23:21:10.549Z",
+      "toolCallId": "call_000000000000000000000004",
+      "toolInput": {
+        "file_path": "/Users/example/projects/zcode-test-project/does-not-exist.txt"
+      },
+      "toolName": "Read",
+      "traceId": "00000000-0000-4000-8000-000000000001",
+      "turnId": "turn_00000000-0000-4000-8000-000000000005",
+      "hook_event_name": "PostToolUseFailure",
+      "permission_mode": "build",
+      "session_id": "sess_00000000-0000-4000-8000-000000000001",
+      "transcript_path": "/tmp/zcode-hook-000006/transcript.jsonl",
+      "transcriptPath": "/tmp/zcode-hook-000006/transcript.jsonl",
+      "tool_name": "Read",
+      "tool_input": {
+        "file_path": "/Users/example/projects/zcode-test-project/does-not-exist.txt"
+      },
+      "tool_use_id": "call_000000000000000000000004",
+      "error_details": {
+        "message": "File does not exist. Note: your current working directory is /Users/example/projects/zcode-test-project.",
+        "type": "tool_execution_failed"
+      },
+      "is_interrupt": false
+    },
+    "Stop": {
+      "cwd": "/Users/example/projects/zcode-test-project",
+      "hookEventName": "Stop",
+      "mode": "build",
+      "responsePreview": "[notes.txt](/Users/example/projects/zcode-test-project/notes.txt) contains:\n\n```\nHello from the ZCode probe project.\nline two\n```\n\nThat's all — two lines of text.",
+      "responseText": "[notes.txt](/Users/example/projects/zcode-test-project/notes.txt) contains:\n\n```\nHello from the ZCode probe project.\nline two\n```\n\nThat's all — two lines of text.",
+      "sessionId": "sess_00000000-0000-4000-8000-000000000001",
+      "stopHookActive": false,
+      "timestamp": "2026-11-25T23:05:14.926Z",
+      "toolCallCount": 1,
+      "traceId": "00000000-0000-4000-8000-000000000001",
+      "turnId": "turn_00000000-0000-4000-8000-000000000002",
+      "hook_event_name": "Stop",
+      "permission_mode": "build",
+      "session_id": "sess_00000000-0000-4000-8000-000000000001",
+      "transcript_path": "/tmp/zcode-hook-000007/transcript.jsonl",
+      "transcriptPath": "/tmp/zcode-hook-000007/transcript.jsonl",
+      "last_assistant_message": "[notes.txt](/Users/example/projects/zcode-test-project/notes.txt) contains:\n\n```\nHello from the ZCode probe project.\nline two\n```\n\nThat's all — two lines of text.",
+      "stop_hook_active": false
+    }
+  }
+}

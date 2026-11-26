@@ -1223,9 +1223,10 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as UserPromptSearchResult[];
     }
 
-    const escapedQuery = query.replace(/[\\%_]/g, '\\$&');
-    baseConditions.push("up.prompt_text LIKE ? ESCAPE '\\'");
-    params.push(`%${escapedQuery}%`);
+    // Every term must appear, in any order, as in observation and summary search.
+    const match = SessionSearch.buildSubstringClause(query, ['up.prompt_text']);
+    baseConditions.push(match.clause);
+    params.push(...match.params);
 
     const whereClause = `WHERE ${baseConditions.join(' AND ')}`;
     const orderClause = orderBy === 'date_asc'

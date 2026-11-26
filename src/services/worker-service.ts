@@ -156,6 +156,9 @@ import {
   handleDevinCommand
 } from './integrations/DevinHooksInstaller.js';
 import {
+  handleZCodeCommand
+} from './integrations/ZCodeHooksInstaller.js';
+import {
   handleAntigravityCliCommand,
   healStaleAntigravityHooksConfig
 } from './integrations/AntigravityCliHooksInstaller.js';
@@ -201,6 +204,7 @@ import { HistoryImport } from './setup/history-import.js';
 import { cmemProOrigin } from '../shared/cmem-gateway.js';
 import { Database as BunDatabase } from 'bun:sqlite';
 import { WorkViewRoutes } from './worker/http/routes/WorkViewRoutes.js';
+import { ReviewStackRoutes } from './worker/http/routes/ReviewStackRoutes.js';
 import { ConversationContinuationRunner } from './work-view/conversation-continuation-runner.js';
 import { detectUsableAgent } from './agent-runner/detect.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
@@ -1237,6 +1241,13 @@ export class WorkerService implements WorkerRef {
         conversationContinuationRunner: this.conversationContinuationRunner,
       });
       this.server.registerRoutes(this.workViewRoutes);
+      this.server.registerRoutes(new ReviewStackRoutes(
+        this.dbManager.getConnection(), this.dbManager.getSessionStore().getLocalSyncDeviceId(),
+        () => {
+          this.workViewRoutes?.publishReviewStackChanged();
+          this.dbManager.getCloudSync()?.notify();
+        },
+      ));
       this.initPhaseTracker.setInitPhase('db_ready');
 
       // Write hooks never wait on the worker: they spool one file per event.
@@ -1867,7 +1878,7 @@ function printWorkerAliasHelp(): never {
 function printWorkerServiceUsage(): void {
   console.error('Usage: worker-service <command>');
   console.error('Commands: start, stop, restart, status, hook <platform> <event>, worker <command>, server <command>,');
-  console.error('  adopt, project, transcript, generate, clean, cleanup, cursor, grok, memory, kimi, aider, devin, antigravity-cli,');
+  console.error('  adopt, project, transcript, generate, clean, cleanup, cursor, grok, memory, kimi, aider, devin, zcode, antigravity-cli,');
   console.error('  --daemon, --version, --help');
 }
 
@@ -2435,6 +2446,13 @@ export async function main() {
       const devinSubcommand = process.argv[3];
       const devinResult = await handleDevinCommand(devinSubcommand, process.argv.slice(4));
       process.exit(devinResult);
+      break;
+    }
+
+    case 'zcode': {
+      const zcodeSubcommand = process.argv[3];
+      const zcodeResult = await handleZCodeCommand(zcodeSubcommand, process.argv.slice(4));
+      process.exit(zcodeResult);
       break;
     }
 

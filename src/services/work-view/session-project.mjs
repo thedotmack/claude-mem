@@ -65,7 +65,10 @@ const PATH_START = /(?:^|[\s"'`=:(])((?:~[/\\]|\/|[A-Za-z]:[/\\])[^\n\r"'`;|&<>(
 const AGENT_HOMES = ['.claude', '.codex', '.gemini', '.claude-mem', '.cursor'].map((name) => join(HOME, name));
 const isAgentHome = (path) => AGENT_HOMES.some((home) => path === home || path.startsWith(`${home}/`) || path.startsWith(`${home}\\`));
 /** Absolute on this platform: `/…` everywhere, and a drive path (`C:\…`) on Windows. */
-const isAbsoluteOn = (path, platform) => (path.startsWith('/') && !path.startsWith('//')) || (platform === 'win32' && /^[A-Za-z]:[/\\]/.test(path));
+const isAbsoluteOn = (path, platform) => (
+  (path.startsWith('/') && !path.startsWith('//') && !(platform === 'win32' && path.startsWith('/\\')))
+  || (platform === 'win32' && /^[A-Za-z]:[/\\]/.test(path))
+);
 /** Absolute paths named in a tool call's input (file paths, commands, cwd). */
 export function pathsIn(toolInput, platform = process.platform) {
   let parsed = toolInput;

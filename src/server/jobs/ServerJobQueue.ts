@@ -161,9 +161,11 @@ export class ServerJobQueue<TPayload extends object = object> {
     }
   }
 
-  async remove(jobId: string): Promise<void> {
+  // Resolves to false when BullMQ kept the job. It does not remove a job a
+  // worker holds, and an add() with that id then changes nothing.
+  async remove(jobId: string): Promise<boolean> {
     try {
-      await this.getQueue().remove(jobId);
+      return (await this.getQueue().remove(jobId)) !== 0;
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       throw this.toRedisUnavailableError(err);

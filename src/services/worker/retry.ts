@@ -197,6 +197,23 @@ export function resolveFieldOptimizeTimeoutMs(
   return parseTimeoutMs(raw, 'CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS', FIELD_OPTIMIZE_TIMEOUT_MS);
 }
 
+/**
+ * Whether an oversized tool field may be condensed by a model call
+ * (field-optimizer.ts) before its observation is sent. Only an explicit
+ * "false" turns it off; the field then goes straight to the prompt builder's
+ * head/tail elision, with no request made (#6503). Same env-first, then
+ * settings.json rules as resolveFieldOptimizeTimeoutMs, and passed lazily so
+ * the file is read only when a field is actually oversized.
+ */
+export function resolveFieldCondenseEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+  settingsPath: string = USER_SETTINGS_PATH,
+): boolean {
+  const raw = env.CLAUDE_MEM_FIELD_CONDENSE_ENABLED
+    ?? SettingsDefaultsManager.loadFromFile(settingsPath, false).CLAUDE_MEM_FIELD_CONDENSE_ENABLED;
+  return String(raw ?? '').trim().toLowerCase() !== 'false';
+}
+
 const DEFAULT_OPTIONS: Required<Pick<RetryOptions, 'maxRetries' | 'baseDelayMs' | 'maxDelayMs'>> = {
   maxRetries: 2,
   baseDelayMs: 1_000,

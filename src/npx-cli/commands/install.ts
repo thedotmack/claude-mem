@@ -4,7 +4,7 @@ import { spawnSync } from 'child_process';
 import { explainTelemetryConsent, loadTelemetryConfig, recordTelemetryDecision, resolveTelemetryConsent } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { spawnHidden } from '../../shared/spawn.js';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs';
 import { applyConfiguredSkillSelection, readDisabledSkills, skillSelectionFailureMessage } from '../../shared/skill-selection.js';
 import { RUNTIME_REQUIRED_SKILLS } from '../../shared/runtime-skills.js';
 import type { SetupInstallCatalog, SetupInstallSelection, SetupMode } from '../../shared/setup-install.js';
@@ -16,9 +16,7 @@ import { resolveDbPath, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, getLastWorkerBootFailure, type WorkerStartResult } from '../../services/worker-spawner.js';
-import { formatHostForUrl } from '../../shared/worker-utils.js';
-import { readLocalApiToken } from '../../shared/hook-settings.js';
-import { localApiTokenHeadersFor } from '../../shared/local-api-token.js';
+import { clearPortCache, formatHostForUrl, workerAuthHeaders } from '../../shared/worker-utils.js';
 import {
   ensureBun,
   ensureUv,
@@ -63,9 +61,10 @@ import {
 import { parseTeamBrainTeamRef, type TeamBrainTeamRef } from '../../shared/teambrain.js';
 import { relayedLine } from '../../shared/relayed-text.js';
 import { endSetupSession, hasProConfiguration, INITIAL_SETUP_STATE, readSetupState, readSetupTelemetryContext, startSetupSession, writeSetupState } from '../../shared/setup-state.js';
-import { CLOUD_SYNC_SETUP_CONTRACT, PRIVATE_WORK_VIEW_URL, isSetupId, setupCloudSyncOffer, type SetupCloudSyncOffer } from '../../shared/setup-funnel.js';
+import { CLOUD_SYNC_SETUP_CONTRACT, PRIVATE_WORK_VIEW_URL, SETUP_DEVICE_CODE_PATTERN, isSetupId, setupCloudSyncOffer, type SetupCloudSyncOffer } from '../../shared/setup-funnel.js';
 import { intentCredentialHeaders, readIntentCredentials } from '../../shared/intent-credentials.js';
-import { AGENT_BROWSER_SETUP_HINT, runBrowserSetup, settingsChangesNeedingRestart, shouldPrintAgentBrowserSetupHint, shouldUseBrowserSetup, waitForBackgroundWorkToFinish, type BrowserSetupOutcome } from '../install/browser-setup.js';
+import { restartWorkerToPickUpCloudSync, workerSyncStatus } from '../install/worker-sync-restart.js';
+import { AGENT_BROWSER_SETUP_HINT, createPairingCheckout, runBrowserSetup, settingsChangesNeedingRestart, shouldPrintAgentBrowserSetupHint, shouldUseBrowserSetup, waitForBackgroundWorkToFinish, type BrowserSetupOutcome } from '../install/browser-setup.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
@@ -171,7 +170,7 @@ import { isUserScopeRegistration } from '../../shared/claude-code-plugin-paths.j
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { clearClaudeAutoMemoryOverride } from '../utils/claude-auto-memory.js';
 import { readFlatSettings } from '../utils/settings.js';
-import { shutdownWorkerAndWait, type ShutdownBlocker } from '../../services/install/shutdown-helper.js';
+import { shutdownWorkerAndWait, WORKER_EXIT_WAIT_MS, type ShutdownBlocker } from '../../services/install/shutdown-helper.js';
 import { holdSpawnLock, SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-gate.js';
 import { readOwnedWorkerPidInfo, type PidInfo } from '../../supervisor/process-registry.js';
 import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
@@ -465,6 +464,36 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
             details: mcpOutput,
           }, summary);
           return `Devin: hooks installed; MCP setup failed — run \`npx claude-mem devin install\` ${styleText('yellow', '!')}`;
+        },
+      };
+    }
+
+    case 'zcode': {
+      return {
+        title: 'ZCode: installing hooks + MCP',
+        task: async (message) => {
+          message('Loading ZCode installer…');
+          const { installZCode, readZCodeStatus } = await import('../../services/integrations/ZCodeHooksInstaller.js');
+          message('Installing ZCode hooks + MCP…');
+          const { result, output } = await bufferConsole(async () => installZCode());
+          if (result !== 0) {
+            recordFailure('ZCode: hooks + MCP installation failed', output);
+            return `ZCode: hooks + MCP installation failed ${styleText('red', 'FAIL')}`;
+          }
+          // Ask the status function, not the printed text: a run without a
+          // terminal buffers no output, so a phrase match never fires there.
+          if (readZCodeStatus().status === 'disabled') {
+            installerError(ErrorSeverity.WARN_CONTINUE, {
+              component: 'zcode',
+              ide: 'zcode',
+              phase: 'ide-install',
+              cause: new Error('ZCode hooks installed, but hooks.enabled is false in config.json.'),
+              remediation: 'Set hooks.enabled to true in ~/.zcode/cli/config.json, then start a new ZCode session.',
+              details: output,
+            }, summary);
+            return `ZCode: hooks + MCP installed, but hooks.enabled is false ${styleText('yellow', '!')}`;
+          }
+          return `ZCode: hooks + MCP installed ${styleText('green', 'OK')}`;
         },
       };
     }
@@ -964,7 +993,7 @@ export function writeTrimmedMarketplaceManifest(marketplaceDir: string): void {
   });
   if (shipped.length === manifest.plugins.length) return;
 
-  writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, plugins: shipped }, null, 2)}\n`);
+  writeJsonFileAtomic(manifestPath, { ...manifest, plugins: shipped });
 }
 
 /**
@@ -986,7 +1015,7 @@ export function writeTrimmedMarketplacePackageJson(packageRoot: string, marketpl
   delete pkg.devDependencies;
   delete pkg.trustedDependencies;
 
-  writeFileSync(join(marketplaceDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
+  writeJsonFileAtomic(join(marketplaceDir, 'package.json'), pkg);
 }
 
 /**
@@ -1691,9 +1720,6 @@ function nonEmptyTrimmedString(value: unknown): string | null {
 }
 
 const OAUTH_START_TIMEOUT_MS = 10_000;
-// The optional end-of-install sign-in offer must not hold a finished install
-// hostage to a stalled cmem.ai: give up well before the blocking login would.
-const OAUTH_DEFERRED_START_TIMEOUT_MS = 3_000;
 const OAUTH_POLL_TIMEOUT_MS = 10_000;
 // Fallback budget when the server does not report `expires_in`. The server
 // pairing lives 30 minutes; polling past that only yields `gone`.
@@ -1823,7 +1849,7 @@ export function parseInstallerOAuthStartBody(body: unknown, sentSetupFlowId?: st
     || !secret
     || !/^[0-9a-f]{48}$/.test(secret)
     || !userCode
-    || !/^[A-HJ-KM-NP-TV-Z2-9]{4}-[A-HJ-KM-NP-TV-Z2-9]{4}$/.test(userCode)
+    || !SETUP_DEVICE_CODE_PATTERN.test(userCode)
     || !authorizationUrl
     || !checkoutUrl
   ) return null;
@@ -2207,6 +2233,11 @@ export async function waitForInstallerPairing(
   pairing: InstallerOAuthPairing,
   phase: InstallerPairingPhase,
   version: string,
+  /**
+   * True once the browser funnel replaced this pairing with a fresh one (createPairingCheckout): its expiry then ends
+   * this wait quietly, with no timeout event and no "timed out" line, since the fresh pairing's wait goes on.
+   */
+  { superseded }: { superseded?: () => Promise<boolean> } = {},
 ): Promise<InstallerPollOutcome | null> {
   const startedAt = Date.now();
   const rerun = phase === 'teambrain_join' ? 'Run npx claude-mem teambrain join again'
@@ -2291,8 +2322,9 @@ export async function waitForInstallerPairing(
       await sleepUnlessCancelled(pairing.pollIntervalMs, () => cancelled);
     }
 
-    // The telemetry `phase` enum is the installer's (login / enrollment /
-    // deferred); a TeamBrain join is not reported.
+    if (superseded && await superseded()) return null;
+    // The telemetry `phase` enum is the installer's (login / enrollment);
+    // a TeamBrain join is not reported.
     if (phase !== 'teambrain_join') {
       await captureCliEvent('installer_oauth_timeout', {
         version,
@@ -2418,51 +2450,6 @@ async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAu
   return completed ? pairing : null;
 }
 
-/**
- * Best-effort, non-blocking sign-in offer for non-interactive installs that
- * skipped login (provider needs no account). Agents run `npx claude-mem install`
- * in non-TTY shells; the blocking OAuth step cannot run there, so the install
- * completes and the agent can relay the optional login-only link.
- *
- * Never polls, never opens a browser, never prints the device code or the
- * checkout URL, and never touches exit status. Skipped under CI. Not gated on
- * the do-not-track env var: only telemetry is, and captureCliEvent already honors it.
- * The server ignores `source` today and will allowlist it separately.
- */
-export async function offerDeferredLogin(options: InstallOptions, version: string): Promise<void> {
-  if (options.update) return;
-  if (isInteractive) return;
-  if (providerNeedsAccount(options.provider)) return;
-  if (process.env.CI) return;
-  // Nobody reads an auto-update run's output, and each offer starts a cmem.ai
-  // pairing (shared/auto-update-install-run.ts).
-  if (isInstallRunByAutoUpdate()) return;
-
-  const pairing = await startInstallerOAuthPairing({
-    source: 'npx-installer-deferred',
-    timeoutMs: OAUTH_DEFERRED_START_TIMEOUT_MS,
-  });
-  if (!pairing) {
-    await captureCliEvent('installer_oauth_start_failed', {
-      version,
-      outcome: lastOAuthStartFailure() ?? 'network',
-      interactive: false,
-      phase: 'deferred',
-    });
-    log.error(lastOAuthStartErrorMessage()
-      ? `Could not start the optional claude-mem sign-in: ${lastOAuthStartErrorMessage()}`
-      : 'Could not start the optional claude-mem sign-in. Run npx claude-mem install again when cmem.ai is reachable.');
-    return;
-  }
-
-  // Telemetry first so that, in CLAUDE_MEM_TELEMETRY_DEBUG=1 mode, its stderr
-  // line cannot interrupt the link and its accompanying instruction.
-  await captureCliEvent('installer_oauth_deferred', { version, interactive: false });
-  log.info('Optional: sign in to claude-mem to unlock cloud sync and the CMEM Pro trial.');
-  log.info(`Sign-in link: ${pairing.authorizationUrl}`);
-  log.info('AGENT: show this link to the user so they can finish signing in. This optional link is for account sign-in only.');
-}
-
 export function noteDeviceCode(
   pairing: InstallerOAuthPairing,
   instruction: string = 'Enter this code in the browser to approve this device.',
@@ -2492,22 +2479,29 @@ export function activateBrowserEnrollment(result: TrialReadyResult): ProviderId 
 export async function completeCmemTrialPairing(
   pairing: InstallerOAuthPairing,
   version: string,
+  /**
+   * `opened`: the browser funnel's reopen already noted this pairing's code and opened its page. `superseded`: a fresh
+   * pairing replaced this one (both from createPairingCheckout; see waitForInstallerPairing).
+   */
+  { opened = false, superseded }: { opened?: boolean; superseded?: () => Promise<boolean> } = {},
 ): Promise<TrialReadyResult | null> {
   if (pairing.delivered) return pairingAcceptsReady(pairing, pairing.delivered) ? pairing.delivered : null;
 
-  noteDeviceCode(pairing);
-  // Deliberately NO return-wait here, unlike the login hand-off.
-  //
-  // A second wait at this point stalled the install: stdin has already been
-  // through the login wait and a clack prompt by now, and the listener did not
-  // reliably receive the keypress, so the flow stopped before it could even
-  // print "Waiting for CMEM Pro setup in the browser…". Opening directly is
-  // also the better behaviour here — the user has already chosen CMEM Pro, so
-  // there is nothing left to confirm before the browser takes over.
-  log.info(`Continue ${pairing.cloudSyncOffer ? 'Cloud Sync' : 'CMEM Pro'} setup: ${pairing.checkoutUrl}`);
-  openBrowser(pairing.checkoutUrl);
+  if (!opened) {
+    noteDeviceCode(pairing);
+    // Deliberately NO return-wait here, unlike the login hand-off.
+    //
+    // A second wait at this point stalled the install: stdin has already been
+    // through the login wait and a clack prompt by now, and the listener did not
+    // reliably receive the keypress, so the flow stopped before it could even
+    // print "Waiting for CMEM Pro setup in the browser…". Opening directly is
+    // also the better behaviour here — the user has already chosen CMEM Pro, so
+    // there is nothing left to confirm before the browser takes over.
+    log.info(`Continue ${pairing.cloudSyncOffer ? 'Cloud Sync' : 'CMEM Pro'} setup: ${pairing.checkoutUrl}`);
+    openBrowser(pairing.checkoutUrl);
+  }
 
-  const result = await waitForInstallerPairing(pairing, 'enrollment', version);
+  const result = await waitForInstallerPairing(pairing, 'enrollment', version, { superseded });
   if (!result || result.kind !== 'ready') return null;
   if (!pairingAcceptsReady(pairing, result)) return null;
 
@@ -2761,6 +2755,9 @@ export interface InstallOptions {
   serverUrl?: string;
 }
 
+/** The worker stop's wait, as the abort messages state it. */
+const WORKER_EXIT_WAIT_SECONDS = WORKER_EXIT_WAIT_MS / 1000;
+
 /**
  * How the installer reacts when the worker port is not free. This runs before
  * the sign-in/trial step, which the install must still reach, so it aborts only
@@ -2794,8 +2791,8 @@ export function workerShutdownFailure(
         // a kill command (it may belong to a container, or be reused).
         return {
           severity: ErrorSeverity.ABORT,
-          cause: 'The running claude-mem worker accepted the shutdown request but was still serving after 10 seconds.',
-          remediation: 'Run `npx claude-mem stop`, verify it exits, then run `npx claude-mem install` again.',
+          cause: `The running claude-mem worker accepted the shutdown request but was still serving after ${WORKER_EXIT_WAIT_SECONDS} seconds.`,
+          remediation: 'Run `npx claude-mem stop`, verify it exits, rerun the command you were running (`npx claude-mem update` for an update), then run `npx claude-mem start` if no worker answers.',
         };
       }
       // The PID was verified as ours (PID file plus start token) at the
@@ -2803,8 +2800,8 @@ export function workerShutdownFailure(
       const killCommand = process.platform === 'win32' ? `taskkill /PID ${blocker.pid} /F` : `kill ${blocker.pid}`;
       return {
         severity: ErrorSeverity.ABORT,
-        cause: `The claude-mem worker (PID ${blocker.pid}) did not stop within 10 seconds.`,
-        remediation: `Run \`npx claude-mem stop\`, or end PID ${blocker.pid} (\`${killCommand}\`), then run \`npx claude-mem install\` again.`,
+        cause: `The claude-mem worker (PID ${blocker.pid}) did not stop within ${WORKER_EXIT_WAIT_SECONDS} seconds.`,
+        remediation: `Run \`npx claude-mem stop\`, or end PID ${blocker.pid} (\`${killCommand}\`), rerun the command you were running (\`npx claude-mem update\` for an update), then run \`npx claude-mem start\` if no worker answers.`,
       };
     }
   }
@@ -2907,7 +2904,10 @@ export async function requireWorkerStopped(
   spinner?.start(action);
 
   try {
-    const result = await stopWorker(port, 10000);
+    // One request, one wait as long as the worker's own shutdown may take. A second request does not buy a slow
+    // worker time: its listener closes first, so the request is refused at once while the process is still alive; and
+    // one it does accept ends in process.exit in the middle of the first shutdown.
+    const result = await stopWorker(port, WORKER_EXIT_WAIT_MS);
     if (!result.stopped) {
       const failure = workerShutdownFailure(result.blocker, port);
       if (failure.severity === ErrorSeverity.ABORT) {
@@ -3633,12 +3633,25 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // setup state with no time limit. Login happens only if the page picks On
   // The Go. Everything else keeps the terminal flow below unchanged.
   let oauthPairing: InstallerOAuthPairing | null = null;
-  // On The Go's pairing, held for the checkout hand-off (funnel Phase 8):
-  // completeCmemTrialPairing(onTheGoPairing) runs when the page asks for checkout.
-  let onTheGoPairing: InstallerOAuthPairing | null = null;
   let browserCloudSyncOffer: SetupCloudSyncOffer | undefined;
   let shareWorkView: true | undefined;
   let browserProvider: ProviderId = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
+  // On The Go's checkout hand-off (funnel Phase 8): it holds the pairing the choice started, and
+  // completeCmemTrialPairing runs on it when the page asks for checkout. The claim route carries the
+  // pairing's confirmed product/offer through sign-in and checkout.
+  const startPairing = () => startOnTheGoPairing(version, browserCloudSyncOffer, shareWorkView);
+  const onTheGoCheckout = createPairingCheckout<InstallerOAuthPairing>({
+    start: startPairing,
+    complete: async (pairing, opened, superseded) => {
+      const delivered = await completeCmemTrialPairing(pairing, version, { opened, superseded });
+      if (!delivered) return false;
+      if (!browserCloudSyncOffer) browserProvider = activateBrowserEnrollment(delivered) ?? browserProvider;
+      return true;
+    },
+    noteCode: pairing => noteDeviceCode(pairing),
+    openBrowser,
+    log,
+  });
   let browserOutcome: BrowserSetupOutcome | null = null;
   let settingsBeforeBrowserSetup: string | null = null;
   if (browserSetup) {
@@ -3723,25 +3736,11 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
               log.info('On The Go: keeping your existing Cloud Sync and memory configuration.');
               return 'go-kept-existing-pro';
             }
-            onTheGoPairing = await startOnTheGoPairing(version, browserCloudSyncOffer, shareWorkView);
+            onTheGoCheckout.hold(await startPairing());
             return 'go-awaiting-checkout';
           },
-          // The claim route carries the pairing's confirmed product/offer through sign-in and checkout.
-          checkout: {
-            run: async () => {
-              // A pairing whose checkout failed or was cancelled is not reused; the next ask starts a fresh one.
-              if (!onTheGoPairing) onTheGoPairing = await startOnTheGoPairing(version, browserCloudSyncOffer, shareWorkView);
-              const pairing: InstallerOAuthPairing = onTheGoPairing;
-              const delivered = await completeCmemTrialPairing(pairing, version);
-              if (!delivered) { onTheGoPairing = null; return false; }
-              if (!browserCloudSyncOffer) browserProvider = activateBrowserEnrollment(delivered) ?? browserProvider;
-              return true;
-            },
-            reopen: () => {
-              const pairing = onTheGoPairing as InstallerOAuthPairing | null;
-              if (pairing) openBrowser(pairing.checkoutUrl);
-            },
-          },
+          // A pairing whose checkout failed, or one past its expiry, is not reused; a fresh one gets a new code.
+          checkout: onTheGoCheckout,
         });
       }
     } catch (error) {
@@ -3777,9 +3776,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     // `--provider claude` (or the non-interactive default to claude) runs memory on the user's own Anthropic
     // plan, so gating it on browser OAuth made an unrelated cmem.ai outage fail
     // an install that could have completed offline — and there is no account
-    // question left to ask, because the provider already answered it. Such a
-    // non-interactive install still prints an optional, non-blocking sign-in
-    // link at the very end (offerDeferredLogin).
+    // question left to ask, because the provider already answered it.
     //
     // Deliberately keyed on the resolved provider, not on reachability: a silent
     // fallback to a local install whenever cmem.ai is down would quietly change
@@ -3859,7 +3856,12 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
           const needRestart = settingsChangesNeedingRestart(settingsBeforeBrowserSetup ?? '', readSettingsSnapshot());
           if (!needRestart.length) return describeWorkerStart(workerStartResult);
           message('Waiting for the worker to finish its setup work before it restarts...');
-          await waitForBackgroundWorkToFinish({ workerBaseUrl: `http://127.0.0.1:${getSetting('CLAUDE_MEM_WORKER_PORT')}`, log: { info: message, warn: message } });
+          // GET /api/setup/state takes the local API token when that mode is on (#5141).
+          await waitForBackgroundWorkToFinish({
+            workerBaseUrl: `http://127.0.0.1:${getSetting('CLAUDE_MEM_WORKER_PORT')}`,
+            headers: workerAuthHeaders({ readOnly: true }),
+            log: { info: message, warn: message },
+          });
         }
         const port = Number(getSetting('CLAUDE_MEM_WORKER_PORT'));
         const scriptPath = installedWorkerScriptPath(version);
@@ -3976,39 +3978,17 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       healthSpinner?.stop(`Worker not yet responding on port ${workerPort} (still starting)`);
     }
 
-    // A sign-in just wrote cloud-sync settings the worker booted with, so
-    // one cheap read of /api/sync/status confirms sync is really configured.
-    // Purely informational and fail-soft — a warming worker legitimately
-    // can't answer yet, and the state is always visible via the cloud-sync skill.
+    // A sign-in just wrote cloud-sync settings, so one read of /api/sync/status says whether the worker runs with
+    // them. A worker that booted before they were saved reports `configured: false`: restart it the way
+    // `teambrain join` does, once its extraction or history import has finished, so setup does not end with an
+    // approved device that never syncs. A worker that cannot answer yet is left alone; sync state stays visible
+    // via the cloud-sync skill. A worker the person's own manager runs is never restarted here: they are told to.
     if (cloudSyncConfigured && workerReady) {
-      try {
-        // /api/sync/status takes the local API token when that mode is on (#5141).
-        // The installer passes no remote token host, so the shared rule (#6390) never
-        // carries the token to another machine from here: a remote worker is read by the
-        // clients that the person opted in, not by the installer.
-        const syncOrigin = `http://${workerUrlHost}:${actualPort}`;
-        const syncHeaders = localApiTokenHeadersFor({
-          token: readLocalApiToken(),
-          workerOrigin: syncOrigin,
-          localOrigin: syncOrigin,
-          configuredHost: workerHost,
-          remoteTokenHost: '',
-        });
-        const syncResponse = await fetch(`${syncOrigin}/api/sync/status`, {
-          ...(Object.keys(syncHeaders).length > 0 ? { headers: syncHeaders } : {}),
-          signal: AbortSignal.timeout(3000),
-        });
-        if (syncResponse.ok) {
-          const sync = await syncResponse.json() as { configured?: boolean };
-          if (sync && sync.configured === false) {
-            log.warn('Cloud sync: worker has not picked up the sync settings yet — it will on its next restart.');
-          } else {
-            log.success('Cloud sync: configured — the worker is reporting sync status.');
-          }
-        }
-      } catch {
-        // [ANTI-PATTERN IGNORED]: this read-through is purely informational; a worker still warming up legitimately can't answer, and sync state stays visible via the cloud-sync skill.
-      }
+      // The same worker address and local API token (#5141) as the restart that may follow.
+      clearPortCache();
+      const sync = await workerSyncStatus();
+      if (sync?.configured === false) await restartWorkerToPickUpCloudSync({ log, managedExternally: workerManagedExternally });
+      else if (sync) log.success('Cloud sync: configured — the worker is reporting sync status.');
     }
   }
 
@@ -4052,7 +4032,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     cloudSyncConfigured
       ? 'Saved memories sync across your connected agents and devices.'
       : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. cmem.ai gets only your email and optional note (with the claude-mem version and OS) if you share them when an interactive terminal install asks, and a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names) when setup creates a sign-in link; nothing else is sent to cmem.ai unless you choose to upload your prompts during browser setup (telemetry is separate: npx claude-mem telemetry).`,
-    ...(cloudSyncConfigured ? [] : [`Try Cloud Sync and private Work View free for 30 days. No card needed for your first trial. ${styleText('underline', 'https://cmem.ai/cloud-sync/start')}`]),
+    ...(cloudSyncConfigured ? [] : [`Try Cloud Sync and private Work View free for 30 days. No card needed for your first trial. ${styleText('underline', 'https://cmem.ai/cloud-sync/start?trial_entry=installer_terminal&utm_source=installer_terminal')}`]),
     ``,
     `${styleText('dim', `Optional: ${'/learn-codebase'} ingests a whole repo up front (~5 min)   ·   How it works: /how-it-works`)}`,
   ];
@@ -4081,12 +4061,6 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       process.exitCode = 1;
     } else {
       console.log(options.update ? '\nclaude-mem updated successfully!' : '\nclaude-mem installed successfully!');
-    }
-    // Keep the optional sign-in link separate from the local setup page.
-    try {
-      await offerDeferredLogin(options, version);
-    } catch {
-      // best-effort only
     }
     if (shouldPrintAgentBrowserSetupHint({
       ci: Boolean(process.env.CI),

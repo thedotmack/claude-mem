@@ -190,50 +190,6 @@ describe('standalone Cloud Sync installer contract', () => {
 /** Project-local scratch (gitignored) for the auto-update cases below, never the system temp folder. */
 const scratchRoot = join(repoRoot, '.scratch', 'test-runs');
 
-function runDeferredLoginChild(
-  status: number,
-  extraEnv: Record<string, string> = {},
-  unsetEnv: string[] = [],
-  fixture: { responseBody?: Record<string, unknown>; credentials?: Record<string, unknown> } = {},
-): { output: string; exitCode: number } {
-  mkdirSync(scratchRoot, { recursive: true });
-  const dataDir = mkdtempSync(join(scratchRoot, 'claude-mem-installer-deferred-'));
-  try {
-    if (fixture.credentials) writeFileSync(join(dataDir, 'intent-install.json'), JSON.stringify(fixture.credentials), { mode: 0o600 });
-    const body = fixture.responseBody ?? (status === 200 ? validStartBody : '');
-    const script = `
-      globalThis.fetch = async () => {
-        console.log('__FETCH_CALLED__');
-        return new Response(${JSON.stringify(typeof body === 'string' ? body : JSON.stringify(body))}, {
-          status: ${status},
-          headers: { 'content-type': 'application/json' },
-        });
-      };
-      const { offerDeferredLogin } = await import('./src/npx-cli/commands/install.ts');
-      await offerDeferredLogin({ provider: 'claude', providerSource: 'default' }, 'test-version');
-      console.log('__DEFERRED_DONE__');
-    `;
-    const env: Record<string, string | undefined> = {
-      ...process.env,
-      CLAUDE_MEM_DATA_DIR: dataDir,
-      CLAUDE_MEM_TELEMETRY: '0',
-      ...extraEnv,
-    };
-    for (const key of unsetEnv) delete env[key];
-    const result = Bun.spawnSync([process.execPath, '--eval', script], {
-      cwd: repoRoot,
-      env,
-      stdin: 'ignore',
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    const output = decoder.decode(result.stdout) + decoder.decode(result.stderr);
-    return { output, exitCode: result.exitCode };
-  } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-  }
-}
-
 describe('installer OAuth start failure classification', () => {
   const realFetch = globalThis.fetch;
   const withFetch = async (
@@ -246,7 +202,7 @@ describe('installer OAuth start failure classification', () => {
     if (opts.credentials) writeFileSync(join(dataDir, 'intent-install.json'), JSON.stringify(opts.credentials), { mode: 0o600 });
     globalThis.fetch = ((url: unknown, init?: RequestInit) => impl(init, String(url))) as typeof fetch;
     try {
-      return await startInstallerOAuthPairing({ source: 'npx-installer-deferred', timeoutMs: opts.timeoutMs, cloudSyncOffer: opts.cloudSyncOffer });
+      return await startInstallerOAuthPairing({ timeoutMs: opts.timeoutMs, cloudSyncOffer: opts.cloudSyncOffer });
     } finally {
       globalThis.fetch = realFetch;
       if (previousDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
@@ -367,7 +323,7 @@ describe('installer OAuth start failure classification', () => {
     expect(lastOAuthStartFailure()).toBe('timeout');
   });
 
-  it('clears the failure and sends the deferred source on success', async () => {
+  it('clears the failure and sends the installer source on success', async () => {
     const seen: string[] = [];
     const pairing = await withFetch(async (init) => {
       seen.push(String(init?.body));
@@ -376,7 +332,7 @@ describe('installer OAuth start failure classification', () => {
     expect(pairing?.pairingId).toBe(pairingId);
     expect(lastOAuthStartFailure()).toBeNull();
     expect(lastOAuthStartErrorMessage()).toBeNull();
-    expect(seen[0]).toContain('"source":"npx-installer-deferred"');
+    expect(seen[0]).toContain('"source":"npx-installer"');
   });
 });
 
@@ -467,61 +423,6 @@ describe('installer trial-ready contract', () => {
     expect(parseInstallerOAuthStartBody({ ...validStartBody, expires_in: -5 })).not.toHaveProperty('expiresAt');
   });
 
-  it('prints only the login-only link for a deferred non-interactive sign-in', () => {
-    const { output, exitCode } = runDeferredLoginChild(200, {}, ['CI']);
-    expect(exitCode, output).toBe(0);
-    expect(output).toContain('__FETCH_CALLED__');
-    expect(output).toContain('Sign-in link: https://cmem.ai/login?next=');
-    expect(output).toContain('AGENT: show this link to the user');
-    expect(output).not.toContain(checkoutUrl);
-    expect(output).not.toContain('trial=7');
-    expect(output).not.toContain('ABCD-2345');
-    expect(output).not.toContain('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
-    expect(output).toContain('__DEFERRED_DONE__');
-  });
-
-  it('reports an optional sign-in failure and preserves the completed install exit status', () => {
-    const { output, exitCode } = runDeferredLoginChild(503, {}, ['CI']);
-    expect(exitCode, output).toBe(0);
-    expect(output).toContain('__FETCH_CALLED__');
-    expect(output).not.toContain('Sign-in link:');
-    expect(output).not.toContain('AGENT:');
-    // #5493 — the reason is appended after the prefix, so a refusal no longer
-    // reads as a network problem.
-    expect(output).toContain('Could not start the optional claude-mem sign-in: cmem.ai answered HTTP 503');
-    expect(output).toContain('__DEFERRED_DONE__');
-  });
-
-  it('shows the server error message when optional sign-in rejects the install identity', () => {
-    const { output, exitCode } = runDeferredLoginChild(401, {}, ['CI'], {
-      responseBody: { error: 'intent_credentials_invalid', message: 'This installation credential was not accepted.' },
-    });
-    expect(exitCode, output).toBe(0);
-    expect(output).toContain('This installation credential was not accepted.');
-    expect(output).toContain('__FETCH_CALLED__');
-    expect(output).not.toContain('Sign-in link:');
-  });
-
-  it('shows local credential errors at optional sign-in without sending a request', () => {
-    const { output, exitCode } = runDeferredLoginChild(200, {}, ['CI'], {
-      credentials: { install_id: '1'.repeat(32) },
-    });
-    expect(exitCode, output).toBe(0);
-    expect(output).toContain('Hosted intent credentials are invalid');
-    expect(output).not.toContain('__FETCH_CALLED__');
-    expect(output).not.toContain('Sign-in link:');
-  });
-
-  it('never starts the deferred sign-in for an installer run the auto-updater started', () => {
-    const { output, exitCode } = runDeferredLoginChild(200, { [INSTALL_RUN_BY_AUTO_UPDATE_ENV]: '1' }, ['CI']);
-    expect(exitCode, output).toBe(0);
-    expect(output).not.toContain('__FETCH_CALLED__');
-    expect(output).not.toContain('Sign-in link:');
-    expect(output).toContain('__DEFERRED_DONE__');
-    // Any other value is a person's own install, which still gets the offer.
-    expect(runDeferredLoginChild(200, { [INSTALL_RUN_BY_AUTO_UPDATE_ENV]: '0' }, ['CI']).output).toContain('Sign-in link:');
-  });
-
   it('sends install_completed for a person\'s install, and none for an installer run the auto-updater started', () => {
     const runCaptureInstallCompleted = (extraEnv: Record<string, string>): string => {
       mkdirSync(scratchRoot, { recursive: true });
@@ -592,14 +493,6 @@ describe('installer trial-ready contract', () => {
     // Any other value is a person's own install, which still reports its failure.
     expect(runCaptureInstallFailed({ [INSTALL_RUN_BY_AUTO_UPDATE_ENV]: '0' })).toContain('[telemetry] {"event":"install_failed"');
     expect(runCaptureInstallFailed({ [INSTALL_RUN_BY_AUTO_UPDATE_ENV]: '1' })).not.toContain('"event":"install_failed"');
-  });
-
-  it('never contacts cmem.ai for the deferred offer under CI', () => {
-    const { output, exitCode } = runDeferredLoginChild(200, { CI: '1' });
-    expect(exitCode, output).toBe(0);
-    expect(output).not.toContain('__FETCH_CALLED__');
-    expect(output).not.toContain('Sign-in link:');
-    expect(output).toContain('__DEFERRED_DONE__');
   });
 
   it('rejects OAuth starts without both browser destinations', () => {

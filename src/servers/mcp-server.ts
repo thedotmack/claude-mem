@@ -35,6 +35,8 @@ import { parseFile, formatFoldedView, unfoldSymbol, formatAvailableSymbols } fro
 import { treeSitterCliUnavailableMessage } from '../services/smart-file-read/tree-sitter-bin-path.js';
 import { resolveWithinWorkspace } from '../services/smart-file-read/workspace-path.js';
 import { readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { REVIEW_STACK_CARD_TOOL_SCHEMA, REVIEW_STACK_IMPORT_LIMIT } from '../shared/review-stack.js';
 import { existsSync } from 'node:fs';
 import { marketplaceDirectoryCandidates } from '../shared/known-marketplace-location.js';
 import { dirname, resolve } from 'node:path';
@@ -71,7 +73,7 @@ import { parseProjectList, projectsQueryValues } from '../shared/project-list.js
 import { postCorpusRequestOverSse } from './corpus-worker-stream.js';
 import { withWorkerRestartOnRefusedConnection } from './worker-restart.js';
 import { ProgressiveSearchError, progressiveSearchToolError } from '../shared/progressive-search.js';
-import { formatMcpPayload, formatWorkerMcpResponse, formatWorkStateMcpResponse, mcpTextResult, workerFailureText, serverFailureText, type McpTextPurpose } from './mcp-text-format.js';
+import { formatMcpPayload, formatWorkerMcpResponse, formatWorkStateMcpResponse, mcpTextResult, workerFailureText, serverFailureText, type McpTextPurpose, type McpTextResult } from './mcp-text-format.js';
 import { getRequestCwd, runWithCwd } from './request-context.js';
 import { parseHttpArgs, startMcpHttpServer, type CwdResolver, type McpHttpOptions } from './mcp-http.js';
 import { createStdioCwdResolver } from './mcp-project-cwd.js';
@@ -126,13 +128,14 @@ interface WorkerCallOptions {
   query?: Record<string, any>;
   body?: Record<string, any>;
   text?: boolean;
+  idempotencyKey?: string;
   /** Long corpus work: read the worker's SSE heartbeat stream instead of one JSON reply. */
   streamCorpusProgress?: boolean;
 }
 
-type WorkerToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
-
 function workerResultPurpose(endpoint: string, writes: boolean): McpTextPurpose {
+  if (endpoint === '/api/work-view/review-stack') return 'review-stack';
+  if (endpoint === '/api/work-view/review-stack/import') return 'review-import';
   if (endpoint === '/api/memory/save') return 'save';
   if (endpoint === '/api/observations/batch') return 'observations';
   if (endpoint === '/api/tool-uses/batch') return 'tool-uses';
@@ -143,7 +146,7 @@ function workerResultPurpose(endpoint: string, writes: boolean): McpTextPurpose 
   return endpoint === '/api/search' ? 'search' : 'context';
 }
 
-async function callWorker(endpoint: string, opts: WorkerCallOptions = {}): Promise<WorkerToolResult> {
+async function callWorker(endpoint: string, opts: WorkerCallOptions = {}): Promise<McpTextResult> {
   logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint });
 
   try {
@@ -159,7 +162,7 @@ async function callWorker(endpoint: string, opts: WorkerCallOptions = {}): Promi
   }
 }
 
-async function requestWorker(endpoint: string, opts: WorkerCallOptions): Promise<WorkerToolResult> {
+async function requestWorker(endpoint: string, opts: WorkerCallOptions): Promise<McpTextResult> {
   if (opts.streamCorpusProgress && opts.body) {
     const corpusResult = await postCorpusRequestOverSse(endpoint, opts.body);
     logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
@@ -170,7 +173,7 @@ async function requestWorker(endpoint: string, opts: WorkerCallOptions): Promise
   if (opts.body) {
     response = await workerHttpRequest(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(opts.idempotencyKey ? { 'Idempotency-Key': opts.idempotencyKey } : {}) },
       body: JSON.stringify(opts.body)
     });
   } else {
@@ -551,7 +554,7 @@ const tools: McpToolDefinition[] = [
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         }), startWorkerAfterRefusedConnection);
         if (!response.ok) throw new Error(`Worker API error (${response.status})`);
-        const result = await response.json() as WorkerToolResult;
+        const result = await response.json() as McpTextResult;
         return {
           content: result.content.filter(item => item.type === 'text' && typeof item.text === 'string').map(item => ({ type: 'text' as const, text: item.text })),
           ...(result.isError ? { isError: true } : {}),
@@ -570,7 +573,7 @@ const tools: McpToolDefinition[] = [
       properties: {
         text: { type: 'string', description: 'Durable memory text.' },
         title: { type: 'string', description: 'Concise searchable title.' },
-        project: { type: 'string', description: 'Project receiving the note; defaults to the active checkout.' },
+        project: { type: 'string', description: 'Project name (e.g. repository folder name or org/repo slug), not a filesystem path; defaults to the active checkout.' },
         metadata: { type: 'object', additionalProperties: true, description: 'Optional provenance or source metadata.' },
       },
       required: ['text'],
@@ -757,6 +760,29 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
       if (selectRuntime() === 'server') return mcpTextResult('Raw tool I/O is unavailable in server runtime. Use selected server observations; no local worker request was made.', true);
       return await callWorker('/api/tool-uses/batch', { body: withCheckoutProjects(args ?? {}, currentCheckout()) });
     }
+  },
+  {
+    name: 'get_review_stack',
+    description: 'Get the link to Review Stack in My Work and the current card count.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+    handler: () => selectRuntime() === 'server'
+      ? mcpTextResult('Use your hosted Claude-Mem MCP connection to open the account’s Review Stack.', true)
+      : callWorker('/api/work-view/review-stack', { query: { summary: '1' } }),
+  },
+  {
+    name: 'import_review_cards',
+    description: 'Add up to 12 source-backed cards to Review Stack in My Work. Use a stable key per asset or variant so retries preserve existing cards and their reviews.',
+    inputSchema: {
+      type: 'object',
+      required: ['cards'],
+      properties: { cards: { type: 'array', minItems: 1, maxItems: REVIEW_STACK_IMPORT_LIMIT, items: REVIEW_STACK_CARD_TOOL_SCHEMA } },
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    handler: (args: { cards: unknown[] }) => selectRuntime() === 'server'
+      ? mcpTextResult('Use your hosted Claude-Mem MCP connection to add cards to the account’s Review Stack.', true)
+      : callWorker('/api/work-view/review-stack/import', { body: { cards: args.cards }, idempotencyKey: randomUUID() }),
   },
   {
     name: 'work_state_write',

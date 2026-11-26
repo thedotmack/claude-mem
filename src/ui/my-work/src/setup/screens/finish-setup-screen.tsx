@@ -1,37 +1,15 @@
-import { ArrowRightIcon, CheckIcon, CopyIcon, ExternalLinkIcon, InfoIcon } from 'lucide-react'
+import { ArrowRightIcon, CheckIcon, ExternalLinkIcon, InfoIcon } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
-import { SaveButton } from '@/components/save-button'
 import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/components/ui/collapsible'
 import { interpolate, useI18n } from '@/lib/i18n'
 import { CMEM_MCP_URL, type HistoryImportProgress, type SetupHistory, type SetupTool } from '../setup-data'
 import type { HistoryImportStatus, MemoryBranch } from '../setup-flow'
-import { PageHeading, PrivateWorkViewLink, SetupActions, SetupButton, SetupError, ToolMark, type SetupBack } from './shared'
+import { CopyText, PageHeading, PrivateWorkViewLink, SetupActions, SetupButton, SetupError, ToolMark, type SetupBack } from './shared'
 
 function CopyUrl({ toolName }: { toolName: string }) {
   const { t } = useI18n()
-  const [status, setStatus] = useState<'' | 'URL copied.' | 'Select and copy the URL above.'>('')
-  // Resolves false when the copy failed, so the button shows no check; the status line says what to do. The button says
-  // what happens, a copy: Copying…, Copied, Not copied; nothing on this screen says Saving or Saved (nothing is saved).
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(CMEM_MCP_URL)
-      setStatus('URL copied.')
-      return true
-    } catch {
-      setStatus('Select and copy the URL above.')
-      return false
-    }
-  }
-  return (
-    <>
-      <div className="connection-copy">
-        <code>{CMEM_MCP_URL}</code>
-        <SaveButton type="button" className="secondary" onClick={copy} aria-label={interpolate(t('Copy CMEM URL for {toolName}'), { toolName })}
-          icon={<CopyIcon aria-hidden="true" />} savingLabel={t('Copying…')} savedLabel={t('Copied')} notSavedLabel={t('Not copied')}>{t('Copy URL')}</SaveButton>
-      </div>
-      <p className="connection-status" role="status" aria-live="polite">{t(status)}</p>
-    </>
-  )
+  return <CopyText text={CMEM_MCP_URL} label={t('Copy URL')} buttonLabel={interpolate(t('Copy CMEM URL for {toolName}'), { toolName })}
+    copiedStatus={t('URL copied.')} notCopiedStatus={t('Select and copy the URL above.')} className="connection-copy" statusClassName="connection-status" />
 }
 
 /** On The Go: how each picked tool reads the cloud memory (PROTO renderConnectionDetails, CONNECTOR-EVIDENCE.md). */

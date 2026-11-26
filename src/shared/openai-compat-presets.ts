@@ -240,6 +240,27 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'Key (ag_...) from aigrow.gg; model ids such as claude-haiku-5.5 or gemini-3.8-flash, listed with prices by GET aigrow.gg/v1/models, no key needed.',
   },
   {
+    id: 'straitly',
+    label: 'Straitly (straitly.ai)',
+    baseUrl: 'https://api.straitly.ai/v1',
+    // A cheap, fast model for the same reason as NVIDIA's default: extraction
+    // is high volume. Ids carry a vendor prefix where the catalog has one and
+    // are passed verbatim.
+    defaultModel: 'deepseek/deepseek-v4-1-flash-1017',
+    requiresApiKey: true,
+    hint: 'Key (sk-...) from the API keys page at straitly.ai; model ids such as deepseek/deepseek-v4-1-flash-1017 or claude-haiku-5-5, listed at straitly.ai/models and by GET api.straitly.ai/v1/models, no key needed.',
+  },
+  {
+    id: 'teamorouter',
+    label: 'TeamoRouter (teamorouter.com)',
+    baseUrl: 'https://api.teamorouter.com/v1',
+    // A cheap, fast model for the same reason as NVIDIA's default: extraction
+    // is high volume. Ids are unprefixed and passed verbatim.
+    defaultModel: 'glm-5.3-flash',
+    requiresApiKey: true,
+    hint: 'Key from the API Keys page at teamorouter.com/dashboard; model ids such as glm-5.3-flash or deepseek-v4-flash, listed with prices by GET api.teamorouter.com/v1/models/pricing, no key needed.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
@@ -250,10 +271,10 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
   {
     id: 'opencode-go',
     label: 'OpenCode Go (opencode.ai)',
-    baseUrl: 'https://opencode.ai/zen/go/v1',
+    baseUrl: 'https://opencode.ai/inference/go/openai/v1',
     defaultModel: 'kimi-k3',
     requiresApiKey: true,
-    hint: 'OpenCode Go subscription key; model ids from opencode.ai/zen/go/v1/models.',
+    hint: 'OpenCode Go subscription key; model ids from opencode.ai/inference/go/openai/v1/models.',
     // Go answers 400 without it (#4581).
     sessionHeader: 'x-opencode-session',
     // Go ignores `reasoning: { enabled: false }` and keeps thinking; an OpenAI
@@ -263,7 +284,7 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
   {
     id: 'opencode-zen',
     label: 'OpenCode Zen (opencode.ai)',
-    baseUrl: 'https://opencode.ai/zen/v1',
+    baseUrl: 'https://opencode.ai/inference/openai/v1',
     defaultModel: '',
     requiresApiKey: true,
     hint: 'Zen key. Only models Zen serves on /chat/completions work here.',
@@ -323,6 +344,14 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     defaultModel: '',
     requiresApiKey: false,
     hint: 'Local and free. Ships no default model, so nothing is auto-loaded that the user did not ask for (#2393).',
+  },
+  {
+    id: 'rapidmlx',
+    label: 'Rapid-MLX (local, Apple Silicon)',
+    baseUrl: 'http://localhost:8000/v1',
+    defaultModel: '',
+    requiresApiKey: false,
+    hint: 'Local Apple Silicon server. Set the model id from /v1/models.',
   },
   {
     id: 'vllm',

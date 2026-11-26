@@ -7,11 +7,12 @@ import { swapDatabaseFromSnapshot, applyPendingRestore } from '../../src/service
 import { readLastRestoreResult, stagePendingRestore } from '../../src/services/backup/snapshot-files.js';
 import { ChromaSyncState } from '../../src/services/sync/ChromaSyncState.js';
 import { paths } from '../../src/shared/paths.js';
+import { RESTORE_FIXTURE_SCHEMA } from './fixtures/restore-schema.js';
 
 function makeDb(path: string, note: string) {
   const db = new Database(path);
   try {
-    db.exec('CREATE TABLE observations (id INTEGER PRIMARY KEY AUTOINCREMENT, note TEXT)');
+    db.exec(RESTORE_FIXTURE_SCHEMA);
     const insert = db.prepare('INSERT INTO observations (note) VALUES (?)');
     insert.run(note);
     insert.finalize();

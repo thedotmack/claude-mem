@@ -4,7 +4,9 @@
 // disable`, CLAUDE_MEM_TELEMETRY=0 or DO_NOT_TRACK). Only the page id travels: never a request, prompt,
 // observation, file path or search text. The page itself loads no analytics SDK.
 /** The viewer's closed page ids: setup plus App.tsx `View`. A focus area is My Work filtered to it, so it is `work`, never its name. */
-export type UsageView = 'setup' | 'work' | 'rules' | 'suggested' | 'past-focus'
+import type { WORK_VIEW_USAGE_VIEWS } from '../../../../shared/work-view-pages.ts'
+import type { SetupCloudSyncOffer } from '../../../../shared/setup-funnel.ts'
+export type UsageView = typeof WORK_VIEW_USAGE_VIEWS[number]
 export type UsageReport = { event: 'opened'; view: UsageView } | { event: 'switched'; view: UsageView; previousView: UsageView }
 
 const WORK_VIEW_USAGE_URL = '/api/work-view/usage'
@@ -60,4 +62,20 @@ export function sendHostedUsage(report: UsageReport | null): void {
   const bodies = usageRequestBody(report, true)
   if (!bodies) return
   for (const body of bodies) postUsage('/api/viewer-usage', body)
+}
+
+/**
+ * The "See plans and pricing" click on Work View's hosted offer, with the Cloud Sync plan setup kept, if any. It is
+ * counted through the same usage route (`work_view_hosted_plans_viewed`): the offer shows after setup, once the
+ * installer's setup session, and with it the setup event route, is gone.
+ */
+export type HostedPlansReport = { event: 'view_hosted_plans'; cloudSyncOffer?: SetupCloudSyncOffer }
+
+export function hostedPlansReport(offer: SetupCloudSyncOffer | undefined): HostedPlansReport {
+  return offer ? { event: 'view_hosted_plans', cloudSyncOffer: offer } : { event: 'view_hosted_plans' }
+}
+
+/** Fire-and-forget: the link opens whether or not the worker counts the click. */
+export function sendHostedPlansViewed(offer: SetupCloudSyncOffer | undefined): void {
+  postUsage(WORK_VIEW_USAGE_URL, hostedPlansReport(offer))
 }

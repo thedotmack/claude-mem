@@ -15,7 +15,6 @@ const compiled = buildSync({
       import { ScanScreen } from './src/setup/screens/scan-screen';
       import { RevealScreen } from './src/setup/screens/reveal-screen';
       import { ChoiceScreen } from './src/setup/screens/choice-screen';
-      import { SavingsScreen } from './src/setup/screens/savings-screen';
       import { CheckoutScreen } from './src/setup/screens/checkout-screen';
       import { FinishSetupScreen } from './src/setup/screens/finish-setup-screen';
       import { ImportScreen } from './src/setup/screens/import-screen';
@@ -24,7 +23,7 @@ const compiled = buildSync({
       import { ToolMark } from './src/setup/screens/shared';
       import { SAMPLE_REQUESTS } from './src/data';
       import { SAMPLE_FOCUS_AREAS } from './src/data-goals';
-      export { initialFlowState, SETUP_STEPS, SETUP_PROGRESS_STEPS, SETUP_PROGRESS_STATES, PROGRESS_STEP_WORDS, PROGRESS_STEP_OF_SCREEN, SCAN_PHASE_RUNNING } from './src/setup/setup-flow';
+      export { initialFlowState, SETUP_STEPS, ROUTED_SETUP_STEPS, SETUP_PROGRESS_STEPS, SETUP_PROGRESS_STATES, PROGRESS_STEP_WORDS, PROGRESS_STEP_OF_SCREEN, SCAN_PHASE_RUNNING } from './src/setup/setup-flow';
       export { SAMPLE_REQUESTS, SAMPLE_FOCUS_AREAS };
       export { HISTORY_IMPORT_RUN_STATES } from '../../shared/setup-funnel';
       export const renderImport = (progress, stopping = false) => renderToStaticMarkup(<ImportScreen progress={progress} back={{ onBack: noop, waitsFor: 'import' }} stopping={stopping} onStop={noop} />);
@@ -37,7 +36,6 @@ const compiled = buildSync({
       export const renderScan = (phase, { retrying = false, back = null } = {}) => renderToStaticMarkup(<ScanScreen scan={scan(phase)} back={back} onImproveProductChange={noop} onConfirmUpload={noop} preferenceError={null} onRetry={noop} retrying={retrying} retryError={null} onSkip={noop} onContinue={noop} />);
       export const renderCheckout = (checkout, asked, offer = {}) => renderToStaticMarkup(<CheckoutScreen checkout={checkout} asked={asked} installerStopped={false} back={{ onBack: noop, waitsFor: null }} onOpen={noop} onContinue={noop} {...offer} />);
       export const renderExistingCloudPlan = () => renderToStaticMarkup(<ChoiceScreen branch="go" alreadyPro onChoose={noop} />);
-      export const renderHostedOffer = usage => renderToStaticMarkup(<SavingsScreen usage={usage} onViewPlans={noop} onContinue={noop} />);
       export const renderReveal = (reveal) => renderToStaticMarkup(<RevealScreen agents={[]} reveal={reveal} extraction={{ state: 'ok', step: null }} uploadedAgents={['codex']} recentPrompts={[]} onContinue={noop} />);
       const install = { status: 'ready', error: null, selection: { agents: ['cursor'], skills: [], installClaudeCode: false, disableAutoMemory: false, telemetryEnabled: true },
         catalog: { agents: [{ id: 'cursor', label: 'Cursor', hint: '', detected: true }], skills: [], reinstall: false,
@@ -48,7 +46,6 @@ const compiled = buildSync({
         scan: renderToStaticMarkup(<ScanScreen scan={scan(scanPhase)} back={back} onImproveProductChange={noop} onConfirmUpload={noop} preferenceError={null} onRetry={noop} retrying={false} retryError={null} onSkip={noop} onContinue={noop} />),
         reveal: renderToStaticMarkup(<RevealScreen agents={[]} reveal={{ goals: [], work: [], rules: [], focusAreas: SAMPLE_FOCUS_AREAS, requests: SAMPLE_REQUESTS }} extraction={{ state: 'ok', step: null }} uploadedAgents={['codex']} recentPrompts={[]} back={back} onContinue={noop} />),
         choice: renderToStaticMarkup(<ChoiceScreen branch="go" back={back} onChoose={noop} />),
-        savings: renderToStaticMarkup(<SavingsScreen usage={null} back={back} onContinue={noop} onViewPlans={noop} />),
         checkout: renderToStaticMarkup(<CheckoutScreen checkout={null} asked={false} installerStopped={false} back={back} onOpen={noop} onContinue={noop} />),
         'finish-setup': renderToStaticMarkup(<FinishSetupScreen branch="go" tools={[tool]} selected={['chatgpt']} onSelect={noop} history={null} importStatus="none" importResult={null} stoppingImport={false} onImport={noop} onStopImport={noop} back={back} onContinue={noop} />),
         import: renderToStaticMarkup(<ImportScreen progress={{ state: 'running', percent: 48, imported: 61, error: null, sent: 61, total: 128 }} back={back} stopping={false} onStop={noop} />),
@@ -80,7 +77,7 @@ const navyButtons = (html: string) => html.match(/<button[^>]*class="[^"]*\bprim
 
 describe('setup step bar', () => {
   it('lists every step on each screen, with the screen\'s own step current', () => {
-    for (const step of app.SETUP_STEPS) {
+    for (const step of app.ROUTED_SETUP_STEPS) {
       const html = app.renderBar(step, app.initialFlowState(false));
       expect(html).toContain('aria-label="Setup progress"');
       const bar = items(html);
@@ -95,7 +92,7 @@ describe('setup step bar', () => {
     const installing = items(app.renderBar('install', { ...start, installationComplete: false }));
     expect(installing.map(item => item.state)).toEqual(['current', 'upcoming', 'upcoming', 'upcoming', 'upcoming']);
     expect(installing.some(item => item.body.includes('lucide-check'))).toBe(false);
-    const planning = items(app.renderBar('savings', { ...start, scanComplete: true, revealContinued: true, choiceContinued: true }));
+    const planning = items(app.renderBar('checkout', { ...start, scanComplete: true, revealContinued: true, choiceContinued: true }));
     expect(planning.map(item => item.state)).toEqual(['done', 'done', 'current', 'upcoming', 'upcoming']);
     for (const item of planning) {
       expect(item.body.includes('lucide-check')).toBe(item.state === 'done');
@@ -110,7 +107,7 @@ describe('setup bottom row Back', () => {
 
   it('is on every screen but the first, in one style, before the forward buttons', () => {
     const screens = app.renderScreens(back);
-    const [first, ...rest] = app.SETUP_STEPS as string[];
+    const [first, ...rest] = app.ROUTED_SETUP_STEPS as string[];
     expect(backButton(screens[first])).toBeNull();
     for (const step of rest) {
       const html = screens[step];
@@ -188,16 +185,11 @@ describe('setup scan bottom row', () => {
 });
 
 describe('setup checkout', () => {
-  it('uses measured tokens from the finished scan and leaves incomplete or missing usage identifiable', () => {
-    const base = { periodLabel: 'Last 30 days · Codex', tokens: 12345, persona: null, efficiencyPercent: null };
-    const whole = app.renderHostedOffer({ ...base, coverage: 'complete' });
-    expect(whole).toContain('12,345 tokens');
-    expect(whole).toContain('Last 30 days · Codex');
-    expect(whole).toContain('href="https://cmem.ai/work"');
-    expect(whole).toContain('https://cmem.ai/hosted-tokens');
-    expect(whole).toContain('Continue setup');
-    expect(app.renderHostedOffer({ ...base, coverage: 'partial' })).toContain('At least 12,345 recorded tokens');
-    expect(app.renderHostedOffer(null)).toContain('No token count is available');
+  it('has no screen for the old hosted offer: setup never shows it', () => {
+    expect(app.SETUP_STEPS).toContain('savings');
+    expect(app.ROUTED_SETUP_STEPS).not.toContain('savings');
+    expect(Object.keys(app.renderScreens(null))).toEqual(app.ROUTED_SETUP_STEPS);
+    for (const html of Object.values(app.renderScreens(null)) as string[]) expect(html).not.toContain('https://cmem.ai/hosted-tokens');
   });
   const buttons = (html: string) => [...html.matchAll(/<button[^>]*>([\s\S]*?)<\/button>/g)].map(([, body]) => body.replace(/<[^>]+>/g, '').trim()).filter(Boolean);
   it('keeps an existing Cloud or Pro configuration without offering a new subscription', () => {
@@ -250,6 +242,47 @@ describe('setup checkout', () => {
     const fresh = app.renderCheckout(null, false);
     expect(fresh).not.toContain('Waiting for this device to connect…');
     expect(buttons(fresh)).toContain('Open Cloud Sync setup');
+  });
+
+  it('shows the device code cmem.ai asks for beside the wait, with a way to copy it, only while checkout waits', () => {
+    const waiting = app.renderCheckout({ state: 'waiting', error: null, userCode: 'K7QM-4XPT' }, true);
+    expect(waiting).toContain('Waiting for this device to connect…');
+    expect(waiting).toContain('Your device code');
+    // The code itself follows its label.
+    expect(waiting.indexOf('Your device code')).toBeGreaterThan(-1);
+    expect(waiting.indexOf('K7QM-4XPT')).toBeGreaterThan(waiting.indexOf('Your device code'));
+    expect(waiting).toContain('cmem.ai asks for this code after you start your free trial.');
+    // The copy button draws every state's words at once (StatefulButton); at rest it reads Copy code.
+    const copy = waiting.match(/<button[^>]*data-save-state="[^"]*"[^>]*>/g) ?? [];
+    expect(copy).toHaveLength(1);
+    expect(buttons(waiting).some(text => text.startsWith('Copy code'))).toBe(true);
+    // The code's copy button is not the screen's way on.
+    expect(navyButtons(waiting)).not.toContain(copy[0]);
+    expect(buttons(waiting)).toContain('Reopen Cloud Sync setup');
+    // The annual plan has no trial: the line says when cmem.ai asks instead.
+    const annual = app.renderCheckout({ state: 'waiting', error: null, userCode: 'K7QM-4XPT' }, true, { cloudSyncOffer: 'cloud_sync_annual' });
+    expect(annual).toContain('K7QM-4XPT');
+    expect(annual).toContain('cmem.ai asks for this code after checkout.');
+    expect(annual).not.toContain('free trial.');
+    // No code yet (an older installer, or a new pairing on its way), or no longer waiting: no code block at all.
+    for (const checkout of [{ state: 'waiting', error: null }, { state: 'waiting', error: null, userCode: null },
+      { state: 'requested', error: null, userCode: 'K7QM-4XPT' }, { state: 'paid', error: null, userCode: 'K7QM-4XPT' },
+      { state: 'failed', error: 'Checkout did not finish.', userCode: 'K7QM-4XPT' }]) {
+      const html = app.renderCheckout(checkout, true);
+      expect(html).not.toContain('Your device code');
+      expect(html).not.toContain('K7QM-4XPT');
+    }
+    // The installer stopped: nothing waits on that pairing, so its code is not offered.
+    const stopped = app.renderCheckout({ state: 'waiting', error: null, userCode: 'K7QM-4XPT' }, true, { installerStopped: true });
+    expect(stopped).not.toContain('Your device code');
+    expect(stopped).not.toContain('K7QM-4XPT');
+    // A code past its expiry no longer connects this device: the wait shows, the dead code does not.
+    const expired = app.renderCheckout({ state: 'waiting', error: null, userCode: 'K7QM-4XPT', expiresAt: new Date(Date.now() - 1_000).toISOString() }, true);
+    expect(expired).toContain('Waiting for this device to connect…');
+    expect(expired).not.toContain('Your device code');
+    expect(expired).not.toContain('K7QM-4XPT');
+    const live = app.renderCheckout({ state: 'waiting', error: null, userCode: 'K7QM-4XPT', expiresAt: new Date(Date.now() + 600_000).toISOString() }, true);
+    expect(live).toContain('K7QM-4XPT');
   });
 
   it('goes on from a paid checkout without asking for checkout again', () => {
@@ -306,6 +339,7 @@ describe('setup tool marks', () => {
     ['openclaw', 'OpenClaw'], ['windsurf', 'Windsurf'], ['t3code', 'T3 Code'], ['kimi', 'Kimi Code'], ['devin', 'Devin CLI / Desktop'],
     ['cursor', 'Cursor'], ['grok-bot', 'Grok Bot'], ['copilot-cli', 'Copilot CLI'], ['copilot-vscode', 'Copilot in VS Code'], ['omp', 'OMP'], ['hermes', 'Hermes Agent'], ['pi', 'Pi'],
     ['dsh', 'DeepSeek Harness'], ['goose', 'Goose'], ['roo-code', 'Roo Code'], ['warp', 'Warp'], ['zed', 'Zed'],
+    ['zcode', 'ZCode'],
   ];
   const SAME_TOOL = [['codex', 'codex-cli'], ['antigravity', 'antigravity-cli']];
   const mark = (id: string, name: string) => app.renderMark(id, name).replace(/data:[^"]+/, (uri: string) => `image:${uri.length}:${uri.slice(-24)}`);

@@ -190,10 +190,12 @@ test('setup Copy URL words a copy as a copy (Copying…, Copied, Not copied), ne
   const props = { branch: 'go', tools: [{ id: 'tool', name: 'Other', mark: 'terminal', kind: 'mcp', guide: { href: '#', label: 'Guide' } }], selected: ['tool'], history: null, importStatus: 'none', importResult: null };
   const connection = find(ui.render(props), e => e.type?.name === 'Connection');
   const copyUrl = find(ui.render(connection.props, connection.type), e => e.type?.name === 'CopyUrl');
+  // CopyUrl words the shared CopyText (screens/shared.tsx), which draws the button.
+  const copyText = find(ui.render(copyUrl.props, copyUrl.type), e => e.type?.name === 'CopyText');
   // The SaveButton's words for its three states other than rest: the screen gives its own, so its defaults
   // ("Saving…", "Saved", "Not saved") never show or speak there.
   const words = () => {
-    const button = find(ui.render(copyUrl.props, copyUrl.type), e => typeof e.props?.onClick === 'function').props;
+    const button = find(ui.render(copyText.props, copyText.type), e => typeof e.props?.onClick === 'function').props;
     return [button.savingLabel, button.savedLabel, button.notSavedLabel];
   };
   try {
@@ -215,7 +217,11 @@ for (const copied of [true, false]) {
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
     Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { clipboard: { async writeText() { if (!copied) throw Error('denied'); } } } });
     try {
-      const render = () => ui.render(copyUrl.props, copyUrl.type);
+      // CopyUrl words the shared CopyText in the current language, and CopyText draws the button and status line.
+      const render = () => {
+        const copyText = find(ui.render(copyUrl.props, copyUrl.type), e => e.type?.name === 'CopyText');
+        return ui.render(copyText.props, copyText.type);
+      };
       assert.equal(await find(render(), e => typeof e.props?.onClick === 'function').props.onClick(), copied);
       const key = copied ? 'URL copied.' : 'Select and copy the URL above.';
       assert.equal(byClass(render(), 'connection-status').props.children, key);

@@ -5,7 +5,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
 import { saveMemory } from '../../../memory/save-memory.js';
 import { logger } from '../../../../utils/logger.js';
-import { getProjectContext } from '../../../../utils/project-name.js';
+import { getProjectContext, isAbsoluteFilesystemPath, normalizeExplicitProject } from '../../../../utils/project-name.js';
 import { isProjectExcluded } from '../../../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
@@ -42,15 +42,31 @@ export class MemoryRoutes extends BaseRouteHandler {
     }
     const { cwd, ...input } = req.body as z.infer<typeof saveMemorySchema>;
     const checkout = cwd?.trim() ? cwd : undefined;
-    if (checkout) {
-      const excluded = process.env.CLAUDE_MEM_EXCLUDED_PROJECTS
-        ?? SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_EXCLUDED_PROJECTS;
-      if (isProjectExcluded(checkout, excluded)) {
+    // Loaded even without cwd: an excluded checkout named as an absolute
+    // project path must still be refused.
+    const excluded = process.env.CLAUDE_MEM_EXCLUDED_PROJECTS
+      ?? SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_EXCLUDED_PROJECTS;
+    if (checkout && isProjectExcluded(checkout, excluded)) {
+      res.json({ success: false, skipped: true, reason: 'project_excluded' satisfies MemorySaveRefusalReason });
+      return;
+    }
+    const rawProject = input.project?.trim() || (typeof input.metadata?.project === 'string' ? input.metadata.project.trim() : '');
+    if (rawProject && isAbsoluteFilesystemPath(rawProject)) {
+      if (isProjectExcluded(rawProject, excluded)) {
         res.json({ success: false, skipped: true, reason: 'project_excluded' satisfies MemorySaveRefusalReason });
         return;
       }
-      const named = input.project?.trim() || (typeof input.metadata?.project === 'string' && input.metadata.project.trim());
-      if (!named) input.project = getProjectContext(checkout).primary;
+      // An absolute path names a checkout, not a project: reduce it so the save
+      // cannot create an orphan project keyed by the path.
+      const normalized = normalizeExplicitProject(rawProject);
+      input.project = normalized;
+      // Only rewrite a metadata project that is itself a path: a plain string
+      // there is the caller's own label and must survive normalization.
+      if (typeof input.metadata?.project === 'string' && isAbsoluteFilesystemPath(input.metadata.project)) {
+        input.metadata = { ...input.metadata, project: normalized };
+      }
+    } else if (checkout && !rawProject) {
+      input.project = getProjectContext(checkout).primary;
     }
     const result = saveMemory(this.dbManager, this.defaultProject, input);
     logger.debug('HTTP', 'Explicit memory request completed', { id: result.id });

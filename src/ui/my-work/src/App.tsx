@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import { MotionConfig } from 'motion/react'
-import { CreditCardIcon, CrosshairIcon, FlaskConicalIcon, InboxIcon, ListChecksIcon } from 'lucide-react'
+import { CreditCardIcon, CrosshairIcon, FlaskConicalIcon, GalleryVerticalEndIcon, InboxIcon, ListChecksIcon } from 'lucide-react'
 import { interpolate, useI18n } from '@/lib/i18n'
 import { useAppliedTheme } from '@/lib/use-applied-theme'
 import { Button } from '@/components/ui/button'
@@ -11,6 +11,7 @@ import { ActivePill, ClassicViewerLink, DeviceFreshness, LiveIndicator, ReadAfte
 import { AppBrand, ShellGrid, ShellLoading, ShellReadError } from '@/components/app-shell'
 import { HeaderMenu } from '@/components/header-menu'
 import { CloudTrialBanner } from '@/components/cloud-trial-banner'
+import { WorkViewOfferBanner } from '@/components/work-view-offer-banner'
 import { CloudTrialGuide } from '@/components/cloud-trial-guide'
 import { sharedViewerOwner } from '@/live/shared-viewer-session'
 import { useCloudTrial } from '@/live/use-cloud-trial'
@@ -27,12 +28,15 @@ import { ACTIVE_SOURCE, useStore, useWorkModel, useWorkspace, type FocusSelectio
 import { shownFocusAreaId, themeChoiceInUse } from '@/store/slices/view-slice'
 import { focusSharesAreADemonstration, useFocusSharesLoader } from '@/live/focus-shares'
 import { isServedFromCloud } from '@/live/served-from'
+import { useWorkViewOffer } from '@/live/use-work-view-offer'
+import { cloudSyncConfiguredIn } from '@/live/work-view-offers'
 import { MediaSourceContext } from '@/components/observation-media/ObsMedia'
 import { SAMPLE_MEDIA_SOURCE } from '@/components/observation-media/sample-media'
 import { workerMediaSource } from '@/components/observation-media/worker-media-source'
 /** MY FOCUS sits above these: its areas, Other and Suggested (focus-nav.tsx). Past focus is at the bottom of the rail. */
 const PAGES: { id: NavPage; label: string; icon: typeof InboxIcon; section: string }[] = [
   { id: 'work', label: 'My Work', icon: InboxIcon, section: 'Monitor' },
+  { id: 'review-stack', label: 'Review Stack', icon: GalleryVerticalEndIcon, section: 'Monitor' },
   { id: 'rules', label: 'My Rules', icon: ListChecksIcon, section: 'Steer' },
 ]
 const NAV_SECTIONS = [...new Set(PAGES.map((entry) => entry.section))]
@@ -99,6 +103,7 @@ function HeaderBody({ visible, children }: { visible?: boolean; children: (pill:
 
 const SetupPage = lazy(() => import('@/setup/setup-page'))
 const MyRules = lazy(() => import('@/pages/my-rules').then(module => ({ default: module.MyRules })))
+const ReviewStack = lazy(() => import('@/pages/review-stack'))
 const SuggestedAreas = lazy(() => import('@/pages/suggested-areas').then(module => ({ default: module.SuggestedAreas })))
 const PastFocus = lazy(() => import('@/pages/past-focus').then(module => ({ default: module.PastFocus })))
 const RequestDetail = lazy(() => import('@/components/request-detail').then(module => ({ default: module.RequestDetail })))
@@ -181,6 +186,10 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
   const sample = sourceKind === 'sample'
   const owner = sharedViewerOwner()
   const trial = useCloudTrial(sourceKind === 'cloud' && !!owner)
+  // The Cloud Sync and hosted offers are for this computer's own Work View, never the cloud viewer or the sample.
+  // Whether Cloud Sync runs comes from the live feed the page already reads, so the offer asks the worker no more for it.
+  const cloudSyncConfigured = useStore((state) => cloudSyncConfiguredIn(state.work.connection?.sync))
+  const workViewOffer = useWorkViewOffer(sourceKind === 'local' && !isServedFromCloud(window.location.hostname), cloudSyncConfigured)
   const view = useStore((state) => state.view.section)
   const focusChoice = useStore((state) => state.view.focusChoice)
   const openRequest = useStore((state) => state.view.openRequest)
@@ -211,10 +220,11 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
   // address apart from "Focus overview" (`/`, page-02 deep-linking).
   const openPage = (id: NavPage) => id === 'work' ? goToHome('all-requests') : goToPage(id)
   const showAllAreas = () => goToHome('focus-areas')
-  // The bottom bar's three places. Focus covers the focus views and the home page's focus board.
+  // Focus covers the focus views and the home page's focus board.
   const bottomItems = [
     { id: 'work', label: 'My Work', icon: InboxIcon, current: onHome && homeAnchor !== 'focus-areas', open: () => openPage('work'), count: yourMoveCount },
     { id: 'focus', label: 'Focus', icon: CrosshairIcon, current: selected !== null || (onHome && homeAnchor === 'focus-areas'), open: showAllAreas, count: 0 },
+    { id: 'review-stack', label: 'Review', icon: GalleryVerticalEndIcon, current: view === 'review-stack', open: () => openPage('review-stack'), count: 0 },
     { id: 'rules', label: 'My Rules', icon: ListChecksIcon, current: view === 'rules', open: () => openPage('rules'), count: 0 },
   ]
 
@@ -232,6 +242,7 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
                 {t('Skip to content')}
               </a>
               {owner && trial.trialEndsAt && <CloudTrialBanner owner={owner} trialEndsAt={trial.trialEndsAt} />}
+              {workViewOffer.offer && <WorkViewOfferBanner offer={workViewOffer.offer} onDismiss={workViewOffer.dismiss} onViewPlans={workViewOffer.viewPlans} />}
               {/* The demonstration strip and its At home / On the go switch belong to the sample workspace. */}
               {sample && (
                 <StickyBanner hideOnScroll className="min-h-0 flex-wrap justify-start gap-x-3 gap-y-1.5 border-b border-border/70 bg-card/85 px-4 py-1.5 pr-12 text-xs whitespace-nowrap backdrop-blur-md md:px-6 md:pr-10">
@@ -314,7 +325,7 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
 
                 <main ref={mainRef} id="main-content" tabIndex={-1} className="min-w-0 space-y-4 outline-none md:space-y-5">
                   {onHome && trial.onboarding && <CloudTrialGuide key={trial.onboarding.startedAt} startedAt={trial.onboarding.startedAt} />}
-                  <FocusChipRow selected={selected} onSelect={selectFocus} onShowAllAreas={showAllAreas} />
+                  {view !== 'review-stack' && <FocusChipRow selected={selected} onSelect={selectFocus} onShowAllAreas={showAllAreas} />}
                   {/* A save whose follow-up read failed, on whichever page made it (store work.readAfterSaveFailure). */}
                   <ReadAfterSaveNotice />
                   <Suspense fallback={<PageLoading label={heading} />}>
@@ -322,6 +333,9 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
                     {view === 'suggested' && <SuggestedAreas onOpenFocus={goToFocus} />}
                     {view === 'past-focus' && <PastFocus onOpenFocus={goToFocus} />}
                     {view === 'rules' && <MyRules />}
+                    {view === 'review-stack' && (sample
+                      ? <Button asChild variant="outline"><a href={ownDataHref()}>{t('Open my Review Stack')}</a></Button>
+                      : <ReviewStack />)}
                   </Suspense>
                 </main>
               </ShellGrid>
@@ -336,7 +350,7 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
                     showSelectedValue={false}
                     showDividers={false}
                     className="border-x-0 border-t border-b-0 border-border/70 bg-card/95 shadow-none ring-0"
-                    itemClassName="relative h-[60px] min-w-24 flex-1 flex-col justify-center gap-1 rounded-xl px-3 text-xs text-muted-foreground outline-none hover:bg-accent/40 hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+                    itemClassName="relative h-[60px] min-w-0 flex-1 flex-col justify-center gap-1 rounded-xl px-2 text-xs text-muted-foreground outline-none hover:bg-accent/40 hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
                     items={bottomItems.map(({ id, label, icon: Icon, current, open, count }) => ({
                       id,
                       currentPage: current,

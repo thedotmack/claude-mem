@@ -1,8 +1,7 @@
 import { SETUP_TOOLS, type SetupTool } from './agent-connections'
 // What the funnel screens show. Every screen reads it through props; nothing here is made up.
-// The live source fills it from the worker (prompt scan, extraction, usage, setup state); `?source=sample` loads
+// The live source fills it from the worker (prompt scan, extraction, setup state); `?source=sample` loads
 // setup-sample.ts instead, and only then.
-import { toSetupUsage, type SetupScanUsage, type SetupUsage } from './setup-usage'
 import { choiceLocked } from './setup-flow'
 import { revealFromSnapshot, type SnapshotWithSetup, type WorkerExtraction } from './setup-reveal'
 import { noteFor, searchUrl, toMemoryResults, type MemoryResult, type WorkerSearchResult } from './setup-search'
@@ -43,8 +42,12 @@ export interface SetupScanView {
 /** The owner's newest typed prompts, quoted as typed (SetupScanState.recentPrompts). */
 export interface SetupRecentPrompt { agent: string; at: string; text: string }
 /** The worker's subsidized hosted setup extraction. */
-/** On The Go checkout, mirrored from the installer that runs it (`null` until the page asks). */
-export interface SetupCheckoutView { state: SetupCheckoutState; error: string | null }
+/**
+ * On The Go checkout, mirrored from the installer that runs it (`null` until the page asks). `userCode` is the
+ * device code cmem.ai asks for while the checkout waits: a resumed installer runs hidden, so the page shows it.
+ * `expiresAt` (ISO, or null without one) is when that code stops working; the page hides the code from then on.
+ */
+export interface SetupCheckoutView { state: SetupCheckoutState; error: string | null; userCode?: string | null; expiresAt?: string | null }
 /** What the installer did with the choice. A failed handoff can be retried from the setup page. */
 export interface SetupInstallerView { stage: InstallerStage; error: string | null }
 export type SetupExtraction = Pick<WorkerExtraction, 'state' | 'step'>
@@ -53,7 +56,6 @@ export type { RevealGoal, RevealRule, RevealSets, RevealWork } from './setup-rev
 import type { RevealSets } from './setup-reveal'
 import type { InstallerStage, SetupStep } from './setup-flow'
 
-export type { Persona, SetupScanUsage, SetupUsage, UsageCoverage } from './setup-usage'
 
 export interface SetupHistory { projects: number; sessions: number; observations: number }
 /**
@@ -80,10 +82,13 @@ export type SetupFailureKind = 'unreachable' | 'refused' | 'page'
 /** A failed request whose kind is known. `message` keeps the browser's or the worker's own words, for the Details fold. */
 export class SetupRequestError extends Error {
   kind: SetupFailureKind
-  constructor(kind: SetupFailureKind, message: string) {
+  /** The worker's HTTP status when it answered and refused. */
+  status?: number
+  constructor(kind: SetupFailureKind, message: string, status?: number) {
     super(message)
     this.name = 'SetupRequestError'
     this.kind = kind
+    this.status = status
   }
 }
 
@@ -104,7 +109,7 @@ export interface SetupData {
   connectionError: string | null
   /** Whether the connection error got no answer at all or a refusal; null with no error. */
   connectionErrorKind: SetupFailureKind | null
-  choice: (SetupChoice & { usage?: SetupUsage }) | null
+  choice: SetupChoice | null
   /** Undefined until the first state response; null for older/already configured installers. */
   install: SetupInstallState | null | undefined
   scan: SetupScanView
@@ -115,7 +120,6 @@ export interface SetupData {
   checkout: SetupCheckoutView | null
   /** `null` until an installer reports. */
   installer: SetupInstallerView | null
-  usage: SetupUsage | null
   alreadyPro: boolean
   /** Finish Setup tool ids found on this machine; they come pre-ticked. */
   detectedTools: string[]
@@ -169,7 +173,6 @@ export const EMPTY_SETUP_DATA: SetupData = {
   recentPrompts: [],
   checkout: null,
   installer: null,
-  usage: null,
   alreadyPro: false,
   detectedTools: [],
   history: null,
@@ -197,15 +200,15 @@ interface WorkerScanState extends Omit<SetupScanView, 'agents' | 'improveProduct
   improveProduct?: boolean
   /** An older worker sends no canRunSetup / cannotRunReason / uploadBytes. */
   agents: Array<Omit<SetupScanAgent, 'canRunSetup' | 'cannotRunReason' | 'uploadBytes'> & Partial<Pick<SetupScanAgent, 'canRunSetup' | 'cannotRunReason' | 'uploadBytes'>> & { fromMemory?: number; fromTranscripts?: number }>
-  /** The 30-day token usage the same pass sums, once the scan is done. */
-  usage?: SetupScanUsage | null
   recentPrompts?: SetupRecentPrompt[]
 }
 interface WorkerHistoryImport { state: HistoryImportRunState; percent: number; imported: number; error: string | null; sent?: number; total?: number; skipped?: number; unconfirmed?: number }
 interface WorkerSetupState {
   choice?: SetupData['choice']
   install?: SetupInstallState | null
-  status: SetupStatus; alreadyPro: boolean; checkout?: SetupCheckoutView | null
+  status: SetupStatus; alreadyPro: boolean
+  /** `deviceCodeWaiting`: the code itself is read from the origin-guarded route (readDeviceCode). */
+  checkout?: { state: SetupCheckoutState; error: string | null; deviceCodeWaiting?: true } | null
   installer?: SetupInstallerView | null
   history?: SetupHistory | null; historyImport?: WorkerHistoryImport | null
 }
@@ -234,7 +237,7 @@ async function workerJson<T>(url: string, init?: RequestInit): Promise<T> {
   try { answer = await response.json() } catch { /* A body that isn't JSON leaves only the status to report. */ }
   if (!response.ok) {
     const reason = (answer as { error?: unknown } | null)?.error
-    throw new SetupRequestError('refused', typeof reason === 'string' ? reason : `The worker answered ${response.status} for ${url}.`)
+    throw new SetupRequestError('refused', typeof reason === 'string' ? reason : `The worker answered ${response.status} for ${url}.`, response.status)
   }
   return answer as T
 }
@@ -270,14 +273,13 @@ const askImport = async (url: string) => { if (sendImportRequest) await sendImpo
 
 /**
  * The local worker: the prompt scan (started here when it has not run, then followed on the work view's event
- * stream), the 30-day token usage that scan sums, the setup state, and the Reveal's sets from the work view snapshot. Search and import land in funnel
+ * stream), the setup state, and the Reveal's sets from the work view snapshot. Search and import land in funnel
  * Phases 9-10; until then those parts stay empty.
  */
 export const localSetupSource: SetupSource = {
   kind: 'local',
   subscribe(onData) {
     let data = EMPTY_SETUP_DATA
-    let liveUsage: SetupUsage | null = null
     let closed = false
     let scanRevision = 0
     let stateRevision = 0
@@ -288,25 +290,52 @@ export const localSetupSource: SetupSource = {
     const applyScan = (scan: WorkerScanState) => {
       scanRevision++
       appliedImproveProduct = scan.improveProduct ?? true
-      liveUsage = scan.usage ? toSetupUsage(scan.usage) : null
       publish({
         scan: toScanView(scan),
-        usage: data.choice?.usage ?? liveUsage,
         recentPrompts: scan.recentPrompts ?? [],
         // Finish Setup pre-ticks the tools the scan found on this machine.
         detectedTools: scan.agents.filter((agent) => agent.detected).map((agent) => agent.id).filter((id) => SETUP_TOOLS.some((tool) => tool.id === id)),
       })
     }
+    // The device code of the pairing the open checkout waits on. The setup state only says one waits (any localhost
+    // page can read it), so the code comes from the guarded route; only the newest read counts.
+    let deviceCodeRevision = 0
+    const DEVICE_CODE_RETRY_MS = 2_000
+    const readDeviceCode = async (revision = ++deviceCodeRevision) => {
+      try {
+        const { userCode, expiresAt } = await workerJson<{ userCode: string; expiresAt: string | null }>('/api/setup/checkout/device-code')
+        if (closed || revision !== deviceCodeRevision || data.checkout?.state !== 'waiting') return
+        publish({ checkout: { ...data.checkout, userCode, expiresAt } })
+      } catch (error) {
+        if (closed || revision !== deviceCodeRevision || data.checkout?.state !== 'waiting') return
+        // Only a 404 means no code waits any more, so the shown one goes. Any other failure keeps it.
+        if (error instanceof SetupRequestError && error.kind === 'refused' && error.status === 404) {
+          publish({ checkout: { ...data.checkout, userCode: null, expiresAt: null } })
+          return
+        }
+        // Frames only come on state changes, so a page still without a code asks again after each failed read. The
+        // tries have no count cap: an answer (a code or a 404), a newer read or frame, the checkout no longer
+        // waiting, or the page closing ends them (the checks above), and each try is one read of the local worker.
+        if (data.checkout.userCode) return
+        setTimeout(() => { void readDeviceCode(revision) }, DEVICE_CODE_RETRY_MS)
+      }
+    }
     const applyState = (state: WorkerSetupState) => {
       stateRevision++
+      const codeWaiting = state.checkout?.state === 'waiting' && state.checkout.deviceCodeWaiting === true
+      // Until the read answers, a waiting checkout keeps the code it showed, so the page does not flicker on each frame.
+      const shown = codeWaiting && data.checkout?.state === 'waiting' ? data.checkout : null
+      const userCode = shown?.userCode ?? null
+      const expiresAt = shown?.expiresAt ?? null
+      if (codeWaiting) void readDeviceCode()
+      else deviceCodeRevision++
       publish({
       connectionError: null,
       connectionErrorKind: null,
       choice: state.choice ?? null,
-      usage: state.choice?.usage ?? liveUsage,
       install: state.install ?? null,
       alreadyPro: state.alreadyPro,
-      checkout: state.checkout ? { state: state.checkout.state, error: state.checkout.error } : null,
+      checkout: state.checkout ? { state: state.checkout.state, error: state.checkout.error, userCode, expiresAt } : null,
       installer: state.installer ? { stage: state.installer.stage, error: state.installer.error } : null,
       // Nothing to bring along on a new install: the import offer stays hidden.
       history: state.history && state.history.observations > 0 ? state.history : null,

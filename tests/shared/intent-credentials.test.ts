@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -77,15 +77,47 @@ describe('persistent hosted intent installation credentials', () => {
     });
   }
 
-  it('shows and retains the server error message without reissuing on retry', async () => {
-    const message = 'Hosted setup is temporarily unavailable. Please try again later.';
-    const fetcher = mock(async () => Response.json({ message, internal: 'not persisted' }, { status: 503 }));
-    await expect(getOrCreateIntentCredentials({ origin, configPath, fetch: fetcher as typeof fetch })).rejects.toThrow(message);
-    await expect(getOrCreateIntentCredentials({ origin, configPath, fetch: fetcher as typeof fetch })).rejects.toThrow(message);
-    expect(fetcher).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(readFileSync(configPath, 'utf8'))).toEqual({ state: 'pending', message });
-    if (process.platform !== 'win32') expect(statSync(configPath).mode & 0o777).toBe(0o600);
+  for (const [error, status] of [['rate_limited', 429], ['anonymous_daily_budget_reached', 503], ['intent_install_limit', 429]] as const) {
+    it(`clears the reservation after the service refuses with ${error}, so the next run asks again`, async () => {
+      const message = 'Hosted setup is temporarily unavailable. Please try again later.';
+      const refusal = mock(async () => Response.json({ error, message, internal: 'not persisted' }, { status }));
+      await expect(getOrCreateIntentCredentials({ origin, configPath, fetch: refusal as typeof fetch })).rejects.toThrow(message);
+      expect(refusal).toHaveBeenCalledTimes(1);
+      expect(existsSync(configPath)).toBe(false);
+      expect(readIntentCredentials(configPath)).toBeNull();
+
+      const later = mock(async () => Response.json(credentials));
+      expect(await getOrCreateIntentCredentials({ origin, configPath, fetch: later as typeof fetch })).toEqual(credentials);
+      expect(later).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(readFileSync(configPath, 'utf8'))).toEqual(credentials);
+    });
+  }
+
+  it('uses a generic message for a refusal without one and still clears the reservation', async () => {
+    const refusal = mock(async () => Response.json({ error: 'rate_limited' }, { status: 429 }));
+    await expect(getOrCreateIntentCredentials({ origin, configPath, fetch: refusal as typeof fetch }))
+      .rejects.toThrow('Hosted intent credential request failed (HTTP 429).');
+    expect(existsSync(configPath)).toBe(false);
   });
+
+  for (const [name, response] of [
+    ['a gateway timeout page', () => new Response('An error occurred with your deployment', { status: 504 })],
+    ['a JSON reply without the service error code', () => Response.json({ message: 'Upstream unavailable.' }, { status: 502 })],
+    // The handler's catch-all can follow a committed issuance.
+    ['the service catch-all intent_install_unavailable', () => Response.json({ error: 'intent_install_unavailable', message: 'Could not create an install credential. Try again later.' }, { status: 503 })],
+    ['an error code not known to mean nothing was issued', () => Response.json({ error: 'internal_error' }, { status: 500 })],
+  ] as const) {
+    it(`keeps the reservation after ${name}, because the service may have issued`, async () => {
+      const fetcher = mock(async () => response());
+      await expect(getOrCreateIntentCredentials({ origin, configPath, fetch: fetcher as typeof fetch })).rejects.toThrow();
+      const saved = JSON.parse(readFileSync(configPath, 'utf8'));
+      expect(saved.state).toBe('pending');
+      expect(JSON.stringify(saved)).not.toContain('deployment');
+      if (process.platform !== 'win32') expect(statSync(configPath).mode & 0o777).toBe(0o600);
+      await expect(getOrCreateIntentCredentials({ origin, configPath, fetch: fetcher as typeof fetch })).rejects.toThrow();
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+  }
 
   it('retains a durable reservation after uncertain transport failure', async () => {
     const fetcher = mock(async () => { throw new Error('connection lost after request'); });

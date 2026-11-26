@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { execFileSync } from 'child_process';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { homedir, tmpdir } from 'os';
+import { basename, join } from 'path';
 import registerClaudeMemHook from '../omp/hooks/claude-mem.ts';
+import { getDefaultWorkerPort } from '../src/shared/install-port.js';
 
 type HookHandler = (...args: unknown[]) => unknown;
 
@@ -189,6 +190,25 @@ describe('OMP Claude Mem hook', () => {
     expect(requests[0]?.url.host).toBe('127.0.0.1:45678');
   });
 
+  it('reads settings.json from a ~ data folder, as the worker does', async () => {
+    const homeDataDir = mkdtempSync(join(homedir(), '.omp-hook-tilde-'));
+    try {
+      writeFileSync(join(homeDataDir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_WORKER_PORT: 45679 }));
+      process.env.CLAUDE_MEM_DATA_DIR = `~/${basename(homeDataDir)}`;
+      const requests: CapturedRequest[] = [];
+      installFetchCapture(requests);
+      const handlers = registerHook();
+
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: 'p' }, { cwd: '/tmp/omp-port' });
+      await drainMicrotasks();
+
+      expect(requests[0]?.url.host).toBe('127.0.0.1:45679');
+    } finally {
+      rmSync(homeDataDir, { recursive: true, force: true });
+    }
+  });
+
   it('reads settings nested under env, and lets the environment win', async () => {
     writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
       env: { CLAUDE_MEM_WORKER_PORT: '45679' },
@@ -208,6 +228,28 @@ describe('OMP Claude Mem hook', () => {
     await handlers.before_agent_start?.({ prompt: 'p' }, { cwd: '/tmp/omp-port' });
     await drainMicrotasks();
     expect(requests.at(-1)?.url.host).toBe('127.0.0.1:45680');
+  });
+
+  it('defaults to the port the worker picks when there is no user id, as on Windows (#6477)', async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    const getuid = Object.getOwnPropertyDescriptor(process, 'getuid');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    Object.defineProperty(process, 'getuid', { value: undefined, configurable: true, writable: true });
+    try {
+      const requests: CapturedRequest[] = [];
+      installFetchCapture(requests);
+      const handlers = registerHook();
+
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: 'p' }, { cwd: '/tmp/omp-port' });
+      await drainMicrotasks();
+
+      const port = getDefaultWorkerPort(dataDir, { platform: 'win32', uid: null });
+      expect(requests[0]?.url.host).toBe(`127.0.0.1:${port}`);
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+      if (getuid) Object.defineProperty(process, 'getuid', getuid);
+    }
   });
 
   it('does not finalize a session whose init failed', async () => {

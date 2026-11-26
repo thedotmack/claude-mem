@@ -8,9 +8,15 @@ import {
 failOnCiWithoutChrome('Cloud trial onboarding browser tests need Chromium.');
 const browserTest = chromeExecutablePath ? it : it.skip;
 
-async function waitFor(page: DevToolsPage, expression: string) {
+async function waitFor(page: DevToolsPage, expression: string, { afterNavigation = false } = {}) {
   const deadline = Date.now() + 8000;
-  while (!(await page.evaluate(expression))) {
+  while (true) {
+    try {
+      if (await page.evaluate(expression)) return;
+    } catch (error) {
+      // Chrome may discard this evaluation as the expected destination replaces the old document.
+      if (!afterNavigation || !(error instanceof Error) || error.message !== 'Inspected target navigated or closed') throw error;
+    }
     if (Date.now() > deadline) throw new Error('Timed out: ' + expression);
     await Bun.sleep(25);
   }
@@ -304,14 +310,16 @@ browserTest('a restored shared Work View covers cards and portal drawers until i
     while (!resume && Date.now() < deadline) await Bun.sleep(10);
     expect(resume).toBeFunction();
     (resume as unknown as () => void)();
-    await waitFor(page, "document.querySelector('meta[name=cmem-work-owner]')?.content === 'owner-b' && !document.querySelector('#private-portal') && location.hash === ''");
+    await waitFor(page, "document.querySelector('meta[name=cmem-work-owner]')?.content === 'owner-b' && !document.querySelector('#private-portal') && location.hash === ''",
+      { afterNavigation: true });
     const streamDeadline = Date.now() + 3000;
     while (!eventStreams.has('owner-b') && Date.now() < streamDeadline) await Bun.sleep(10);
     expect(eventStreams.has('owner-b')).toBe(true);
     owner = null;
     // Sign out in a different tab while this tab keeps its original EventSource open.
     eventStreams.get('owner-b')!.enqueue(new TextEncoder().encode('event: work-view-changed\ndata: {}\n\n'));
-    await waitFor(page, "document.querySelector('h1')?.textContent === 'Sign in' && !document.querySelector('#root')");
+    await waitFor(page, "document.querySelector('h1')?.textContent === 'Sign in' && !document.querySelector('#root')",
+      { afterNavigation: true });
     expect(signedOutOverviewReads).toBeGreaterThan(0);
   } finally {
     if (resume) (resume as () => void)();

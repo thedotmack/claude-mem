@@ -1,0 +1,92 @@
+---
+title: ZCode Integration
+description: Memory for ZCode Desktop — hook-based observation recording, session-start context, session summaries and MCP memory search
+icon: terminal
+---
+
+## Overview
+
+The ZCode integration gives your ZCode agent the same memory as Claude Code. The next ZCode session starts where the last one left off. It does four things:
+
+1. **Observation recording**: ZCode's lifecycle hooks send each tool call to the Claude-Mem worker, and the observer writes observations about it
+2. **Context**: the `SessionStart` hook returns your memory as `hookSpecificOutput.additionalContext`, the same envelope Claude Code uses
+3. **Session summaries**: the `Stop` hook writes a summary from the last assistant message ZCode sends
+4. **MCP search tools**: the Claude-Mem MCP server gives ZCode the `mcp__claude-mem__*` memory search tools
+
+<Info>
+ZCode reads user hooks from `hooks.events` and MCP servers from `mcp.servers` in `~/.zcode/cli/config.json`. The installer adds Claude-Mem's hooks and the `claude-mem` MCP server to that file. It keeps your other ZCode settings, hooks and MCP servers. See the ZCode docs for [hooks](https://zcode.z.ai/en/docs/hooks) and [MCP services](https://zcode.z.ai/en/docs/mcp-services).
+</Info>
+
+## Requirements
+
+- ZCode Desktop 4.0.0 (the version tested). The integration was verified on macOS (Apple Silicon). Windows and Linux are untested.
+- Any ZCode model plan. The hooks do not depend on the model ZCode uses.
+- Claude-Mem runs on your computer. You do not need CMEM Pro.
+
+## Installation
+
+```bash
+npx claude-mem install --ide zcode
+```
+
+Or manage the integration directly:
+
+```bash
+npx claude-mem zcode install
+npx claude-mem zcode status
+npx claude-mem zcode uninstall
+```
+
+The installer reads `~/.zcode/cli/config.json`, saves a backup next to it (`config.json.bak-YYYYMMDD`, once per day, readable only by you), and writes the new file in one step. If the file is not valid JSON, or `hooks`, `hooks.events`, `mcp` or `mcp.servers` is not an object, the installer stops and changes nothing.
+
+You do not need to restart ZCode. Start a new ZCode session, or run `/reload`, so ZCode reads the new config.
+
+## Verify
+
+1. Run `npx claude-mem zcode status`. It prints `ZCode hooks: installed`. It prints `disabled` when `hooks.enabled` is not `true`, and `incomplete` when a hook or the `claude-mem` MCP server is missing. See [Troubleshooting](#troubleshooting).
+2. Start a new ZCode session in a project and ask the agent to read a file.
+3. Watch the observation arrive in the viewer.
+4. In a new session, ask ZCode to search your memory. It uses the `mcp__claude-mem__*` tools.
+
+## What is captured and sent
+
+- **Captured**: your prompts, each tool call (name, input and result, including failed calls), and the last assistant message of each turn.
+- **Where it goes**: the hooks send this to the Claude-Mem worker on your computer. The worker sends it to the observer you chose with `CLAUDE_MEM_PROVIDER` (by default Claude, through your Claude account) to write observations and summaries. Memory is stored in `~/.claude-mem/`.
+- **Opt out**: wrap text in [`<private>` tags](/usage/private-tags) to keep it out of memory, list tools in `CLAUDE_MEM_SKIP_TOOLS` to skip them, or run `npx claude-mem zcode uninstall`.
+
+## Event mapping
+
+| ZCode hook event | Claude-Mem event | Notes |
+| --- | --- | --- |
+| `SessionStart` | worker start, then `context` | memory is returned as `hookSpecificOutput.additionalContext` |
+| `UserPromptSubmit` | `session-init` | |
+| `PostToolUse` | `observation` | ZCode sends Claude Code tool names (`Read`, `Edit`, `Bash`, ...) |
+| `PostToolUseFailure` | `observation` | recorded as a failed tool call with ZCode's `error` text |
+| `Stop` | `summarize` | uses `last_assistant_message` |
+
+Each hook is a `process` hook (the Bun runtime plus the worker script, with no shell), uses the matcher `*`, and has its own `timeoutMs`, so a low global `hooks.timeoutMs` does not cut the worker start. The installer sets `hooks.enabled` to `true` only when it is missing.
+
+## Limits
+
+- **No `PreToolUse`**: its output can block or rewrite tool calls, so Claude-Mem does not register it.
+- **No `PermissionRequest`**: Claude-Mem has no handler for it.
+- **No `SessionEnd`**: ZCode has no such event. The `Stop` hook writes the summary.
+- **No transcript**: ZCode deletes the hook's `transcript_path` file after the hook runs, so Claude-Mem does not read it.
+- **One switch for all hooks**: ZCode runs hooks only when `hooks.enabled` is `true`, and a missing key means off. The installer sets it to `true`, which also turns on any hooks of your own in that file, and it prints how many. If you have other hooks, uninstall leaves `hooks.enabled: true` in place.
+- **User scope only**: workspace configs (`<project>/.zcode/config.json`, `zcode.json`) and ZCode plugins are not changed.
+
+## Troubleshooting
+
+- **Hooks do not run, or status says disabled**: check that `hooks.enabled` is `true` in `~/.zcode/cli/config.json`. A missing key means off. The installer keeps your `false` and prints a warning. Set it to `true`, then start a new session or run `/reload`.
+- **Status says incomplete**: a hook or the `claude-mem` MCP server was removed from `~/.zcode/cli/config.json`. The status line names what is missing. Run `npx claude-mem zcode install` again.
+- **Bun not found**: the hooks run Bun by its absolute path. If you moved or reinstalled Bun, run `npx claude-mem zcode install` again.
+- **Changes do not load**: start a new ZCode session or run `/reload`.
+- **More detail**: ZCode writes its logs to `~/.zcode/v2/logs/`. Claude-Mem writes its logs to `~/.claude-mem/logs/`.
+
+## Uninstall
+
+```bash
+npx claude-mem zcode uninstall
+```
+
+This removes only Claude-Mem's hooks and the `claude-mem` MCP server from `~/.zcode/cli/config.json`. Your other settings, hooks and MCP servers stay. `npx claude-mem uninstall` does the same as part of a full uninstall. Your memory in `~/.claude-mem/` is not deleted.

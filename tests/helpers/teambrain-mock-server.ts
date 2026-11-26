@@ -21,6 +21,8 @@ export interface RecordedRequest {
   path: string;
   query: URLSearchParams;
   authorization: string | null;
+  /** The local API token header (#5141) the request carried. */
+  localApiToken: string | null;
   userId: string | null;
   body: unknown;
 }
@@ -44,6 +46,12 @@ export interface TeamBrainMockState {
   status: MockReply | null;
   /** Replaces the worker's /api/health answer. */
   health: MockReply | null;
+  /** Replaces the worker's POST /api/admin/restart answer; the worker then does not restart. */
+  restart: MockReply | null;
+  /** The worker's GET /api/setup/state answer; null answers 404 (no such route). */
+  setupState: MockReply | null;
+  /** When set, worker routes other than GET /api/health need this local API token (#5141), as the real guard does. */
+  localApiToken: string | null;
   teams: Array<Record<string, unknown>>;
   brief: MockReply;
   search: MockReply;
@@ -112,6 +120,7 @@ export async function startTeamBrainMock(overrides: Partial<TeamBrainMockState> 
         path: url.pathname,
         query: url.searchParams,
         authorization: request.headers.get('authorization'),
+        localApiToken: request.headers.get('x-claude-mem-token'),
         userId: request.headers.get('x-user-id'),
         body,
       };
@@ -152,6 +161,12 @@ export async function startTeamBrainMock(overrides: Partial<TeamBrainMockState> 
       }
 
       if (route === 'GET /api/health') return state.health ? reply(state.health, {}) : json({ status: 'ok', pid: state.workerPid });
+      if (state.localApiToken && !url.pathname.startsWith('/api/teambrain/') && !url.pathname.startsWith('/api/pro/')
+        && !url.pathname.startsWith('/api/installer/') && recorded.localApiToken !== state.localApiToken) {
+        return json({ error: 'Unauthorized', message: 'Missing or invalid local API token' }, 401);
+      }
+      if (route === 'GET /api/setup/state' && state.setupState) return reply(state.setupState, {});
+      if (route === 'POST /api/admin/restart' && state.restart) return reply(state.restart, {});
       if (route === 'POST /api/admin/restart') {
         state.workerPid += 1;
         state.syncConfigured = state.syncConfiguredAfterRestart;
@@ -173,6 +188,9 @@ export async function startTeamBrainMock(overrides: Partial<TeamBrainMockState> 
     poll: null,
     status: null,
     health: null,
+    restart: null,
+    setupState: null,
+    localApiToken: null,
     teams: [{ ...MOCK_TEAM, role: 'member', broadcasting: false, projects: null, seats_used: 2, seat_limit: 5 }],
     brief: {},
     search: {},

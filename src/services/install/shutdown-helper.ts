@@ -3,6 +3,10 @@ import { isConnectionRefusedError } from '../../shared/connection-errors.js';
 import { readLocalApiToken } from '../../shared/hook-settings.js';
 import { localApiTokenHeaders } from '../../shared/local-api-token.js';
 import { readOwnedWorkerPidInfo, verifyWorkerPidFileOwnership, type PidInfo } from '../../supervisor/process-registry.js';
+import { TERMINATE_THEN_FORCE_KILL_WAIT_MS } from '../../supervisor/shutdown.js';
+import { getPlatformTimeout } from '../infrastructure/ProcessManager.js';
+import { TELEMETRY_SHUTDOWN_FLUSH_TIMEOUT_MS } from '../telemetry/common.js';
+import { WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS } from '../worker-shutdown.js';
 
 /**
  * Why a stop did not complete, so callers can name the fix:
@@ -49,6 +53,31 @@ const HEALTH_PID_TIMEOUT_MS = 2000;
 /** Generous per attempt, so a slow refusal (WSL2 mirrored networking) still reads as a refusal (#4107). */
 const PORT_PROBE_TIMEOUT_MS = 3000;
 const POLL_INTERVAL_MS = 500;
+
+/**
+ * How long a caller that cannot go on while the old worker lives (the installer, before it overwrites that worker's
+ * files) waits for it to exit after it accepted the stop: as long as the worker's own shutdown may take. A shorter wait
+ * reports a worker that is still shutting down, inside its own bounds, as stuck. The flat 10 s this replaces was
+ * shorter than the worker's 10 s drain deadline plus the steps after it, so `npx claude-mem update` aborted on every
+ * worker that reached that deadline (#6450).
+ *
+ * It is the sum of the bounds of the steps a stop runs once it has answered the request (worker-service.ts shutdown,
+ * worker-shutdown.ts runShutdownSequence), in the order they run:
+ *  1. the telemetry flush that ends the pre-shutdown bookkeeping: TELEMETRY_SHUTDOWN_FLUSH_TIMEOUT_MS (3 s);
+ *  2. the graceful shutdown: getPlatformTimeout(WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS) (10 s, 20 s on Windows);
+ *  3. the force stop of the commands still running, and
+ *  4. the supervisor's cascade, run when the graceful shutdown did not finish: TERMINATE_THEN_FORCE_KILL_WAIT_MS each
+ *     (5 s after SIGTERM, then 1 s after SIGKILL);
+ * plus one POLL_INTERVAL_MS, so that one check of the worker runs after the last step's bound has passed.
+ * 3 s + 10 s + 6 s + 6 s + 0.5 s = 25.5 s (35.5 s on Windows).
+ *
+ * It is not a bound on the worker: the Codex app-server close in the pre-shutdown bookkeeping has no deadline of its
+ * own. A worker still alive after this wait is reported as `worker-still-running`, never waited for again.
+ */
+export const WORKER_EXIT_WAIT_MS = TELEMETRY_SHUTDOWN_FLUSH_TIMEOUT_MS
+  + getPlatformTimeout(WORKER_GRACEFUL_SHUTDOWN_DEADLINE_BASE_MS)
+  + 2 * TERMINATE_THEN_FORCE_KILL_WAIT_MS
+  + POLL_INTERVAL_MS;
 
 export function probeLoopbackPort(port: number, timeoutMs: number): Promise<PortProbeResult> {
   return new Promise((resolve) => {

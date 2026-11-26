@@ -6,7 +6,6 @@ import { isCmemGatewayUrl } from './cmem-gateway.js';
 import { resolveDataDir } from './paths.js';
 import { randomUUID } from 'node:crypto';
 import type { SetupInstallState } from './setup-install.js';
-import type { SetupUsage } from './setup-usage.js';
 import {
   isSetupId, type SetupBranch, type SetupCheckoutState, type SetupCloudSyncOffer, type SetupInstallerStage, type SetupMemoryBilling,
   type SetupStatus, type SetupTelemetryContext,
@@ -22,11 +21,23 @@ export interface SetupChoice {
   /** The owner chose the standalone offer that includes sharing the Work View board. */
   shareWorkView?: true;
   chosenAt: string;
-  /** Original scan summary for the post-checkout usage screen, retained across worker restarts. */
-  usage?: SetupUsage;
 }
 export interface SetupInstallerReport { stage: SetupInstallerStage; error: string | null; updatedAt: string }
-export interface SetupCheckout { state: SetupCheckoutState; requests: number; error: string | null; updatedAt: string }
+/**
+ * The pairing's device code while its checkout waits: cmem.ai asks for it once the person has started the trial or
+ * checkout. `expiresAt` (ISO) is when the installer stops waiting on that pairing, or null when cmem.ai gave no expiry.
+ */
+export interface SetupDeviceCode { userCode: string; expiresAt: string | null }
+export interface SetupCheckout {
+  state: SetupCheckoutState; requests: number; error: string | null; updatedAt: string;
+  /** Only while `waiting`, from the installer that holds the pairing. Never in GET /api/setup/state (SetupCheckoutServed). */
+  deviceCode?: SetupDeviceCode;
+}
+/**
+ * The checkout as GET /api/setup/state and its `setup-state` event frame serve it. Any localhost page can read those,
+ * so the code itself stays behind the origin-guarded GET /api/setup/checkout/device-code; this only says one waits.
+ */
+export type SetupCheckoutServed = Omit<SetupCheckout, 'deviceCode'> & { deviceCodeWaiting?: true };
 
 export interface SetupStateFile {
   status: SetupStatus;
@@ -41,11 +52,23 @@ export interface SetupStateFile {
 }
 
 /** What GET /api/setup/state answers: the file plus what the page needs to pre-select. */
-export interface SetupStateView extends SetupStateFile {
+export interface SetupStateView extends Omit<SetupStateFile, 'checkout'> {
+  checkout: SetupCheckoutServed | null;
   /** This machine already has a CMEM Pro configuration: On The Go is pre-selected and checkout is skipped. */
   alreadyPro: boolean;
+  /**
+   * The observer already writes memories on cmem.ai (hasHostedObserver), the hosted half of `alreadyPro`. Work View's
+   * hosted offer leaves these people out. Older workers do not send it.
+   */
+  hostedObserver?: boolean;
   /** This machine's own observation history (Finish Setup's import offer); null when the worker cannot read it. */
   history?: { projects: number; sessions: number; observations: number } | null;
+  /**
+   * The sync hub has acknowledged at least one observation or summary written on this computer, after the launch
+   * baseline (ownMemorySynced). Read from the database, so it survives worker restarts; Work View's hosted offer waits
+   * on it. Older workers do not send it.
+   */
+  memorySynced?: boolean;
   /** The running or last history import (worker memory only). */
   historyImport?: unknown;
   /** Long work this worker is doing now that a restart would kill: the extraction run (the automatic refresh) and the
@@ -145,11 +168,16 @@ function writeJsonAtomically(path: string, value: unknown): void {
 
 const filled = (value: unknown): boolean => typeof value === 'string' && value.trim().length > 0;
 
-/** CMEM Pro observer on the cmem.ai gateway, or a configured cloud sync connection. */
-export function hasProConfiguration(settings: Record<string, unknown>): boolean {
-  const proObserver = settings.CLAUDE_MEM_PROVIDER === 'openrouter'
+/** The observer writes memories on the cmem.ai gateway (CMEM Pro's hosted memory writing), not on the person's own provider. */
+export function hasHostedObserver(settings: Record<string, unknown>): boolean {
+  return settings.CLAUDE_MEM_PROVIDER === 'openrouter'
     && filled(settings.CLAUDE_MEM_OPENROUTER_API_KEY)
     && isCmemGatewayUrl(String(settings.CLAUDE_MEM_OPENROUTER_BASE_URL ?? ''));
+}
+
+/** CMEM Pro observer on the cmem.ai gateway, or a configured cloud sync connection. */
+export function hasProConfiguration(settings: Record<string, unknown>): boolean {
+  const proObserver = hasHostedObserver(settings);
   const cloudSync = ['CLAUDE_MEM_CLOUD_SYNC_TOKEN', 'CLAUDE_MEM_CLOUD_SYNC_USER_ID', 'CLAUDE_MEM_CLOUD_SYNC_HUB_URL']
     .every((key) => filled(settings[key]));
   return proObserver || cloudSync;
