@@ -33,6 +33,7 @@ export const OPENAI_COMPAT_PRESET_OPTIONS: readonly OpenAICompatPresetOption[] =
   { id: 'atmorouter', label: 'AtmoRouter (atmorouter.dev)', baseUrl: 'https://atmorouter.dev/v1', defaultModel: 'zai/glm-5.3-flash' },
   { id: 'worldrouter', label: 'WorldRouter (worldrouter.ai)', baseUrl: 'https://inference-api.worldrouter.ai/v1', defaultModel: 'deepseek-v4-flash' },
   { id: 'aigrow', label: 'AIGROW (aigrow.gg)', baseUrl: 'https://aigrow.gg/v1', defaultModel: 'claude-haiku-5.5' },
+  { id: 'straitly', label: 'Straitly (straitly.ai)', baseUrl: 'https://api.straitly.ai/v1', defaultModel: 'deepseek/deepseek-v4-1-flash-1017' },
   { id: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', defaultModel: 'deepseek-chat' },
   { id: 'opencode-go', label: 'OpenCode Go (opencode.ai)', baseUrl: 'https://opencode.ai/zen/go/v1', defaultModel: 'kimi-k3' },
   { id: 'opencode-zen', label: 'OpenCode Zen (opencode.ai)', baseUrl: 'https://opencode.ai/zen/v1', defaultModel: '' },
