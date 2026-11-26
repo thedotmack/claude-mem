@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "claude-mem",
-      "version": "17.0.1",
+      "version": "17.0.2",
       "source": "./plugin",
       "description": "Persistent memory for Claude Code: the next session starts where the last one left off."
     },
