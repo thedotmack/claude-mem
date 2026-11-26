@@ -32,7 +32,6 @@ public enum CommandLocator {
     public static func commonFolders(home: String) -> [String] {
         [
             "\(home)/.bun/bin",
-            "\(home)/.local/bin",
             "\(home)/.npm-global/bin",
             "\(home)/.volta/bin",
             "\(home)/Library/pnpm",
@@ -113,7 +112,8 @@ public enum CommandLocator {
         searchPath: String,
         home: String = FileManager.default.homeDirectoryForCurrentUser.path,
         isExecutable: (String) -> Bool,
-        nodeVersion: (String) -> String? = { _ in nil }
+        nodeVersion: (String) -> String? = { _ in nil },
+        isTrusted: (String) -> Bool = { _ in true }
     ) -> CommandLaunch? {
         if let override, !override.trimmingCharacters(in: .whitespaces).isEmpty {
             let path = (override as NSString).expandingTildeInPath
@@ -126,17 +126,33 @@ public enum CommandLocator {
             guard let version = nodeVersion(folder) else { return false }
             return !isSupportedNode(version.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        let folders = searchPath.split(separator: ":").map(String.init)
+        // ~/.local/bin holds only Claude-Mem's hook launcher, and anything can
+        // drop a file there, so nothing found there is ever run.
+        let launcherFolder = "\(home)/.local/bin"
+        let folders = searchPath.split(separator: ":").map(String.init).filter { $0 != launcherFolder }
         for folder in folders {
             let npx = "\(folder)/npx"
-            if isExecutable(npx), !tooOld(folder) { return CommandLaunch(executable: npx, prefix: ["--yes", package], path: searchPath) }
+            if isExecutable(npx), isTrusted(npx), !tooOld(folder) { return CommandLaunch(executable: npx, prefix: ["--yes", package], path: searchPath) }
         }
-        let launcherFolder = "\(home)/.local/bin"
-        for folder in folders where folder != launcherFolder {
+        for folder in folders {
             let candidate = "\(folder)/claude-mem"
-            if isExecutable(candidate) { return CommandLaunch(executable: candidate, prefix: [], path: searchPath) }
+            if isExecutable(candidate), isTrusted(candidate) { return CommandLaunch(executable: candidate, prefix: [], path: searchPath) }
         }
         return nil
+    }
+
+    /// False when the file, the file a link points to, or the folder either
+    /// sits in can be changed by other users (group or world writable). Found
+    /// commands like that are passed over, because the app holds Full Disk
+    /// Access and its child gets it too.
+    public static func notWritableByOthers(_ path: String, fileManager: FileManager = .default) -> Bool {
+        let resolved = (path as NSString).resolvingSymlinksInPath
+        for candidate in Set([path, resolved, (path as NSString).deletingLastPathComponent, (resolved as NSString).deletingLastPathComponent]) {
+            guard let attributes = try? fileManager.attributesOfItem(atPath: candidate),
+                  let mode = attributes[.posixPermissions] as? NSNumber else { return false }
+            if mode.intValue & 0o022 != 0 { return false }
+        }
+        return true
     }
 
     /// Asks `<folder>/node --version`, with the child's PATH so asdf and mise

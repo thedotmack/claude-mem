@@ -96,6 +96,23 @@ Click **Listen** in the toolbar (it starts by itself once you tick a chat).
 Closing the window keeps it listening from the menu bar; **Quit** there stops
 it. **Open at login** is on the overview.
 
+## What Full Disk Access means here
+
+The app passes its Full Disk Access to the `claude-mem` command it runs, and
+that command comes from Node and npm in your own user folders. Other programs
+running as you can change those folders, so install the app only on a Mac
+where you trust what runs under your account. The app does what it can to
+narrow this:
+
+- It never runs your shell profile, and never runs anything from
+  `~/.local/bin`.
+- It skips a command, or a folder holding one, that other users can change.
+- A path you pasted is saved, but only run after you click **Use** on it again
+  each time the app opens.
+
+A version of the app with its own signed copy of Node and Claude-Mem inside
+it would close this fully. That isn't built yet.
+
 ## How messages become memory
 
 The same as the [group chat observer](imessage-group-observer.md#how-messages-become-memory):

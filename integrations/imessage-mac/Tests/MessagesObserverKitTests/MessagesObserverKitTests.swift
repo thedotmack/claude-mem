@@ -74,6 +74,37 @@ final class CommandLocatorTests: XCTestCase {
         XCTAssertEqual(unknown?.executable, "/opt/homebrew/bin/npx")
     }
 
+    func testNeverRunsWhatIsInTheLauncherFolderOrUntrusted() {
+        let path = "/Users/a/.local/bin:/a:/b"
+        // An npx dropped into ~/.local/bin is never used.
+        XCTAssertEqual(CommandLocator.resolve(override: nil, searchPath: path, home: "/Users/a",
+                                              isExecutable: { $0.hasSuffix("/npx") })?.executable, "/a/npx")
+        // A command other users can change is passed over.
+        XCTAssertEqual(CommandLocator.resolve(override: nil, searchPath: path, home: "/Users/a",
+                                              isExecutable: { $0.hasSuffix("/npx") },
+                                              isTrusted: { $0 != "/a/npx" })?.executable, "/b/npx")
+        XCTAssertFalse(CommandLocator.commonFolders(home: "/Users/a").contains("/Users/a/.local/bin"))
+    }
+
+    func testSpotsCommandsOtherUsersCanChange() throws {
+        let fm = FileManager.default
+        let folder = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+        try fm.createDirectory(atPath: folder, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: folder) }
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder)
+        let file = "\(folder)/npx"
+        try "#!/bin/sh\n".write(toFile: file, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file)
+        XCTAssertTrue(CommandLocator.notWritableByOthers(file))
+        try fm.setAttributes([.posixPermissions: 0o777], ofItemAtPath: file)
+        XCTAssertFalse(CommandLocator.notWritableByOthers(file))
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file)
+        try fm.setAttributes([.posixPermissions: 0o777], ofItemAtPath: folder)
+        XCTAssertFalse(CommandLocator.notWritableByOthers(file))
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder)
+        XCTAssertFalse(CommandLocator.notWritableByOthers("\(folder)/missing"))
+    }
+
     func testAsksNodeItsVersionWithoutAShell() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
         try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)

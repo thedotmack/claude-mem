@@ -53,6 +53,10 @@ final class AppModel: ObservableObject {
     @Published var commandPath = UserDefaults.standard.string(forKey: "commandPath") ?? "" {
         didSet { UserDefaults.standard.set(commandPath, forKey: "commandPath") }
     }
+    /// A saved command path is only run after the person clicks Use on it in
+    /// this session. The saved setting is a plain file other programs can
+    /// change, and whatever the app runs gets its Full Disk Access.
+    @Published var commandPathConfirmed = false
     @Published var listenOnLaunch = UserDefaults.standard.object(forKey: "listenOnLaunch") as? Bool ?? true {
         didSet { UserDefaults.standard.set(listenOnLaunch, forKey: "listenOnLaunch") }
     }
@@ -126,6 +130,11 @@ final class AppModel: ObservableObject {
 
     func locateCommand() async {
         let override = commandPath
+        if !override.isEmpty, !commandPathConfirmed {
+            launch = nil
+            commandProblem = "Click Use to run the saved command: \(override)"
+            return
+        }
         let found: CommandLaunch? = await Task.detached {
             let home = FileManager.default.homeDirectoryForCurrentUser.path
             let path = CommandLocator.searchPath(home: home, extraFolders: CommandLocator.versionManagerFolders(home: home),
@@ -135,7 +144,8 @@ final class AppModel: ObservableObject {
                 override: override.isEmpty ? nil : override,
                 searchPath: path,
                 isExecutable: { FileManager.default.isExecutableFile(atPath: $0) },
-                nodeVersion: { CommandLocator.nodeVersion(in: $0, path: path) }
+                nodeVersion: { CommandLocator.nodeVersion(in: $0, path: path) },
+                isTrusted: { CommandLocator.notWritableByOthers($0) }
             )
         }.value
         launch = found
@@ -149,6 +159,7 @@ final class AppModel: ObservableObject {
     /// Uses a command the person pasted, or goes back to finding one when the path is empty.
     func useCommand(_ path: String) async {
         commandPath = path.trimmingCharacters(in: .whitespaces)
+        commandPathConfirmed = true
         launch = nil
         await refreshAll()
     }
