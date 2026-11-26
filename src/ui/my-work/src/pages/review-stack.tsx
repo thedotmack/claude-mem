@@ -96,7 +96,7 @@ export default function ReviewStack() {
   return <section className="review-stack space-y-4" aria-label={t('Review Stack')}>
     <div className="stack-toolbar">
       <div className="stack-modes" role="group" aria-label={t('Review mode')}>
-        {REVIEW_STACK_MODES.map(value => <button key={value} type="button" aria-pressed={mode === value} disabled={saving} onClick={() => switchMode(value)}>{t(REVIEW_STACK_MODE_LABELS[value])}</button>)}
+        {REVIEW_STACK_MODES.map(value => <Button key={value} variant="bare" type="button" aria-pressed={mode === value} disabled={saving} onClick={() => switchMode(value)}>{t(REVIEW_STACK_MODE_LABELS[value])}</Button>)}
       </div>
       <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" aria-expanded={showHistory} onClick={() => setShowHistory(value => !value)}><HistoryIcon aria-hidden="true" />{t('History')}</Button>
         <Button size="sm" variant="outline" disabled={disabled} onClick={() => setShowImport(true)}><UploadIcon aria-hidden="true" />{t('Import')}</Button>

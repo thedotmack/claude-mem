@@ -41,10 +41,10 @@ function CardOriginal({ card, onInteraction }: { card: ReviewStackCard; onIntera
   const preview = usePreview(card, retry)
   const source = originalHttps(card.source)
   return <>
-    {preview.url && !broken && <button type="button" className="stack-preview" aria-label={interpolate(t('Enlarge {title}'), { title: card.title })} onClick={() => setExpanded(true)}>
+    {preview.url && !broken && <Button variant="bare" type="button" className="stack-preview" aria-label={interpolate(t('Enlarge {title}'), { title: card.title })} onClick={() => setExpanded(true)}>
       <img src={preview.url} alt={card.title} decoding="async" draggable={false} referrerPolicy="no-referrer" onError={() => setBroken(true)} />
       <ExpandIcon aria-hidden="true" className="stack-expand" />
-    </button>}
+    </Button>}
     {(preview.failed || broken) && <p className="flex items-center gap-2 text-sm">{t('Preview unavailable.')} <Button size="sm" variant="outline" onClick={() => { setBroken(false); setRetry(value => value + 1) }}>{t('Retry preview')}</Button></p>}
     {card.excerpt && <blockquote className="stack-excerpt" dir="auto">{card.excerpt}</blockquote>}
     {source && <a className="stack-source" href={source} target="_blank" rel="noreferrer">{t('Open original')}<ArrowUpRightIcon size={16} aria-hidden="true" /></a>}
