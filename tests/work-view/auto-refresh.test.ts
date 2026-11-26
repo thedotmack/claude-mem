@@ -720,10 +720,16 @@ describe('focus step', () => {
       const objects: any[] = [];
       const walk = (node: any) => { if (node?.type === 'object') objects.push(node); for (const value of Object.values(node ?? {})) if (value && typeof value === 'object') walk(value); };
       walk(FOCUS_ANSWER_SCHEMA);
-      expect(objects.length).toBe(3);
+      expect(objects.length).toBe(4);
       for (const object of objects) { expect(object.additionalProperties).toBe(false); expect(object.required).toEqual(Object.keys(object.properties)); }
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+
+  /** A placing answer refused on every try: each request in an area id the batch does not list. */
+  const inAnUnlistedArea = (prompt: string) => {
+    const placed = JSON.parse(everyRequestInOther(prompt));
+    return JSON.stringify({ ...placed, placements: placed.placements.map((placement: object) => ({ ...placement, focusAreaId: 'fa_not_listed' })) });
+  };
 
   it(`places in batches of ${FOCUS_BATCH}, each saved before the next; a refused batch fails the step but the story still runs`, async () => {
     const dir = scratchDir('auto-refresh-focus-batches');
@@ -740,15 +746,15 @@ describe('focus step', () => {
         if (prompt.includes('Do only section 4')) {
           const input = focusInputFrom(prompt);
           batches.push(input.requests.length);
-          // The second batch's answers keep leaving a request out.
-          if (batches.length > 1 && refuseSecond) return JSON.stringify({ placements: [], proposals: [] });
+          // The second batch's answers keep naming an area that is not listed.
+          if (batches.length > 1 && refuseSecond) return inAnUnlistedArea(prompt);
           return everyRequestInOther(prompt);
         }
         return JSON.stringify({ narrative: 'Under way.', preferences: [] });
       };
       const task = buildRefreshTask({ localDeviceId: () => '', needs: { due: FOCUS_BATCH + 1, ungrouped: 0, goalsStale: false, unplaced: FOCUS_BATCH + 1, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: writer.save });
       const error = await task.run(ask, 'codex').then(() => null, failure => failure as Error);
-      expect(error?.message).toMatch(/^focus \(raw answer: .+\): Place every request asked about; missing/);
+      expect(error?.message).toMatch(/^focus \(raw answer: .+\): placements\[0\] names "fa_not_listed", which is not a listed focus area/);
       expect((error as { answerRefused?: boolean }).answerRefused).toBe(true);
       expect(batches).toEqual([FOCUS_BATCH, 1, 1]);
       // The first batch was saved; the story was written anyway.
@@ -772,8 +778,8 @@ describe('focus step', () => {
       const ask = async (prompt: string) => {
         if (prompt.includes('Do only section 2')) return reviewAll(prompt);
         if (isOtherPass(prompt)) return JSON.stringify({ placements: [], proposals: [] });
-        // Every focus answer leaves requests out, so focus is refused twice.
-        if (prompt.includes('Do only section 4')) return JSON.stringify({ placements: [], proposals: [] });
+        // Every focus answer names an area that is not listed, so focus is refused twice.
+        if (prompt.includes('Do only section 4')) return inAnUnlistedArea(prompt);
         // The story's agent call itself crashes, which on its own would let the runner try the next agent.
         throw new Error('Claude Code stopped: socket hang up');
       };
@@ -1282,6 +1288,40 @@ describe('focus proposal repair', () => {
       const focus = readFocus(database, { localDeviceId: '' });
       expect(focus.focusAreas.map(area => area.name)).not.toContain('Other things');
       expect(['a', 'b', 'c', 'd'].map(session => focus.focusAreaIdByAnchor.get(key(session)))).toEqual(['other', 'other', 'other', 'other']);
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a model that leaves the same request out twice completes the refresh: that request goes in Other and the count is reported (#6432)', async () => {
+    const dir = scratchDir('auto-refresh-focus-missing-repair');
+    const database = fixtureDatabase();
+    try {
+      let placeAnswers = 0;
+      const result = await refreshWithFocusAnswers(dir, database, prompt => {
+        if (isOtherPass(prompt)) return everyRequestInOther(prompt);
+        placeAnswers++;
+        const placed = JSON.parse(everyRequestInOther(prompt));
+        return JSON.stringify({ ...placed, placements: placed.placements.filter((placement: { anchor: string }) => placement.anchor !== key('b')) });
+      });
+      expect(placeAnswers).toBe(2);
+      expect(result).toBe('4 requests reviewed, 4 requests placed, 1 requests placed in Other after retry, story written.');
+      const focus = readFocus(database, { localDeviceId: '' });
+      expect(focus.focusAreaIdByAnchor.get(key('b'))).toBe('other');
+      expect(focus.placementsByAnchor.get(key('b'))?.router?.evidence).toBe('Not placed by the model; move it if it belongs elsewhere.');
+    } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a retry that leaves a request out and also names an unknown area still fails: only the omission is repaired', async () => {
+    const dir = scratchDir('auto-refresh-focus-missing-and-bad-area');
+    const database = fixtureDatabase();
+    try {
+      await expect(refreshWithFocusAnswers(dir, database, prompt => {
+        if (isOtherPass(prompt)) return everyRequestInOther(prompt);
+        const placed = JSON.parse(everyRequestInOther(prompt));
+        const kept = placed.placements.filter((placement: { anchor: string }) => placement.anchor !== key('b'))
+          .map((placement: { anchor: string }) => placement.anchor === key('a') ? { ...placement, focusAreaId: 'fa_unknown' } : placement);
+        return JSON.stringify({ ...placed, placements: kept });
+      })).rejects.toThrow(/^focus \(raw answer: /);
+      expect(readFocus(database, { localDeviceId: '' }).focusAreaIdByAnchor.get(key('b'))).toBeUndefined();
     } finally { database.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 });
@@ -1949,6 +1989,15 @@ describe('My Work refresh stays on one agent (#5189)', () => {
     await withSettings({ CLAUDE_MEM_PROVIDER: 'claude' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: ['claude-code'], preferredAgent: 'claude-code', stayOnFirstUsableAgent: true }));
     await withSettings({ CLAUDE_MEM_PROVIDER: 'codex' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: ['codex'], preferredAgent: 'codex', stayOnFirstUsableAgent: true }));
     await withSettings({ CLAUDE_MEM_PROVIDER: 'gemini' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: ['gemini'], preferredAgent: 'gemini', stayOnFirstUsableAgent: true }));
+  });
+
+  it('setup prefers the configured CLI and can use another signed-in agent when that CLI is unavailable', async () => {
+    await withSettings({ CLAUDE_MEM_PROVIDER: 'claude' }, dir => {
+      expect(resolveRefreshAgents(dir, true)).toEqual({ preferredAgent: 'claude-code', stayOnFirstUsableAgent: true });
+    });
+    await withSettings({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_WORK_VIEW_AGENT: 'codex' }, dir => {
+      expect(resolveRefreshAgents(dir, true).allowedAgents).toEqual(['codex']);
+    });
   });
 
   it('an API-endpoint provider runs the first logged-in agent, whichever it is, and only that one, until the owner sets CLAUDE_MEM_WORK_VIEW_AGENT=api', async () => {

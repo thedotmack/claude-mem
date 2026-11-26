@@ -27,6 +27,8 @@ interface HeaderProps {
   onShowHelp?: () => void;
   /** Show the TeamBrain link: settings have loaded and this install is in no team. */
   showTeamBrainLink?: boolean;
+  /** The timeline supplies its own dismissible Cloud Sync offer. */
+  showProTrialLink?: boolean;
   /** Opens the memory logs; offered in the "…" menu where the floating logs button is hidden (narrow screens). */
   onOpenLogs?: () => void;
 }
@@ -97,6 +99,7 @@ export function Header({
   onContextPreviewToggle,
   onShowHelp,
   showTeamBrainLink = false,
+  showProTrialLink = true,
   onOpenLogs,
 }: HeaderProps) {
   const { t, locale, setLocale } = useI18n();
@@ -137,8 +140,7 @@ export function Header({
       >
         <GearIcon size={18} />
       </button>
-      {/* Most people running the free plugin never learn the trial exists; it follows the working controls. */}
-      <a
+      {showProTrialLink && <a
         className="pro-trial-cta header-trial"
         href={PRO_TRIAL_URL}
         target="_blank"
@@ -148,7 +150,7 @@ export function Header({
       >
         <SparkleIcon size={14} />
         <span className="pro-trial-cta-short">{t(PRO_TRIAL_SHORT)}</span>
-      </a>
+      </a>}
       <MenuButton
         label={t('More')}
         triggerClassName="header-more"
@@ -165,9 +167,9 @@ export function Header({
                 <span className="menu-sync-detail">{syncDetailWords(syncStatus, t)}</span>
               </MenuItem>
             )}
-            <MenuLink className="menu-compact-only" href={PRO_TRIAL_URL} icon={<SparkleIcon />} title={t(PRO_TRIAL_PITCH)} onSelect={() => close()}>
+            {showProTrialLink && <MenuLink className="menu-compact-only" href={PRO_TRIAL_URL} icon={<SparkleIcon />} title={t(PRO_TRIAL_PITCH)} onSelect={() => close()}>
               {t(PRO_TRIAL_SHORT)}
-            </MenuLink>
+            </MenuLink>}
             <MenuSeparator className="menu-compact-only" />
             <MenuLink href="https://docs.claude-mem.ai" icon={<BookIcon />} onSelect={() => close()}>{t('Documentation')}</MenuLink>
             <MenuLink href="https://x.com/Claude_Memory" icon={<XLogoIcon />} onSelect={() => close()}>{t('Follow us on X')}</MenuLink>

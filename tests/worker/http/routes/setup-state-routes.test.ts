@@ -146,6 +146,65 @@ describe('setup state endpoints', () => {
     for (const body of [await served(), ...frames]) expect(body).not.toContain(signup.email);
   });
 
+  it('stores the waiting checkout\'s device code, serves it only to the setup page\'s own origin, and clears it when the checkout ends', async () => {
+    await start();
+    const frames: string[] = [];
+    (routes as unknown as { broadcast: (event: string, value: unknown) => void }).broadcast = (event, value) => {
+      if (event === 'setup-state') frames.push(JSON.stringify(value));
+    };
+    const deviceCode = { userCode: 'K7QM-4XPT', expiresAt: '2026-11-26T12:30:00.000Z' };
+    const waiting = (body: Record<string, unknown> = {}) => post('/api/setup/installer', { stage: 'go-awaiting-checkout', checkout: 'waiting', ...body });
+    const read = (headers: Record<string, string> = {}) => fetch(`${origin}/api/setup/checkout/device-code`, { headers });
+    const onDisk = () => JSON.parse(readFileSync(statePath, 'utf8')).checkout;
+    await post('/api/setup/choice', { branch: 'go', memoryBilling: 'existing' });
+    await post('/api/setup/installer', { stage: 'go-awaiting-checkout' });
+
+    // Only cmem.ai's shape: XXXX-XXXX from its alphabet (no I, L, O, U, 0 or 1), upper case, nothing more.
+    for (const userCode of ['k7qm-4xpt', 'K7QM4XPT', 'K7QM-4XPI', 'K7QM-4XP0', 'K7QM-4XPU', 'K7QM-4XPTT', ' K7QM-4XPT', '']) {
+      expect((await waiting({ deviceCode: { ...deviceCode, userCode } })).status).toBe(400);
+    }
+    expect((await waiting({ deviceCode: { ...deviceCode, expiresAt: 'in 30 minutes' } })).status).toBe(400);
+    expect((await waiting({ deviceCode: { ...deviceCode, checkoutUrl: 'https://cmem.ai/api/pro/trial/claim' } })).status).toBe(400);
+    // A code belongs to a waiting checkout only.
+    expect((await post('/api/setup/installer', { stage: 'go-awaiting-checkout', checkout: 'paid', deviceCode })).status).toBe(400);
+    expect((await post('/api/setup/installer', { stage: 'go-awaiting-checkout', deviceCode })).status).toBe(400);
+    expect((await read()).status).toBe(404);
+
+    expect((await waiting({ deviceCode })).status).toBe(200);
+    expect(onDisk().deviceCode).toEqual(deviceCode);
+    const served = await state();
+    expect(served.checkout).toMatchObject({ state: 'waiting', deviceCodeWaiting: true });
+    // The served state and every event frame say only that a code waits: any localhost page can read those.
+    for (const body of [JSON.stringify(served), ...frames]) expect(body).not.toContain(deviceCode.userCode);
+    expect(await (await read()).json()).toEqual(deviceCode);
+    expect((await read({ Origin: origin })).status).toBe(200);
+    for (const headers of [{ Origin: 'http://127.0.0.1:1' }, { Origin: 'https://evil.example' }, { 'Sec-Fetch-Site': 'cross-site' }, { 'X-Forwarded-For': '203.0.113.9' }]) {
+      expect((await read(headers)).status).toBe(403);
+    }
+    expect(await (await read({ Origin: 'https://evil.example' })).json()).toEqual({ error: 'The device code is available only from the local setup page.' });
+
+    // A waiting report without a code (a new run, before it knows its pairing) shows none.
+    expect((await waiting()).status).toBe(200);
+    expect((await state()).checkout.deviceCodeWaiting).toBeUndefined();
+    expect((await read()).status).toBe(404);
+    await waiting({ deviceCode: { userCode: 'CCCC-DDDD', expiresAt: null } });
+    expect(await (await read()).json()).toEqual({ userCode: 'CCCC-DDDD', expiresAt: null });
+
+    // The page's next ask (requested), failed and paid each end the code.
+    expect((await post('/api/setup/checkout', {})).status).toBe(200);
+    expect((await read()).status).toBe(404);
+    await waiting({ deviceCode });
+    await post('/api/setup/installer', { stage: 'go-awaiting-checkout', checkout: 'failed', error: 'Checkout did not finish.' });
+    expect(onDisk().deviceCode).toBeUndefined();
+    expect((await read()).status).toBe(404);
+    await waiting({ deviceCode });
+    await post('/api/setup/installer', { stage: 'go-awaiting-checkout', checkout: 'paid' });
+    expect(onDisk()).toMatchObject({ state: 'paid' });
+    expect(onDisk().deviceCode).toBeUndefined();
+    expect((await state()).checkout.deviceCodeWaiting).toBeUndefined();
+    expect((await read()).status).toBe(404);
+  });
+
   it('takes a DeepSeek Harness profile up to the one limit the setup page uses too', async () => {
     await start();
     await post('/api/setup/install/installer', { status: 'waiting', catalog });
@@ -437,6 +496,17 @@ describe('setup state endpoints', () => {
     expect((await post('/api/setup/complete', {})).status).toBe(409);
     await post('/api/setup/installer', { stage: 'go-awaiting-checkout', checkout: 'paid' });
     expect((await post('/api/setup/complete', {})).status).toBe(200);
+  });
+
+  it('retains explicit Work View sharing on a new standalone choice and locks it with the selected plan', async () => {
+    await start();
+    expect((await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing', shareWorkView: true })).status).toBe(400);
+    expect((await post('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted', shareWorkView: true })).status).toBe(400);
+    const plan = { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly', openCheckout: true };
+    const selected = await post('/api/setup/choice', { ...plan, shareWorkView: true });
+    expect(selected.status).toBe(200);
+    expect((await selected.json()).choice.shareWorkView).toBe(true);
+    expect((await post('/api/setup/choice', plan)).status).toBe(409);
   });
 
   it('saves a direct checkout once, before the terminal is ready, and keeps its selected interval', async () => {

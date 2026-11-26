@@ -15,6 +15,12 @@ describe('claude-mem retrieval and explicit note classifiers', () => {
     for (const name of ['save_memory', 'mcp__mcp_search__save_memory']) expect(isExplicitMemoryWrite(name)).toBe(true);
     expect(isExplicitMemoryWrite('mcp__other__save_memory')).toBe(false);
   });
+  it('keeps private review cards out of the observer on native and Claude-Mem tool transports', () => {
+    for (const name of ['get_review_stack', 'import_review_cards', 'mcp__mcp-search__get_review_stack', 'mcp__cmem__import_review_cards']) {
+      expect(isRecursiveMemoryTool(name)).toBe(true);
+    }
+    expect(isRecursiveMemoryTool('mcp__unrelated__import_review_cards')).toBe(false);
+  });
   it('drops retrieval hooks before any spool, runtime request or input logging', async () => {
     const dataIn = spyOn(logger, 'dataIn').mockImplementation(() => {});
     try {

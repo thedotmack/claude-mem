@@ -4,6 +4,51 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [17.0.0] - 2026-11-26
+
+### Review Stack in My Work
+
+- Open **Review Stack** in local My Work or in your signed-in Cloud Sync Work View to review files, images, links and other work your agents submit. Browse lets you flip through a stack. Switch to Work to mark a card Seen, save it for later or leave a follow-up.
+- Hold **Seen** for three seconds to mark a whole Focus Area seen. You can undo the group action, revisit a card and find saved items and follow-ups across paired devices.
+
+### Claude-Mem Messages for macOS
+
+- Choose Messages on your Mac or an authorized Photon iMessage line in the app. For Mac Messages, select the chats and the topics to watch. For Photon, add the line to the groups you want to observe. New group conversations become searchable Claude-Mem notes in a project for each chat.
+- The read-only observer starts with new messages when you begin listening. From Terminal, use `npx claude-mem imessage mac` to check access, list chats, save picks, listen and import contact names. `npx claude-mem imessage setup` configures the Photon line.
+- The Mac app includes the observer for Apple silicon and Intel. The Messages source requires Full Disk Access. The Photon source uses your Photon credentials. [Download Claude-Mem Messages for macOS](https://github.com/thedotmack/claude-mem/releases/download/v17.0.0/Claude-Mem-Messages.zip).
+
+## [16.2.1] - 2026-11-26
+
+- **After a release ships, the childhood skill now watches it for 24 hours by default instead of 30 minutes** (#6480). A full day catches slow npm registry updates, late CI and reports from users in other time zones. Checks are close together in the first hour, every 30 minutes until hour 6, then every 2 hours, with a final sweep at the 24-hour mark. A new problem brings that surface back to close checks until it settles. Between checks the agent uses a scheduled check or wake-up instead of holding a session open, and if it can't come back it reports the window as still open, not as clean.
+
+## [16.2.0] - 2026-11-26
+
+### iMessage group chats
+
+- **The iMessage group chat observer keeps Claude-Mem notes on a group chat** (#6457). Add a Photon iMessage line to the group and run `npx claude-mem imessage setup`. Each group chat gets its own Claude-Mem project with what the group decided, planned, asked for and shared, and who said what. It only reads: it never sends, reacts or changes a group. See [docs/imessage-group-observer.md](imessage-group-observer.md).
+
+### iMessage on your Mac
+
+- **Claude-Mem Messages, a Mac app that keeps notes on the iMessage chats you pick** (#6482). It lists your chats and group chats from the Messages app on your own Mac. Tick the ones to observe and write what to watch for in each ("plans and who's bringing what", "money: who paid, who owes"). New messages in those chats become notes in one Claude-Mem project per chat. It only reads: it never sends, reacts or changes a chat, and nothing is added to the group. Only new messages are read, from when it starts listening. The app needs Full Disk Access, and its setup screen walks you through turning it on. Download the unsigned build from the "iMessage Mac app" check, or build it with `integrations/imessage-mac/scripts/build-app.sh`. See [docs/imessage-mac-app.md](imessage-mac-app.md).
+- **`claude-mem imessage mac` commands** do the same from Terminal: `check`, `chats`, `pick` (with `--focus` for what to watch for), `observe` and `contacts`.
+
+## [16.1.6] - 2026-11-26
+
+- Cloud Sync trial links now identify whether a user followed the GitHub README, the local timeline invitation, the startup message or the installer’s terminal link.
+
+## [16.1.5] - 2026-11-25
+
+- Eligible existing installs receive a dated holiday Cloud Sync offer from the new Messages from Claude-Mem queue on their next interactive startup. Each installation records the dispatch time locally. Agents can optionally acknowledge sharing the message with `claude-mem messages acknowledge <message-id>`.
+- The local memory timeline now offers eligible Claude-Mem users a 30-day Cloud Sync and remote Work Viewer trial with no credit card required. Dismissing the invitation hides it on that browser.
+- The remote Work Viewer now guides trial users through six workflows, including cross-agent handoffs, decision tracing, and optional weekday briefings and Friday reviews.
+- The Cloud Sync giveaway GIF at the top of the project README links to cmem.ai.
+
+## [16.1.4] - 2026-11-25
+
+- Setup offers a 30-day Cloud Sync trial without a credit card. People installing directly or with an agent can choose a private, signed-in My Work view. Explicit local and custom sync settings are preserved.
+- The cloud viewer uses the current account to load synced work, evidence and review changes. Returning to a tab verifies the signed-in account before showing its contents. Retrying a save after a lost response reuses the same action ID.
+- During the trial, My Work offers optional guidance for trying cross-agent sync and shows when to add a payment method to continue.
+
 ## [16.1.3] - 2026-11-24
 
 ## Critical fix
@@ -32,8 +77,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - The backup restore test suites pass on Windows (#6444, thanks @Lupin133).
 
 **Full changelog**: https://github.com/thedotmack/claude-mem/compare/v16.1.2...v16.1.3
-
-## [Unreleased]
 
 ## [16.1.2] - 2026-11-24
 

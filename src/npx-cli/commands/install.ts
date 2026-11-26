@@ -4,14 +4,14 @@ import { spawnSync } from 'child_process';
 import { explainTelemetryConsent, loadTelemetryConfig, recordTelemetryDecision, resolveTelemetryConsent } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { spawnHidden } from '../../shared/spawn.js';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs';
 import { applyConfiguredSkillSelection, readDisabledSkills, skillSelectionFailureMessage } from '../../shared/skill-selection.js';
 import { RUNTIME_REQUIRED_SKILLS } from '../../shared/runtime-skills.js';
 import type { SetupInstallCatalog, SetupInstallSelection, SetupMode } from '../../shared/setup-install.js';
 import { readProjectAttribution, replaceOwnedFiles } from '../../shared/owned-file-install.js';
 import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
-import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
+import { CANONICAL_CLOUD_SYNC_HUB_URL, SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDbPath, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
@@ -50,7 +50,7 @@ import {
   PROVIDER_PROMPT_MESSAGE,
 } from '../cmem-pro-costs.js';
 import { clearProFallback, isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
-import { PRO_TRIAL_LABEL, PRO_TRIAL_PITCH, proTrialUrl } from '../../shared/pro-promo.js';
+import { PRO_TRIAL_LABEL, proTrialUrl } from '../../shared/pro-promo.js';
 import {
   buildAnthropicMaxLocalSettings,
   buildCmemActivationSettings,
@@ -63,9 +63,9 @@ import {
 import { parseTeamBrainTeamRef, type TeamBrainTeamRef } from '../../shared/teambrain.js';
 import { relayedLine } from '../../shared/relayed-text.js';
 import { endSetupSession, hasProConfiguration, INITIAL_SETUP_STATE, readSetupState, readSetupTelemetryContext, startSetupSession, writeSetupState } from '../../shared/setup-state.js';
-import { CLOUD_SYNC_SETUP_CONTRACT, isSetupId, setupCloudSyncOffer, type SetupCloudSyncOffer } from '../../shared/setup-funnel.js';
+import { CLOUD_SYNC_SETUP_CONTRACT, PRIVATE_WORK_VIEW_URL, SETUP_DEVICE_CODE_PATTERN, isSetupId, setupCloudSyncOffer, type SetupCloudSyncOffer } from '../../shared/setup-funnel.js';
 import { intentCredentialHeaders, readIntentCredentials } from '../../shared/intent-credentials.js';
-import { AGENT_BROWSER_SETUP_HINT, runBrowserSetup, settingsChangesNeedingRestart, shouldPrintAgentBrowserSetupHint, shouldUseBrowserSetup, waitForBackgroundWorkToFinish, type BrowserSetupOutcome } from '../install/browser-setup.js';
+import { AGENT_BROWSER_SETUP_HINT, createPairingCheckout, runBrowserSetup, settingsChangesNeedingRestart, shouldPrintAgentBrowserSetupHint, shouldUseBrowserSetup, waitForBackgroundWorkToFinish, type BrowserSetupOutcome } from '../install/browser-setup.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
@@ -964,7 +964,7 @@ export function writeTrimmedMarketplaceManifest(marketplaceDir: string): void {
   });
   if (shipped.length === manifest.plugins.length) return;
 
-  writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, plugins: shipped }, null, 2)}\n`);
+  writeJsonFileAtomic(manifestPath, { ...manifest, plugins: shipped });
 }
 
 /**
@@ -986,7 +986,7 @@ export function writeTrimmedMarketplacePackageJson(packageRoot: string, marketpl
   delete pkg.devDependencies;
   delete pkg.trustedDependencies;
 
-  writeFileSync(join(marketplaceDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
+  writeJsonFileAtomic(join(marketplaceDir, 'package.json'), pkg);
 }
 
 /**
@@ -1132,8 +1132,9 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
 export function mergeSettings(
   updates: Record<string, string>,
   settingsPath: string = USER_SETTINGS_PATH,
+  mutate?: (target: Record<string, unknown>) => void,
 ): boolean {
-  const result = updateSettingsDocument(settingsPath, updates, {}, undefined, { quarantineCorrupt: true });
+  const result = updateSettingsDocument(settingsPath, updates, {}, mutate, { quarantineCorrupt: true });
   if (result.status === 'refused') {
     const reason = result.error instanceof Error ? result.error.message : String(result.error);
     // A quarantined file is moved back when the fresh write fails; quarantinedTo
@@ -1717,6 +1718,8 @@ export interface InstallerOAuthPairing {
   checkoutUrl: string;
   /** Present only after the server confirms the separate Cloud Sync contract and chosen offer. */
   cloudSyncOffer?: SetupCloudSyncOffer;
+  /** Local opt-in, retained with the selected plan across pairing retries. */
+  shareWorkView?: true;
   pollIntervalMs: number;
   /**
    * Absolute epoch ms after which polling stops, derived from the server's
@@ -1820,7 +1823,7 @@ export function parseInstallerOAuthStartBody(body: unknown, sentSetupFlowId?: st
     || !secret
     || !/^[0-9a-f]{48}$/.test(secret)
     || !userCode
-    || !/^[A-HJ-KM-NP-TV-Z2-9]{4}-[A-HJ-KM-NP-TV-Z2-9]{4}$/.test(userCode)
+    || !SETUP_DEVICE_CODE_PATTERN.test(userCode)
     || !authorizationUrl
     || !checkoutUrl
   ) return null;
@@ -2204,10 +2207,15 @@ export async function waitForInstallerPairing(
   pairing: InstallerOAuthPairing,
   phase: InstallerPairingPhase,
   version: string,
+  /**
+   * True once the browser funnel replaced this pairing with a fresh one (createPairingCheckout): its expiry then ends
+   * this wait quietly, with no timeout event and no "timed out" line, since the fresh pairing's wait goes on.
+   */
+  { superseded }: { superseded?: () => Promise<boolean> } = {},
 ): Promise<InstallerPollOutcome | null> {
   const startedAt = Date.now();
   const rerun = phase === 'teambrain_join' ? 'Run npx claude-mem teambrain join again'
-    : phase === 'enrollment' && pairing.cloudSyncOffer ? 'Select “Open checkout again” in your installer setup tab for a fresh code'
+    : phase === 'enrollment' && pairing.cloudSyncOffer ? 'Reopen Cloud Sync setup in your installer tab for a fresh code'
       : 'Run the installer again';
   // The login phase must never name CMEM Pro. Logging in is required of every
   // user and happens BEFORE the provider choice, so naming a paid plan here
@@ -2288,6 +2296,7 @@ export async function waitForInstallerPairing(
       await sleepUnlessCancelled(pairing.pollIntervalMs, () => cancelled);
     }
 
+    if (superseded && await superseded()) return null;
     // The telemetry `phase` enum is the installer's (login / enrollment /
     // deferred); a TeamBrain join is not reported.
     if (phase !== 'teambrain_join') {
@@ -2316,6 +2325,23 @@ function pairingAcceptsReady(pairing: InstallerOAuthPairing, ready: TrialReadyRe
   return false;
 }
 
+/**
+ * Apply the new Work View choice only after the owner has approved this device.
+ * The hub's independent work_state capability still gates every reserved record.
+ */
+function saveReadyPairing(pairing: InstallerOAuthPairing, result: TrialReadyResult): boolean {
+  const selectedWorkView = pairing.cloudSyncOffer && pairing.shareWorkView && result.plan === 'cloud_sync' && !result.memory;
+  const canonicalHub = result.hubUrl.replace(/\/+$/, '') === CANONICAL_CLOUD_SYNC_HUB_URL;
+  const configuredHub = process.env.CLAUDE_MEM_CLOUD_SYNC_HUB_URL;
+  return mergeSettings(buildTrialReadySettings(result), USER_SETTINGS_PATH, target => {
+    if (selectedWorkView && canonicalHub && (configuredHub === undefined || configuredHub.replace(/\/+$/, '') === CANONICAL_CLOUD_SYNC_HUB_URL)
+      && process.env.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === undefined
+      && (target.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === undefined || target.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === '')) {
+      target.CLAUDE_MEM_WORK_VIEW_SHARED_STATE = 'true';
+    }
+  });
+}
+
 /** Required account step. OAuth completes before provider choice and never chooses a paid provider. */
 export async function completeInstallerOAuthLogin(
   pairing: InstallerOAuthPairing,
@@ -2325,7 +2351,7 @@ export async function completeInstallerOAuthLogin(
   if (!result) return false;
   if (result.kind === 'ready') {
     if (!pairingAcceptsReady(pairing, result)) return false;
-    if (!mergeSettings(buildTrialReadySettings(result))) return false;
+    if (!saveReadyPairing(pairing, result)) return false;
     pairing.delivered = result;
   }
   log.success('OAuth login complete.');
@@ -2472,26 +2498,33 @@ export function activateBrowserEnrollment(result: TrialReadyResult): ProviderId 
 export async function completeCmemTrialPairing(
   pairing: InstallerOAuthPairing,
   version: string,
+  /**
+   * `opened`: the browser funnel's reopen already noted this pairing's code and opened its page. `superseded`: a fresh
+   * pairing replaced this one (both from createPairingCheckout; see waitForInstallerPairing).
+   */
+  { opened = false, superseded }: { opened?: boolean; superseded?: () => Promise<boolean> } = {},
 ): Promise<TrialReadyResult | null> {
   if (pairing.delivered) return pairingAcceptsReady(pairing, pairing.delivered) ? pairing.delivered : null;
 
-  noteDeviceCode(pairing);
-  // Deliberately NO return-wait here, unlike the login hand-off.
-  //
-  // A second wait at this point stalled the install: stdin has already been
-  // through the login wait and a clack prompt by now, and the listener did not
-  // reliably receive the keypress, so the flow stopped before it could even
-  // print "Waiting for CMEM Pro setup in the browser…". Opening directly is
-  // also the better behaviour here — the user has already chosen CMEM Pro, so
-  // there is nothing left to confirm before the browser takes over.
-  log.info(`Continue ${pairing.cloudSyncOffer ? 'Cloud Sync' : 'CMEM Pro'} setup: ${pairing.checkoutUrl}`);
-  openBrowser(pairing.checkoutUrl);
+  if (!opened) {
+    noteDeviceCode(pairing);
+    // Deliberately NO return-wait here, unlike the login hand-off.
+    //
+    // A second wait at this point stalled the install: stdin has already been
+    // through the login wait and a clack prompt by now, and the listener did not
+    // reliably receive the keypress, so the flow stopped before it could even
+    // print "Waiting for CMEM Pro setup in the browser…". Opening directly is
+    // also the better behaviour here — the user has already chosen CMEM Pro, so
+    // there is nothing left to confirm before the browser takes over.
+    log.info(`Continue ${pairing.cloudSyncOffer ? 'Cloud Sync' : 'CMEM Pro'} setup: ${pairing.checkoutUrl}`);
+    openBrowser(pairing.checkoutUrl);
+  }
 
-  const result = await waitForInstallerPairing(pairing, 'enrollment', version);
+  const result = await waitForInstallerPairing(pairing, 'enrollment', version, { superseded });
   if (!result || result.kind !== 'ready') return null;
   if (!pairingAcceptsReady(pairing, result)) return null;
 
-  const wrote = mergeSettings(buildTrialReadySettings(result));
+  const wrote = saveReadyPairing(pairing, result);
   if (!wrote) {
     log.error(`Could not save the one-time ${pairing.cloudSyncOffer ? 'Cloud Sync' : 'CMEM Pro'} credentials.`);
     return null;
@@ -2505,6 +2538,7 @@ export async function completeCmemTrialPairing(
     await captureCliEvent('trial_activated', { version });
   } else if (result.plan === 'cloud_sync') {
     log.success('Cloud Sync connected. Memory keeps your existing provider.');
+    log.info(`Open your private Work View: ${PRIVATE_WORK_VIEW_URL}`);
   }
   return result;
 }
@@ -3216,7 +3250,7 @@ function readSettingsSnapshot(): string {
  * earlier hosted-intent installation identity. The checkout that completes it is the
  * funnel's next step (completeCmemTrialPairing, funnel Phase 8).
  */
-async function startOnTheGoPairing(version: string, cloudSyncOffer?: SetupCloudSyncOffer): Promise<InstallerOAuthPairing> {
+async function startOnTheGoPairing(version: string, cloudSyncOffer?: SetupCloudSyncOffer, shareWorkView?: true): Promise<InstallerOAuthPairing> {
   const spinner = isInteractive ? p.spinner() : null;
   const product = cloudSyncOffer ? 'Cloud Sync' : 'CMEM Pro';
   spinner?.start(`Starting ${product} sign-in…`);
@@ -3233,7 +3267,8 @@ async function startOnTheGoPairing(version: string, cloudSyncOffer?: SetupCloudS
       ? `Could not start the ${product} sign-in: ${lastOAuthStartErrorMessage()}`
       : `Could not start the ${product} sign-in. Run npx claude-mem install again when cmem.ai is reachable.`);
   }
-  spinner?.stop(`${product} sign-in ready; checkout continues in the browser.`);
+  pairing.shareWorkView = shareWorkView;
+  spinner?.stop(`${product} sign-in ready. Continue setup in the browser.`);
   return pairing;
 }
 
@@ -3631,11 +3666,25 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // setup state with no time limit. Login happens only if the page picks On
   // The Go. Everything else keeps the terminal flow below unchanged.
   let oauthPairing: InstallerOAuthPairing | null = null;
-  // On The Go's pairing, held for the checkout hand-off (funnel Phase 8):
-  // completeCmemTrialPairing(onTheGoPairing) runs when the page asks for checkout.
-  let onTheGoPairing: InstallerOAuthPairing | null = null;
   let browserCloudSyncOffer: SetupCloudSyncOffer | undefined;
+  let shareWorkView: true | undefined;
   let browserProvider: ProviderId = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
+  // On The Go's checkout hand-off (funnel Phase 8): it holds the pairing the choice started, and
+  // completeCmemTrialPairing runs on it when the page asks for checkout. The claim route carries the
+  // pairing's confirmed product/offer through sign-in and checkout.
+  const startPairing = () => startOnTheGoPairing(version, browserCloudSyncOffer, shareWorkView);
+  const onTheGoCheckout = createPairingCheckout<InstallerOAuthPairing>({
+    start: startPairing,
+    complete: async (pairing, opened, superseded) => {
+      const delivered = await completeCmemTrialPairing(pairing, version, { opened, superseded });
+      if (!delivered) return false;
+      if (!browserCloudSyncOffer) browserProvider = activateBrowserEnrollment(delivered) ?? browserProvider;
+      return true;
+    },
+    noteCode: pairing => noteDeviceCode(pairing),
+    openBrowser,
+    log,
+  });
   let browserOutcome: BrowserSetupOutcome | null = null;
   let settingsBeforeBrowserSetup: string | null = null;
   if (browserSetup) {
@@ -3707,6 +3756,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
           },
           applyChoice: async (choice, state) => {
             browserCloudSyncOffer = setupCloudSyncOffer(choice);
+            shareWorkView = choice.shareWorkView;
             if (choice.branch === 'home') {
               // At Home: the existing local branch (logged-in Claude SDK account, no claude-mem login).
               options.provider = 'claude';
@@ -3719,25 +3769,11 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
               log.info('On The Go: keeping your existing Cloud Sync and memory configuration.');
               return 'go-kept-existing-pro';
             }
-            onTheGoPairing = await startOnTheGoPairing(version, browserCloudSyncOffer);
+            onTheGoCheckout.hold(await startPairing());
             return 'go-awaiting-checkout';
           },
-          // The claim route carries the pairing's confirmed product/offer through sign-in and checkout.
-          checkout: {
-            run: async () => {
-              // A pairing whose checkout failed or was cancelled is not reused; the next ask starts a fresh one.
-              if (!onTheGoPairing) onTheGoPairing = await startOnTheGoPairing(version, browserCloudSyncOffer);
-              const pairing: InstallerOAuthPairing = onTheGoPairing;
-              const delivered = await completeCmemTrialPairing(pairing, version);
-              if (!delivered) { onTheGoPairing = null; return false; }
-              if (!browserCloudSyncOffer) browserProvider = activateBrowserEnrollment(delivered) ?? browserProvider;
-              return true;
-            },
-            reopen: () => {
-              const pairing = onTheGoPairing as InstallerOAuthPairing | null;
-              if (pairing) openBrowser(pairing.checkoutUrl);
-            },
-          },
+          // A pairing whose checkout failed, or one past its expiry, is not reused; a fresh one gets a new code.
+          checkout: onTheGoCheckout,
         });
       }
     } catch (error) {
@@ -3887,7 +3923,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const browserAccountStatus = browserOutcome?.checkoutPaid
     ? browserCloudSyncOffer ? 'Cloud Sync connected' : `CMEM Pro ${PRO_TRIAL_LABEL} active`
     : browserOutcome?.stage === 'go-awaiting-checkout'
-    ? `${browserCloudSyncOffer ? 'Cloud Sync' : 'CMEM Pro'} sign-in started (checkout not completed)`
+    ? `${browserCloudSyncOffer ? 'Cloud Sync' : 'CMEM Pro'} sign-in started (device setup incomplete)`
     : browserOutcome?.stage === 'go-kept-existing-pro'
       ? 'Kept existing Cloud Sync and memory configuration'
       : null;
@@ -4046,9 +4082,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     ``,
     `Memory injection starts on your second session in a project.`,
     cloudSyncConfigured
-      ? 'Memory syncs across your signed-in CMEM Pro agents and devices.'
+      ? 'Saved memories sync across your connected agents and devices.'
       : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. cmem.ai gets only your email and optional note (with the claude-mem version and OS) if you share them when an interactive terminal install asks, and a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names) when setup creates a sign-in link; nothing else is sent to cmem.ai unless you choose to upload your prompts during browser setup (telemetry is separate: npx claude-mem telemetry).`,
-    ...(cloudSyncConfigured ? [] : [`${PRO_TRIAL_PITCH}: ${styleText('underline', proTrialUrl('installer'))}`]),
+    ...(cloudSyncConfigured ? [] : [`Try Cloud Sync and private Work View free for 30 days. No card needed for your first trial. ${styleText('underline', 'https://cmem.ai/cloud-sync/start?trial_entry=installer_terminal&utm_source=installer_terminal')}`]),
     ``,
     `${styleText('dim', `Optional: ${'/learn-codebase'} ingests a whole repo up front (~5 min)   ·   How it works: /how-it-works`)}`,
   ];

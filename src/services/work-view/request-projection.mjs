@@ -82,6 +82,33 @@ export function humanRequestTitle(original) {
 
 export const isConversationKey = (value) => { try { const parsed = JSON.parse(value); return Array.isArray(parsed) && parsed[0] === 'conversation' && parsed.length === 3; } catch { return false; } };
 
+export const FOCUS_ASK_CHARS = 400;
+
+/** The title a request starts with when code, not a model, starts it (the judge, or the owner declining a suggestion):
+ * the first sentence of its opening ask as the refresh reads that ask (the FOCUS_ASK_CHARS that grouping-input shows,
+ * which is also what the judge titles from), copied. Section 3 of the request-progress skill replaces it with a
+ * written one. */
+export function placeholderTitleFromAsk(askText) {
+  const ask = requestText(askText ?? null, FOCUS_ASK_CHARS);
+  return humanRequestTitle(ask) || requestText(ask, 120) || 'Untitled request';
+}
+
+/** A title or an ask as two are compared: link targets and markdown marks dropped, lower case, spaces collapsed (line
+ * breaks too), closing punctuation trimmed. */
+function comparableWords(text) {
+  return String(text ?? '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[*_`#]/g, '')
+    .toLowerCase().replace(/\s+/g, ' ').trim().replace(/[\s.!?…:;,]+$/u, '');
+}
+
+/** Whether a title copies its request's opening ask: the placeholder code cuts from the ask, or words the ask starts
+ * with (a first sentence a grouping answer copied as typed, a trimmed copy). The one rule for both a title still owed
+ * (hasPlaceholderTitle) and a written title refused (writtenTitle), so no title it accepts is owed again next run. */
+export function copiesOpeningAsk(title, askText) {
+  const words = comparableWords(title);
+  if (words === comparableWords(placeholderTitleFromAsk(askText))) return true;
+  return words.length > 0 && comparableWords(requestText(askText ?? null, FOCUS_ASK_CHARS)).startsWith(words);
+}
+
 export function conversationKey(session) {
   if (!session?.content_session_id || !session?.platform_source) return null;
   return JSON.stringify(['conversation', session.platform_source, session.content_session_id]);
@@ -114,7 +141,7 @@ export function originalFor(session, prompts) {
 // producer recorded it directly. A group with a recorded project root keeps
 // every conversation the ledger assigned to it; a group whose root is unknown
 // stays inside the one its members show.
-export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger = null, onProductFile = null } = {}) {
+export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger = null, onProductFile = null, localFiles = true, getProjectRoot = projectRoot } = {}) {
   const sessions = new Map((records.sessions ?? []).map((session) => [session.id, session]));
   const prompts = records.prompts ?? [];
   const promptsBySession = new Map();
@@ -160,10 +187,10 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
   // members show now: the anchor's, else the one repository its other members went to. Members in any
   // other repository are not part of it.
   const rootFromMembers = (groupId, group) => {
-    const anchorRoot = projectRoot(sessionsByKey.get(group.anchor)?.project);
+    const anchorRoot = getProjectRoot(sessionsByKey.get(group.anchor)?.project);
     if (anchorRoot) return anchorRoot;
     const memberRoots = new Set(Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId)
-      .map(([key]) => projectRoot(sessionsByKey.get(key)?.project)).filter(Boolean));
+      .map(([key]) => getProjectRoot(sessionsByKey.get(key)?.project)).filter(Boolean));
     return memberRoots.size === 1 ? [...memberRoots][0] : NO_PROJECT;
   };
   // The root of a group whose stored root is unknown: a group decided before roots were recorded takes
@@ -175,7 +202,7 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
       if (!derivedRoots.has(groupId)) derivedRoots.set(groupId, rootFromMembers(groupId, group));
       return derivedRoots.get(groupId);
     }
-    return projectRoot(sessionsByKey.get(group?.anchor)?.project);
+    return getProjectRoot(sessionsByKey.get(group?.anchor)?.project);
   };
   // A group with a recorded project root keeps every conversation the ledger assigned to it: `apply`
   // decided that membership against the root, and a decision may name a root its members did not all
@@ -186,7 +213,7 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
     if (!groupId) return null;
     const storedRoot = ledger.groups.groups[groupId]?.projectRoot;
     if (typeof storedRoot === 'string' && storedRoot !== NO_PROJECT) return groupId;
-    const own = projectRoot(session?.project), expected = groupRoot(groupId);
+    const own = getProjectRoot(session?.project), expected = groupRoot(groupId);
     return own == null || expected == null || own === expected || (storedRoot === NO_PROJECT && own === NO_PROJECT) ? groupId : null;
   };
   const requests = new Map(), unlinkedWork = [];
@@ -256,7 +283,7 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
     }
     const groupId = !explicit ? groupFor(key, session) : null;
     // One request id names one request per project root; worktrees of a repo share it.
-    const root = projectRoot(session?.project) ?? projectRoot(item.project);
+    const root = getProjectRoot(session?.project) ?? getProjectRoot(item.project);
     const id = explicit ? JSON.stringify(root == null ? ['explicit-request', explicit] : ['explicit-request', root, explicit]) : groupId ? JSON.stringify(['overall-request', groupId]) : key;
     const request = requestFor(id, { key, original, groupId, explicit, explicitText });
     addProject(request, session?.project);
@@ -311,14 +338,14 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
       ? merged.reduce((latest, product) => Math.max(latest, product.atEpoch), 0) : null;
     // A bucket copy that is on disk replaces the record that points at where the file was made (that place is often
     // deleted later), unless the file has been written since the copy: then the record is a newer version and stays.
-    const copies = merged.filter((product) => product.deliverable && product.sourcePath);
+    const copies = localFiles ? merged.filter((product) => product.deliverable && product.sourcePath) : [];
     const coverage = new Map(copies.map(copy => [copy, copyCoversSource(copy, copy.sourcePath)]));
     const covered = (product) => Boolean(product.path) && copies.some((copy) => copy.sourcePath === product.path && coverage.get(copy));
     request.workProduct = merged.filter((product) => !covered(product))
       .map((product) => {
-        const available = product.path ? Boolean(servableFile(product)) : product.deliverable ? bucketFileAvailable(product) : true;
+        const available = product.path ? localFiles && Boolean(servableFile(product)) : product.deliverable ? localFiles && bucketFileAvailable(product) : true;
         if (product.path || product.bucketPath) onProductFile?.(product, available, coverage.get(product) ?? null);
-        return { ...product, fileUrl: fileUrl(product), available };
+        return { ...product, fileUrl: localFiles ? fileUrl(product) : null, available };
       });
     const relatedIds = new Set(request.conversationKeys.flatMap((key) => sessionIdsByKey.get(key) ?? []));
     const related = [...relatedIds].flatMap((id) => promptsBySession.get(id) ?? []);

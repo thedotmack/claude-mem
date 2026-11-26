@@ -275,17 +275,19 @@ async function readAnswer(response: Response, target: ApiTarget, maxOutputTokens
   try { data = await response.json(); }
   catch { throw new Error(`${providerLabel(target.provider)} answered with unreadable JSON.`); }
   const choice = data?.choices?.[0];
+  const raw = choice?.message?.content;
+  const content = typeof raw === 'string' ? raw
+    : Array.isArray(raw) ? raw.filter((part: any) => part?.type === 'text').map((part: any) => part?.text ?? '').join('')
+    : '';
   // A cut-off answer is broken JSON or a partial story: fail the step, never hand it to the validators.
+  // The raw text rides on the error (rawAnswer) so the caller can keep it in failed-answers/ for
+  // diagnosis, the way it already keeps answers its validators refused (#6432).
   if (choice?.finish_reason === 'length') {
-    throw new Error(`${providerLabel(target.provider)} stopped at the ${maxOutputTokens}-token answer limit (finish reason: length); the answer is incomplete.`);
+    throw Object.assign(new Error(`${providerLabel(target.provider)} stopped at the ${maxOutputTokens}-token answer limit (finish reason: length); the answer is incomplete. If the answer repeats itself or never closes, the model's output degenerated and a larger limit will not help; try turning reasoning on or another model. If it is a sound answer that simply ran long, raise CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS.`), { rawAnswer: content });
   }
   if (choice?.finish_reason === 'content_filter') {
     throw new Error(`${providerLabel(target.provider)} omitted content from the answer (finish reason: content_filter); the answer is incomplete.`);
   }
-  const raw = choice?.message?.content;
-  const content = typeof raw === 'string' ? raw
-    : Array.isArray(raw) ? raw.filter((part: any) => part?.type === 'text').map((part: any) => part?.text ?? '').join('')
-      : '';
   if (!content.trim()) {
     throw new Error(`${providerLabel(target.provider)} answered with no text (finish reason: ${choice?.finish_reason ?? 'unknown'}).`);
   }

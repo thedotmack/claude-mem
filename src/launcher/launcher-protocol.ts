@@ -15,5 +15,6 @@
  * 3 — `hook` runs the hook-only plugin/scripts/hook-service.cjs when present
  *     (falling back to worker-service.cjs), so a hook no longer parses the
  *     whole worker bundle.
+ * 4 — preserve the exit status of the new local messages subcommand.
  */
-export const LAUNCHER_PROTOCOL = 3;
+export const LAUNCHER_PROTOCOL = 4;

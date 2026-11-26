@@ -22,12 +22,12 @@
 //   bun request-groups.mjs record-focus [--limit 20 | --other] <file|->
 //                                                   place requests and propose areas (saved through the worker)
 //   bun request-groups.mjs refresh-needs [--days 14]  what the automatic refresh would do now
-import { Database } from 'bun:sqlite';
+import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { conversationKey, humanRequestTitle, isConversationKey, isHumanActionRequest, originalFor, requestText } from './request-projection.mjs';
+import { conversationKey, copiesOpeningAsk, FOCUS_ASK_CHARS, isConversationKey, isHumanActionRequest, originalFor, placeholderTitleFromAsk, requestText } from './request-projection.mjs';
 import { GOAL_KINDS, goalKindOf, OWNER_GOALS_LIST } from './owner-goals.mjs';
 import { NO_PROJECT, projectRoot, upgradedGroupRoot, withDerivedProjects } from './session-project.mjs';
 import { isOwnerDismissedArea, isPlaceableArea, OTHER_FOCUS_AREA_ID, PROPOSAL_KINDS, readFocus } from './my-focus.mjs';
@@ -219,7 +219,7 @@ const emptyGroups = () => ({ version: 1, updatedAt: null, conversations: {}, gro
  * move to that group; others keep their previous group. `projectOf` maps a
  * conversation key to its project: a group holds one project root only, unless
  * the decision names the request's `projectRoot` itself. */
-export function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = new Map() } = {}) {
+export function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = new Map(), getProjectRoot = projectRoot } = {}) {
   if (!Array.isArray(decisions?.groups)) throw new TypeError('Decisions need a groups array.');
   const next = structuredClone(stored ?? emptyGroups());
   for (const [index, decision] of decisions.groups.entries()) {
@@ -247,14 +247,14 @@ export function applyGroupDecisions(stored, decisions, now = Date.now(), { proje
     if (decision.projectRoot != null && (typeof decision.projectRoot !== 'string' || !decision.projectRoot.trim())) throw new TypeError(`${label}.projectRoot must be a non-empty string when given.`);
     const explicitRoot = decision.projectRoot ?? (next.groups[id]?.rootNamed ? next.groups[id].projectRoot : null);
     const allMembers = [...new Set([...decision.conversations, ...Object.entries(next.conversations).filter(([key, groupId]) => groupId === id && !decision.conversations.includes(key)).map(([key]) => key)])];
-    const storedRoot = upgradedGroupRoot(next.groups[id]?.projectRoot, projectRoot(projectOf.get(next.groups[id]?.anchor)),
-      allMembers.map((key) => projectRoot(projectOf.get(key))));
+    const storedRoot = upgradedGroupRoot(next.groups[id]?.projectRoot, getProjectRoot(projectOf.get(next.groups[id]?.anchor)),
+      allMembers.map((key) => getProjectRoot(projectOf.get(key))));
     // A group decided before its project was known (the "no project" root) takes the root its members show now:
     // its earlier members may still show none, and that does not split it.
     const rootWasUnknown = storedRoot === NO_PROJECT;
     const roots = new Map();
     for (const key of allMembers) {
-      const root = projectRoot(projectOf.get(key));
+      const root = getProjectRoot(projectOf.get(key));
       if (root == null || (rootWasUnknown && root === NO_PROJECT && !decision.conversations.includes(key))) continue;
       roots.set(root, [...(roots.get(root) ?? []), key]);
     }
@@ -673,7 +673,7 @@ function pendingReviews(ledger, database, sinceEpoch) {
 
 /** An ask as the focus step reads it: the 400 characters grouping-input shows of a conversation's opening ask and an
  * open request's anchor ask (groupingInput), so a request is placed on what it was grouped on. */
-const FOCUS_ASK_CHARS = 400;
+export { placeholderTitleFromAsk, copiesOpeningAsk } from './request-projection.mjs';
 /** Conversations per readCandidates call: two bound parameters each, and 400 pairs (800 parameters) stays under
  * SQLite's 999-parameter limit before 3.32, the same chunk readConversationProjects uses. */
 const CONVERSATIONS_PER_QUERY = 400;
@@ -826,7 +826,9 @@ const AREA_NAME_MAX = 80, AREA_SENTENCE_MAX = 300;
 /**
  * A focus answer checked against the input it was made from. Two kinds of question share the answer shape:
  * - placing (focus-input): every listed request is placed exactly once, in a listed area by its exact id or in "other";
- *   a request whose conversations hold several separate asks may be promoted into a proposed area.
+ *   a request whose conversations hold several separate asks may be promoted into a proposed area. A request the
+ *   model cannot decide goes in "ignored" with a reason instead of a placement and is recorded in "other" with
+ *   that reason as its evidence — grouping's `ignored` carried to focus (#6432).
  * - Other (focus-input --other): nothing is placed; requests in Other that are steps of something larger cluster into
  *   a "new" proposal (two or more: one request is a request, not a cluster), and one may be promoted.
  * An area id that is not listed is refused, never mapped to Other: guessing would file the request wrongly. A proposal's
@@ -843,6 +845,9 @@ export function validateFocusAnswer(answer, input, ledger, { other = false } = {
   const dismissed = new Map(input.dismissed.map((area) => [area.focusAreaId, area]));
   const placed = new Map();
   if (other && answer.placements.length) throw new TypeError('This question places nothing: answer "placements": [] and propose areas only.');
+  const ignoredEntries = Array.isArray(answer?.ignored) ? answer.ignored : [];
+  if (other && ignoredEntries.length) throw new TypeError('This question places nothing: answer "placements": [] and propose areas only; "ignored" belongs to the placing question.');
+  const ignored = new Map();
   for (const [index, placement] of answer.placements.entries()) {
     const label = `placements[${index}]`;
     if (!listed.has(placement?.anchor)) throw new TypeError(`${label} names ${placement?.anchor}, which was not asked about.`);
@@ -853,8 +858,15 @@ export function validateFocusAnswer(answer, input, ledger, { other = false } = {
     }
     placed.set(placement.anchor, { focusAreaId: placement.focusAreaId, evidence: boundedText(placement.evidence, AREA_SENTENCE_MAX, `${label}.evidence`) });
   }
+  for (const [index, entry] of ignoredEntries.entries()) {
+    const label = `ignored[${index}]`;
+    if (!listed.has(entry?.anchor)) throw new TypeError(`${label} names ${entry?.anchor}, which was not asked about.`);
+    if (placed.has(entry.anchor)) throw new TypeError(`${label} names ${entry.anchor}, which a placement already places; a request is placed or skipped, not both.`);
+    if (ignored.has(entry.anchor)) throw new TypeError(`${label} names ${entry.anchor} a second time.`);
+    ignored.set(entry.anchor, boundedText(entry.reason, 200, `${label}.reason`));
+  }
   if (!other) {
-    const missing = [...listed.keys()].filter((anchor) => !placed.has(anchor));
+    const missing = [...listed.keys()].filter((anchor) => !placed.has(anchor) && !ignored.has(anchor));
     if (missing.length) throw new TypeError(`Place every request asked about; missing ${missing.join(', ')}.`);
   }
   const held = new Set();
@@ -882,37 +894,19 @@ export function validateFocusAnswer(answer, input, ledger, { other = false } = {
     };
   });
   return {
-    placements: [...placed].filter(([anchor]) => !held.has(anchor)).map(([anchor, { focusAreaId, evidence }]) => ({
-      anchorConversationKey: anchor, focusAreaId, basis: requestIndex.basis(listed.get(anchor).groupId), evidence,
-    })),
+    placements: [
+      ...[...placed].filter(([anchor]) => !held.has(anchor)).map(([anchor, { focusAreaId, evidence }]) => ({
+        anchorConversationKey: anchor, focusAreaId, basis: requestIndex.basis(listed.get(anchor).groupId), evidence,
+      })),
+      // A skipped request is recorded in Other with the model's reason as its evidence: the batch is
+      // decided, and the owner can move the request whenever they judge it.
+      ...[...ignored].filter(([anchor]) => !held.has(anchor)).map(([anchor, reason]) => ({
+        anchorConversationKey: anchor, focusAreaId: OTHER_FOCUS_AREA_ID, basis: requestIndex.basis(listed.get(anchor).groupId), evidence: reason,
+      })),
+    ],
     proposals,
     ...(other ? { otherPassHash: otherPassHash(ledger, [...listed.keys()].filter((anchor) => !held.has(anchor)).map((anchor) => listed.get(anchor).groupId), requestIndex) } : {}),
   };
-}
-
-/** The title a request starts with when code, not a model, starts it (the judge, or the owner declining a suggestion):
- * the first sentence of its opening ask as the refresh reads that ask (the FOCUS_ASK_CHARS that grouping-input shows,
- * which is also what the judge titles from), copied. Section 3 of the request-progress skill replaces it with a
- * written one. */
-export function placeholderTitleFromAsk(askText) {
-  const ask = requestText(askText ?? null, FOCUS_ASK_CHARS);
-  return humanRequestTitle(ask) || requestText(ask, 120) || 'Untitled request';
-}
-
-/** A title or an ask as two are compared: link targets and markdown marks dropped, lower case, spaces collapsed (line
- * breaks too), closing punctuation trimmed. */
-function comparableWords(text) {
-  return String(text ?? '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[*_`#]/g, '')
-    .toLowerCase().replace(/\s+/g, ' ').trim().replace(/[\s.!?…:;,]+$/u, '');
-}
-
-/** Whether a title copies its request's opening ask: the placeholder code cuts from the ask, or words the ask starts
- * with (a first sentence a grouping answer copied as typed, a trimmed copy). The one rule for both a title still owed
- * (hasPlaceholderTitle) and a written title refused (writtenTitle), so no title it accepts is owed again next run. */
-export function copiesOpeningAsk(title, askText) {
-  const words = comparableWords(title);
-  if (words === comparableWords(placeholderTitleFromAsk(askText))) return true;
-  return words.length > 0 && comparableWords(requestText(askText ?? null, FOCUS_ASK_CHARS)).startsWith(words);
 }
 
 /** Whether a request still shows a title copied from its opening ask, whoever copied it. */
@@ -999,6 +993,8 @@ function option(args, name, fallback) {
 function openDatabase() {
   const path = process.env.CLAUDE_MEM_DB ?? join(DATA_DIR, 'claude-mem.db');
   statSync(path);
+  // Portable group reducers can run in Node. Load the native reader only for the local CLI.
+  const { Database } = createRequire(typeof __filename === 'string' ? __filename : import.meta.url)('bun:sqlite');
   const database = new Database(path, { readonly: true, create: false });
   database.exec('PRAGMA busy_timeout = 1500');
   return database;

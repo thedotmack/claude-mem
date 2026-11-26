@@ -76,6 +76,16 @@ export async function publicationState(version, sha, read = registry) {
   return 'published';
 }
 
+export async function taggedPublicationState(version, sha, read = registry) {
+  const exact = await read(version);
+  if (exact) {
+    requireCondition(exact.gitHead === sha, 'The published version belongs to a different source commit.');
+    return 'published';
+  }
+  if (!stableVersion.test(version)) return 'unpublished';
+  return publicationState(version, sha, ref => ref === version ? null : read(ref));
+}
+
 async function verifyTag(tag, ref, sha, api) {
   requireCondition(ref?.object.type === 'tag', `${tag} must be an annotated tag.`);
   const annotation = await api(`git/tags/${ref.object.sha}`);
@@ -98,7 +108,7 @@ export async function requestRelease({ tag, sha }, api = github, check = publica
   requireCondition(pkg.name === packageName && pkg.version === version, 'The package and requested tag must match.');
   requireCondition(compareStable(version, latestRelease.tag_name.replace(/^v/, '')) >= 0,
     `GitHub already has a newer stable release (${latestRelease.tag_name}).`);
-  const notes = unreleasedNotes(changelog);
+  const newTagNotes = tagRef ? undefined : unreleasedNotes(changelog);
 
   if (tagRef) {
     await verifyTag(tag, tagRef, sha, api);
@@ -126,17 +136,23 @@ export async function requestRelease({ tag, sha }, api = github, check = publica
   if (release) {
     requireCondition(!release.draft && !release.prerelease, 'An existing draft or prerelease needs maintainer review.');
   } else {
-    await api('releases', { method: 'POST', body: { tag_name: tag, target_commitish: sha, name: tag, body: notes } });
+    await api('releases', { method: 'POST', body: {
+      tag_name: tag, target_commitish: sha, name: tag, body: newTagNotes ?? unreleasedNotes(changelog),
+    } });
   }
-  if (state === 'published') return 'The exact tag commit is already npm latest.';
+  const hasMacDownload = release?.assets?.some(asset =>
+    asset.name === 'Claude-Mem-Messages.zip' && asset.label === `Claude-Mem Messages (${sha})` &&
+    asset.state === 'uploaded' && /^sha256:[a-f\d]{64}$/.test(asset.digest));
+  if (state === 'published' && hasMacDownload) return 'The exact tag commit and Mac download are already published.';
 
   const workflow = 'actions/workflows/npm-publish.yml';
   const { workflow_runs: runs } = await api(`${workflow}/runs?branch=${tag}&head_sha=${sha}&per_page=100`);
   const existing = runs.find(run => ['push', 'workflow_dispatch'].includes(run.event) && run.head_sha === sha);
-  if (existing) {
-    if (existing.status === 'completed' && existing.conclusion !== 'success') {
-      throw new Error(`Inspect or retry the existing publisher for this tag at ${existing.html_url}.`);
-    }
+  if (existing?.status === 'completed' && existing.conclusion !== 'success') {
+    throw new Error(`Inspect or retry the existing publisher for this tag at ${existing.html_url}.`);
+  }
+  // A completed npm publication can be dispatched again to restore a missing download.
+  if (existing && (state !== 'published' || existing.status !== 'completed')) {
     return `The publisher has already started at ${existing.html_url}.`;
   }
   await api(`${workflow}/dispatches`, { method: 'POST', body: { ref: tag } });
@@ -150,14 +166,18 @@ async function main() {
     requireCondition(GITHUB_REF_TYPE === 'branch' && GITHUB_REF_NAME.startsWith(releasePrefix)
       && GITHUB_ACTOR === GITHUB_REPOSITORY_OWNER, 'Only an owner-created release request branch is accepted.');
     console.log(await requestRelease({ tag: GITHUB_REF_NAME.slice(releasePrefix.length), sha: GITHUB_SHA }));
-  } else if (process.argv[2] === 'publication-state') {
+  } else if (process.argv[2] === 'publication-state' || process.argv[2] === 'notes') {
     requireCondition(GITHUB_REF_TYPE === 'tag' && /^v/.test(GITHUB_REF_NAME), 'Publish dispatches must target a version tag.');
     const version = GITHUB_REF_NAME.slice(1);
     const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
     requireCondition(pkg.name === packageName && pkg.version === version, 'The checkout does not match the requested release tag.');
-    console.log(await publicationState(version, GITHUB_SHA));
+    if (process.argv[2] === 'notes') {
+      console.log(unreleasedNotes(readFileSync('docs/CHANGELOG.md', 'utf8')));
+    } else {
+      console.log(await taggedPublicationState(version, GITHUB_SHA));
+    }
   } else {
-    throw new Error('Expected request or publication-state.');
+    throw new Error('Expected request, notes or publication-state.');
   }
 }
 

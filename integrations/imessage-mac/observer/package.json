@@ -1,0 +1,12 @@
+{
+  "name": "claude-mem-messages-observer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@photon-ai/advanced-imessage": "2.5.0",
+    "@grpc/grpc-js": "^1.12.6",
+    "nice-grpc": "^2.1.11",
+    "nice-grpc-common": "^2.0.2"
+  }
+}
