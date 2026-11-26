@@ -39,6 +39,7 @@ const ENV_KEYS = [
   'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST',
   'CLAUDE_MEM_OPENROUTER_API_KEY',
   'CLAUDE_MEM_GEMINI_API_KEY',
+  'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
 ] as const;
 
 const NIM_BASE = 'https://integrate.api.nvidia.com/v1';

@@ -1115,7 +1115,9 @@ export class SessionRoutes extends BaseRouteHandler {
 
     if (platformSource !== 'cursor') {
       const session = this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber, project);
-      session.observerModel = observerModel;
+      // Only a prompt that carried a model changes the choice: the host's model read is best-effort (V2 gives it
+      // 250 ms), so a prompt without one is a missed read, not a session that went back to the configured model.
+      if (observerModel) session.observerModel = observerModel;
 
       // The row this request saved, by id. A newest-by-timestamp lookup can
       // return a neighbouring turn saved in the same millisecond.
@@ -1167,7 +1169,7 @@ export class SessionRoutes extends BaseRouteHandler {
       // Cursor creates its observer lazily, but accepted prompts still update an existing session.
       if (this.sessionManager.getSession(sessionDbId)) {
         const session = this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber, project);
-        session.observerModel = observerModel;
+        if (observerModel) session.observerModel = observerModel;
       }
       logger.debug('HTTP', 'session-init: Skipping SDK agent init for Cursor platform', { sessionDbId, promptNumber });
     }

@@ -149,8 +149,79 @@ export interface OpenAICompatConfig {
    * observer model.
    */
   summaryModel?: string;
+  /**
+   * Model ids in this config that the host chose, by the opt-in that took each:
+   * the host session's model, and the model and small model of the host's
+   * OpenCode config. A request whose `model` is one of them was sent on the
+   * host's choice, so a 404 for it is the endpoint refusing that choice, not a
+   * wrong configured model.
+   */
+  hostChosenModels?: Record<string, HostModelSetting>;
   /** Set for a Telegram wrap-up request (OpenAICompatibleProvider.formatTelegramWrapup). */
   plainText?: boolean;
+}
+
+/** The opt-ins that take a model id from the host instead of from claude-mem's own settings. */
+export type HostModelSetting = 'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION' | 'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST';
+
+/** Where each opt-in's model id comes from, as the refusal's remedy says it. */
+const HOST_MODEL_ORIGIN: Record<HostModelSetting, string> = {
+  CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION: 'the model selected in the host session, which CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION sends as-is',
+  CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST: "the model the host's OpenCode config names, which CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST reads",
+};
+
+/** The code of a 404 for a request sent on a model id the host chose, not claude-mem's settings (classifyOpenAICompatError). */
+export const HOST_MODEL_NOT_SERVED_CODE = 'host_model_not_served';
+
+/**
+ * Host-chosen model ids the observer endpoint answered 404 for, by endpoint
+ * URL and id: the host session's model (CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION)
+ * and the models of the host's OpenCode config (CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST).
+ *
+ * Either id belongs to the host's provider, so it is only right when that
+ * provider is the same service as the observer endpoint. When it is not, every
+ * request for it gets the same 404, and the id comes back with each prompt (the
+ * plugin sends it) or each turn (the config is read again): without this, the
+ * first batch of every prompt would be refused and the failure would name the
+ * wrong setting. A refused id is ignored from then on and the configured model
+ * serves.
+ *
+ * Kept for the worker's life, not on the session: an unrecoverable failure ends
+ * the session's live state (handleGeneratorExit), and the next prompt builds a
+ * new one. It holds no inference input and sends nothing by itself. A restart
+ * forgets it, so an endpoint that starts serving the model is used again then.
+ *
+ * Not capped. An entry takes a 404 from the user's own endpoint for an id their
+ * host selected or their OpenCode config names, a session id is at most 200
+ * characters (the session-init schema), and each one is logged at WARN when it
+ * is added.
+ */
+const hostModelsRefusedByEndpoint = new Set<string>();
+
+function isHostModelRefused(apiUrl: string, model: string): boolean {
+  return hostModelsRefusedByEndpoint.has(`${apiUrl}\n${model}`);
+}
+
+/** The model of this request and the opt-in that took it, when the host chose it; else undefined. */
+function hostChosenModelOfRequest(config: OpenAICompatConfig): { id: string; setting: HostModelSetting } | undefined {
+  const chosen = config.hostChosenModels;
+  return chosen && Object.hasOwn(chosen, config.model) ? { id: config.model, setting: chosen[config.model] } : undefined;
+}
+
+/** Stop using a host-chosen model this endpoint answered 404 for. Says so once per endpoint and id. */
+function rememberHostModelRefused(config: OpenAICompatConfig, setting: HostModelSetting): void {
+  if (isHostModelRefused(config.apiUrl, config.model)) return;
+  hostModelsRefusedByEndpoint.add(`${config.apiUrl}\n${config.model}`);
+  logger.warn('SDK', `${config.preset.label} does not serve a model the host chose; the observer goes back to the configured model for it`, {
+    model: config.model,
+    url: config.apiUrl,
+    setting,
+  });
+}
+
+/** Test seam: forget the refused host-chosen models. */
+export function resetRefusedHostModelsForTesting(): void {
+  hostModelsRefusedByEndpoint.clear();
 }
 
 /**
@@ -324,6 +395,8 @@ export function classifyOpenAICompatError(input: {
   endpointLabel?: string;
   /** The URL a request with no response was sent to, named in the network-error message. */
   requestUrl?: string;
+  /** The request's model when the host chose it, with the opt-in that took it; unset for a configured model. */
+  hostChosenModel?: { id: string; setting: HostModelSetting };
 }): ClassifiedProviderError {
   const body = input.bodyText ?? '';
   const lower = body.toLowerCase();
@@ -404,6 +477,18 @@ export function classifyOpenAICompatError(input: {
   // 404 on a self-configured endpoint is very often a wrong base URL or a model
   // id the endpoint does not serve, so say so instead of just "bad request".
   if (status === 404) {
+    // The id came from the host, so _MODEL is not what to check: name the
+    // setting that took it. If the base URL is the real fault, the configured
+    // model's own 404 says so on the next request.
+    if (input.hostChosenModel) {
+      const { id, setting } = input.hostChosenModel;
+      return new ClassifiedProviderError(describe('not found'), {
+        kind: 'unrecoverable',
+        cause: input.cause,
+        code: HOST_MODEL_NOT_SERVED_CODE,
+        action: `The endpoint answered 404 for "${id}", ${HOST_MODEL_ORIGIN[setting]}. The observer stops using that id and goes back to the configured model. To use it, serve it on CLAUDE_MEM_OPENAI_COMPAT_BASE_URL and restart the worker; otherwise set ${setting} to false.`,
+      });
+    }
     return new ClassifiedProviderError(describe('not found'), {
       kind: 'unrecoverable',
       cause: input.cause,
@@ -470,7 +555,13 @@ export function stripLeadingThinkBlock(content: string): string {
 /** Endpoint a key was last withheld from, so a status poll logs it once, not per read. */
 let lastWithheldKeyUrl: string | null = null;
 
-/** Unmapped host ids already warned about, so alternating ids still warn once each. */
+/**
+ * Unmapped host ids already warned about, so alternating ids still warn once
+ * each. The ids come from OpenCode config files, a checked-out repository's own
+ * among them, so the set is capped against a repository that names many: past
+ * the cap the oldest id is forgotten, which costs one more warning line if it
+ * is read again and nothing else. The number itself has no measurement behind it.
+ */
 const MAX_WARNED_UNMAPPED_HOST_MODEL_IDS = 64;
 const warnedUnmappedHostModelIds = new Set<string>();
 
@@ -505,14 +596,18 @@ function translateHostModel(
 function hostObserverModels(
   settings: SettingsDefaults,
   hostOptions: OpenAICompatHostOptions | undefined,
+  apiUrl: string,
 ): { model?: string; summaryModel?: string } {
   if (!hostOptions || settings.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST !== 'true') return {};
   const host = readOpenCodeHostConfig({
     cwd: hostOptions.cwd,
     includeProject: Boolean(hostOptions.cwd),
   });
-  const model = host.model ? translateHostModel(host.model, host.provider) : undefined;
-  const summaryModel = host.smallModel ? translateHostModel(host.smallModel, host.provider) : undefined;
+  // The translated id is the host provider's. One this endpoint answered 404
+  // for is left out, so the explicit setting or the preset serves instead.
+  const servedHere = (id: string | undefined) => (id && !isHostModelRefused(apiUrl, id) ? id : undefined);
+  const model = servedHere(host.model ? translateHostModel(host.model, host.provider) : undefined);
+  const summaryModel = servedHere(host.smallModel ? translateHostModel(host.smallModel, host.provider) : undefined);
   return {
     ...(model ? { model } : {}),
     ...(summaryModel ? { summaryModel } : {}),
@@ -549,8 +644,14 @@ export function resolveOpenAICompatConfig(
   const configuredModel = (settings.CLAUDE_MEM_OPENAI_COMPAT_MODEL ?? '').trim();
   // Precedence: explicit setting, then the host's translated model (opt-in),
   // then the preset. A host id never replaces an explicit observer model.
-  const hostModels = hostObserverModels(settings, hostOptions);
+  const hostModels = hostObserverModels(settings, hostOptions, apiUrl);
+  const ownModel = configuredModel || preset.defaultModel;
   const model = configuredModel || hostModels.model || preset.defaultModel;
+  // Only an id that claude-mem's own settings do not also name is the host's choice.
+  const hostChosenModels: Record<string, HostModelSetting> = {};
+  for (const id of [configuredModel ? undefined : hostModels.model, hostModels.summaryModel]) {
+    if (id && id !== ownModel) hostChosenModels[id] = 'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST';
+  }
 
   // One credential name for every endpoint, on purpose: the .env whitelist in
   // EnvManager is a security boundary (#2375), and a per-vendor name would mean
@@ -582,6 +683,7 @@ export function resolveOpenAICompatConfig(
     apiUrl,
     preset,
     ...(hostModels.summaryModel ? { summaryModel: hostModels.summaryModel } : {}),
+    ...(Object.keys(hostChosenModels).length > 0 ? { hostChosenModels } : {}),
   };
 }
 
@@ -634,7 +736,15 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     // Defense in depth: the init schema already rejects a blank id, but any
     // other writer must not replace a valid configured model with whitespace.
     const sessionModel = session.observerModel?.trim();
-    return { ...config, model: sessionModel || config.model };
+    if (!sessionModel || sessionModel === config.model) return config;
+    // An id this endpoint answered 404 for is not sent again; a different
+    // selection later in the session applies as usual.
+    if (isHostModelRefused(config.apiUrl, sessionModel)) return config;
+    return {
+      ...config,
+      model: sessionModel,
+      hostChosenModels: { ...config.hostChosenModels, [sessionModel]: 'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION' },
+    };
   }
 
   /** Extend this turn with already-queued events; normal confirm/reset covers every claim. */
@@ -723,10 +833,18 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     if (!config.apiUrl || !config.model) {
       throw this.missingApiKeyError();
     }
-    return withKeyPool(
-      { poolId: 'openai-compatible', keys: resolvePoolKeys(config), label: config.preset.label, rateLimitUntilNextKey },
-      ({ key, poolSize }) => this.queryChatCompletions(history, key, poolSize, config, signal, perAttemptTimeoutMs, paidSendBudget, label?.sessionId),
-    );
+    try {
+      return await withKeyPool(
+        { poolId: 'openai-compatible', keys: resolvePoolKeys(config), label: config.preset.label, rateLimitUntilNextKey },
+        ({ key, poolSize }) => this.queryChatCompletions(history, key, poolSize, config, signal, perAttemptTimeoutMs, paidSendBudget, label?.sessionId),
+      );
+    } catch (error) {
+      // The failed batch is not resent: the error ends this generation as any
+      // unrecoverable one does. Only later requests change model.
+      const hostChosen = hostChosenModelOfRequest(config);
+      if (hostChosen && isClassified(error) && error.code === HOST_MODEL_NOT_SERVED_CODE) rememberHostModelRefused(config, hostChosen.setting);
+      throw error;
+    }
   }
 
   /**
@@ -779,7 +897,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
       signal: attemptSignal,
       liveness,
       label,
-      classify: (input) => classifyOpenAICompatError({ ...input, endpointLabel: label, requestUrl: config.apiUrl }),
+      classify: (input) => classifyOpenAICompatError({ ...input, endpointLabel: label, requestUrl: config.apiUrl, hostChosenModel: hostChosenModelOfRequest(config) }),
     });
     try {
       return await send(includeReasoning);
@@ -845,6 +963,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
           headers: exchange.headers,
           cause: new Error(`${label} API error: ${responseData.error.code} - ${responseData.error.message}`),
           endpointLabel: label,
+          hostChosenModel: hostChosenModelOfRequest(config),
         });
       }
 
@@ -981,7 +1100,10 @@ export function isOpenAICompatAvailable(
     && typeof sessionModel === 'string'
     ? sessionModel.trim()
     : '';
-  const model = fromSession || config.model;
+  // An id the endpoint answered 404 for supplies no model: with none configured
+  // either, dispatch falls through as it does for any half-configured endpoint.
+  const usableFromSession = fromSession && !isHostModelRefused(config.apiUrl, fromSession) ? fromSession : '';
+  const model = usableFromSession || config.model;
   if (!config.apiUrl || !model) return false;
   if (!config.requiresApiKey) return true;
   return config.apiKeys.length > 0;

@@ -1,14 +1,20 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { OpenAICompatProvider } from '../../src/services/worker/OpenAICompatProvider.js';
+import {
+  HOST_MODEL_NOT_SERVED_CODE,
+  OpenAICompatProvider,
+  resetRefusedHostModelsForTesting,
+  resolveOpenAICompatConfig,
+} from '../../src/services/worker/OpenAICompatProvider.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { resolveOpenAICompatPreset } from '../../src/shared/openai-compat-presets.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
+import { logger } from '../../src/utils/logger.js';
 
 /**
  * End-to-end guard for the host-configured observer model (issue #6485).
@@ -54,6 +60,7 @@ for (const key of ENV_KEYS) savedEnv.set(key, process.env[key]);
 
 afterEach(() => {
   SettingsDefaultsManager.loadFromFile = originalLoad;
+  resetRefusedHostModelsForTesting();
   for (const key of ENV_KEYS) {
     const previous = savedEnv.get(key);
     if (previous === undefined) delete process.env[key];
@@ -68,6 +75,8 @@ interface HarnessOptions {
   fromHost?: boolean;
   fromSession?: boolean;
   observerModel?: string;
+  /** Ids the fake endpoint answers 404 for: a host provider that is not the observer's service. */
+  refusedModels?: string[];
 }
 
 function harness(opts: HarnessOptions = {}) {
@@ -103,6 +112,12 @@ function harness(opts: HarnessOptions = {}) {
     async fetch(request) {
       const body = (await request.json()) as WireRequest;
       requests.push({ model: body.model, messages: body.messages });
+      if (opts.refusedModels?.includes(body.model)) {
+        return Response.json(
+          { error: { message: `The model \`${body.model}\` does not exist`, type: 'invalid_request_error', code: 'model_not_found' } },
+          { status: 404 },
+        );
+      }
       return Response.json({
         model: body.model,
         choices: [{ message: { role: 'assistant', content: '<skip_summary reason="noise" />' }, finish_reason: 'stop' }],
@@ -184,7 +199,7 @@ function harness(opts: HarnessOptions = {}) {
     ...overrides,
   });
 
-  return { requests, provider, makeSession, store };
+  return { requests, provider, makeSession, store, root };
 }
 
 describe('host-configured observer model reaches the OpenAI-compatible endpoint', () => {
@@ -234,5 +249,42 @@ describe('host-configured observer model reaches the OpenAI-compatible endpoint'
     expect(h.requests).toHaveLength(1);
     expect(h.requests[0].model).toBe(PRESET_MODEL);
     expect(h.requests[0].model).not.toBe(HOST_ENDPOINT_MODEL);
+  });
+});
+
+/**
+ * The translated id is the host provider's. It is right for the observer only
+ * when that provider is the observer endpoint's service; otherwise the endpoint
+ * answers 404 for it, and the host config names it again on every turn.
+ */
+describe('a host-configured model the observer endpoint does not serve', () => {
+  it('host-refused: the id is sent once, then the preset model serves and the failure names the host opt-in', async () => {
+    const h = harness({ fromHost: true, refusedModels: [HOST_ENDPOINT_MODEL] });
+    const warn = spyOn(logger, 'warn');
+    try {
+      const failure = await h.provider.startSession(h.makeSession()).catch((error: unknown) => error);
+
+      expect(failure).toMatchObject({ kind: 'unrecoverable', code: HOST_MODEL_NOT_SERVED_CODE });
+      const action = (failure as { action: string }).action;
+      expect(action).toContain('CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST');
+      expect(action).toContain(HOST_ENDPOINT_MODEL);
+      expect(action).not.toContain('and _MODEL');
+      expect(h.requests.map(request => request.model)).toEqual([HOST_ENDPOINT_MODEL]);
+
+      // The next generation reads the same host config again. It must not be refused again.
+      await h.provider.startSession(h.makeSession());
+      expect(h.requests.map(request => request.model)).toEqual([HOST_ENDPOINT_MODEL, PRESET_MODEL]);
+
+      // Only the refused id is left out: the host's small model still feeds the summary tier.
+      const resolved = resolveOpenAICompatConfig(undefined, { cwd: h.root });
+      expect(resolved.model).toBe(PRESET_MODEL);
+      expect(resolved.summaryModel).toBe('endpoint-small');
+
+      const refusals = warn.mock.calls.filter(call => JSON.stringify(call).includes('CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST'));
+      expect(refusals).toHaveLength(1);
+      expect(JSON.stringify(refusals[0])).toContain(HOST_ENDPOINT_MODEL);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
