@@ -33,9 +33,9 @@
  * as register.ts adapts it, which keeps this file testable.
  */
 import type { AutoClearSettings } from './settings.js';
+import { WORK_STATE_WRITE_TOOL } from '../../shared/work-state-tool.js';
+export { WORK_STATE_WRITE_TOOL };
 
-/** claude-mem's write tool, however the host prefixes it (mcp__plugin_claude-mem_mcp-search__work_state_write). */
-export const WORK_STATE_WRITE_TOOL = /(?:^|__)work_state_write$/;
 /** Reading the work state back does not make a save stale. */
 const WORK_STATE_READ_TOOL = /(?:^|__)work_state_read$/;
 
