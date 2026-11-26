@@ -54,6 +54,11 @@ try {
   assert.equal(readFileSync(confPath, 'utf8'), saved);
   assert.equal(statSync(confPath).mode & 0o777, 0o600);
 
+  const legacy = JSON.parse(saved);
+  delete legacy.lineNumbers;
+  writeFileSync(confPath, JSON.stringify(legacy));
+  assert.deepEqual((await run(['photon', 'check', '--json']))[0].lineNumbers, ['Test line']);
+
   // Legacy CLI opt-in for direct messages never widens the app's group subscription.
   writeFileSync(confPath, JSON.stringify({ ...JSON.parse(saved), includeDirect: true }));
   const feed = resolve(import.meta.dir, '../../../tests/fixtures/imessage/group-chats.jsonl');
@@ -72,7 +77,8 @@ try {
     methods.add(String(headers[':path']));
     assert.equal(headers.authorization, 'Bearer fixtureToken');
     stream.respond({ ':status': 200, 'content-type': 'application/grpc' });
-    stream.write(Buffer.alloc(5)); // An empty protobuf stream frame.
+    // The SDK's live response encodes heartbeat as length-delimited protobuf field 99.
+    stream.write(Buffer.from([0, 0, 0, 0, 3, 0x9a, 0x06, 0]));
     if (methods.size === 2) subscribed();
   });
   grpc.listen(0, '127.0.0.1');
@@ -83,11 +89,16 @@ try {
   const photon = spawn(binary, ['imessage', 'photon', 'observe', '--json'], { env, cwd: home });
   const completed = once(photon, 'close');
   let diagnostics = '';
-  photon.stdout.on('data', chunk => { diagnostics += chunk; });
+  let active!: () => void;
+  const listening = new Promise<void>(resolve => { active = resolve; });
+  photon.stdout.on('data', chunk => {
+    diagnostics += chunk;
+    if (diagnostics.includes('"type":"started"')) active();
+  });
   photon.stderr.on('data', chunk => { diagnostics += chunk; });
   const timeoutPhoton = setTimeout(() => photon.kill('SIGKILL'), 8_000);
   try {
-    const ready = await Promise.race([subscriptions.then(() => true), completed.then(() => false)]);
+    const ready = await Promise.race([Promise.all([subscriptions, listening]).then(() => true), completed.then(() => false)]);
     assert.ok(ready, diagnostics.replaceAll('fixtureToken', '[fixture]'));
     assert.deepEqual([...methods].sort(), [
       '/photon.imessage.v1.GroupService/SubscribeGroupEvents',

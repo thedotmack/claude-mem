@@ -115,6 +115,9 @@ export class PhotonCloudLines {
     return await this.refreshing;
   }
 
+  /** A rejected stream token can be rotated before its advertised expiry. */
+  invalidateTokens(): void { this.data = null; }
+
   /** The project's dedicated lines. Throws for a shared line, which cannot see group chats. */
   async lines(): Promise<PhotonLine[]> {
     const data = await this.current();

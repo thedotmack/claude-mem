@@ -265,7 +265,10 @@ async function observe(args: string[], app?: { sdk?: PhotonModule }): Promise<nu
   });
   const out = emitter(Boolean(values.json));
   const config = readConfig();
-  const connected = () => out.event({ type: 'started' });
+  const connection = {
+    onListening: () => out.event({ type: 'started' }),
+    onReconnecting: () => out.event({ type: 'reconnecting' }),
+  };
   const { GroupChatObserver } = await import('../../integrations/imessage-observer/observer.js');
 
   let source;
@@ -278,9 +281,9 @@ async function observe(args: string[], app?: { sdk?: PhotonModule }): Promise<nu
       const { PhotonCloudLines } = await import('../../integrations/imessage-observer/photon-cloud.js');
       const cloud = new PhotonCloudLines({ projectId: config.projectId, projectSecret: config.projectSecret });
       const lines = async () => (await cloud.lines()).map(line => ({ address: line.address, token: line.token, label: line.phone }));
-      source = new PhotonSource({ lines, installDir: observerDir(), sdk: app?.sdk, onListening: connected, log: out });
+      source = new PhotonSource({ lines, installDir: observerDir(), sdk: app?.sdk, ...connection, onAuthRejected: () => cloud.invalidateTokens(), log: out });
     } else if (config.address && config.token) {
-      source = new PhotonSource({ lines: [{ address: config.address, token: config.token }], tls: config.tls, installDir: observerDir(), sdk: app?.sdk, onListening: connected, log: out });
+      source = new PhotonSource({ lines: [{ address: config.address, token: config.token }], tls: config.tls, installDir: observerDir(), sdk: app?.sdk, ...connection, log: out });
     } else {
       console.error('No Photon line is set up yet. Run: npx claude-mem imessage setup');
       return 1;
@@ -371,10 +374,17 @@ export async function runPhotonAppCommand(action: string | undefined, args: stri
     throw new Error('Expected photon check, connect or observe.');
   }
   const config = readConfig();
+  let numbers = config.lineNumbers ?? [];
+  if (!numbers.length && config.projectId && config.projectSecret) {
+    // CLI configurations created before v17 did not save line labels.
+    const { PhotonCloudLines } = await import('../../integrations/imessage-observer/photon-cloud.js');
+    const lines = await new PhotonCloudLines({ projectId: config.projectId, projectSecret: config.projectSecret }).lines();
+    numbers = lines.map(line => line.phone);
+  }
   out.event({
     type: 'photon',
     configured: Boolean(config.projectId && config.projectSecret || config.address && config.token),
-    lineNumbers: config.lineNumbers ?? [],
+    lineNumbers: numbers,
     worker: await workerStatus(),
   });
   return 0;

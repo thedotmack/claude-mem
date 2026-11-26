@@ -87,7 +87,7 @@ final class AppModel: ObservableObject {
     var needsSetup: Bool { launch == nil || commandProblem != nil || !workerReachable || (source == .mac && access != .granted) }
     var canListen: Bool {
         guard !needsSetup, workerReachable, pendingSource == nil else { return false }
-        return source == .photon ? photonConfigured : observedCount > 0 && pendingOptOuts.isEmpty
+        return source == .photon ? photonConfigured && !connectingPhoton : observedCount > 0 && pendingOptOuts.isEmpty
     }
 
     var visibleChats: [ChatItem] {
@@ -356,7 +356,7 @@ final class AppModel: ObservableObject {
         running?.stop()
     }
 
-    private func handle(_ event: CommandEvent) {
+    func handle(_ event: CommandEvent) {
         switch event {
         case let .started(observing):
             listener = .listening(observing: observing)
@@ -364,8 +364,10 @@ final class AppModel: ObservableObject {
                 photonWasListening = true
                 append("info", "Listening to groups that include the Photon line.")
             } else { append("info", "Listening for new messages in \(observing) chat\(observing == 1 ? "" : "s").") }
+        case .reconnecting:
+            listener = .starting
         case let .status(observing, sent, skipped):
-            listener = .listening(observing: observing)
+            if source == .mac, case .listening = listener { listener = .listening(observing: observing) }
             self.sent = sent
             self.skipped = skipped
         case let .log(level, message):
