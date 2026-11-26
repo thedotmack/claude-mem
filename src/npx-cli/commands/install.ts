@@ -175,7 +175,7 @@ import { holdSpawnLock, SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-ga
 import { readOwnedWorkerPidInfo, type PidInfo } from '../../supervisor/process-registry.js';
 import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
 import { isInstallRunByAutoUpdate } from '../../shared/auto-update-install-run.js';
-import { stripLegacyClaudeMemAlias } from './uninstall.js';
+import { stripLegacyClaudeMemAliasUnlessSkipped } from './uninstall.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 import { initialIDESelection } from './ide-detection.js';
 import { canonicalIntegrationId } from '../../shared/integration-id.js';
@@ -3412,7 +3412,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // it here too. The strip runs only after the overwrite confirmation above:
   // declining or cancelling a reinstall must leave the user's shell files
   // exactly as they were. The strip prints one line per file it rewrites.
-  stripLegacyClaudeMemAlias();
+  // With CLAUDE_MEM_SKIP_SHELL_RC set, no shell file is rewritten: the alias is
+  // reported and the person removes it.
+  stripLegacyClaudeMemAliasUnlessSkipped({ warn: log.warn });
 
   let selectedIDEs: string[];
   if (options.ide) {

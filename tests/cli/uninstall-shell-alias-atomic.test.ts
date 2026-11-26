@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import { findLegacyClaudeMemAlias, stripLegacyClaudeMemAlias } from '../../src/npx-cli/commands/uninstall.js';
+import { findLegacyClaudeMemAlias, stripLegacyClaudeMemAlias, stripLegacyClaudeMemAliasUnlessSkipped } from '../../src/npx-cli/commands/uninstall.js';
 
 // The shell rc a user already has open in an editor is not a file an uninstall
 // may truncate. The alias strip read the whole file and wrote the whole file
@@ -224,9 +224,50 @@ describe('install strips the legacy alias only after the overwrite confirmation'
   it('places the strip call after the confirmation prompt in install.ts', () => {
     const source = readFileSync(path.join(import.meta.dir, '..', '..', 'src', 'npx-cli', 'commands', 'install.ts'), 'utf-8');
     const promptIndex = source.indexOf('Overwrite existing installation?');
-    const stripIndex = source.indexOf('stripLegacyClaudeMemAlias();');
+    const stripIndex = source.indexOf('stripLegacyClaudeMemAliasUnlessSkipped(');
 
     expect(promptIndex).toBeGreaterThan(-1);
     expect(stripIndex).toBeGreaterThan(promptIndex);
+  });
+});
+
+describe('install and update honor CLAUDE_MEM_SKIP_SHELL_RC for the legacy alias', () => {
+  let home: string;
+  let bashrc: string;
+  const aliasLine = 'alias claude-mem="npx claude-mem@latest"';
+  const content = ['export EDITOR=vim', aliasLine, ''].join('\n');
+
+  beforeEach(() => {
+    home = mkdtempSync(path.join(tmpdir(), 'install-alias-skip-'));
+    bashrc = path.join(home, '.bashrc');
+    writeFileSync(bashrc, content, 'utf-8');
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('leaves the file untouched and names it when the variable is set', () => {
+    const warnings: string[] = [];
+    stripLegacyClaudeMemAliasUnlessSkipped({
+      home,
+      environmentVariables: { CLAUDE_MEM_SKIP_SHELL_RC: '1' },
+      warn: (message) => warnings.push(message),
+    });
+
+    expect(readFileSync(bashrc, 'utf-8')).toBe(content);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(bashrc);
+    expect(warnings[0]).toContain('CLAUDE_MEM_SKIP_SHELL_RC');
+  });
+
+  it('still strips the alias when the variable is not set', () => {
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    const warnings: string[] = [];
+    stripLegacyClaudeMemAliasUnlessSkipped({ home, environmentVariables: {}, warn: (message) => warnings.push(message) });
+    errorSpy.mockRestore();
+
+    expect(readFileSync(bashrc, 'utf-8')).toBe('export EDITOR=vim\n');
+    expect(warnings).toHaveLength(0);
   });
 });

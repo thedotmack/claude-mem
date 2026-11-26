@@ -61,6 +61,7 @@ import { existsSync, readFileSync, realpathSync, writeSync } from 'fs';
 import { dirname, join } from 'path';
 import {
   ensureLauncherOnPath,
+  SKIP_SHELL_RC_ENV_VAR,
   findExecutableOnPath,
   isProcessRunning,
   type LauncherEnsureResult,
@@ -159,6 +160,12 @@ function launcherPathLookupFailure(ensureResult: LauncherEnsureResult): EnsureLa
       return {
         reason: `the launcher was just installed at ${placedLauncherBinaryPath} and ${dirname(placedLauncherBinaryPath)} was added to your PATH, which this Claude Code session started without`,
         fix: RESTART_FIX,
+      };
+    }
+    if (ensureResult.pathSetupOutcome === 'rc-file-skipped') {
+      return {
+        reason: `the launcher was installed at ${placedLauncherBinaryPath}, and ${SKIP_SHELL_RC_ENV_VAR} stopped the installer from adding ${dirname(placedLauncherBinaryPath)} to your PATH`,
+        fix: `Fix: add ${dirname(placedLauncherBinaryPath)} to your PATH, then restart Claude Code from a new terminal.`,
       };
     }
     return {

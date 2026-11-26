@@ -15,6 +15,7 @@ import {
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { clearClaudeAutoMemoryOverride } from '../utils/claude-auto-memory.js';
 import { writeTextFileAtomic } from '../../shared/atomic-json.js';
+import { isShellRcSkipRequested, SKIP_SHELL_RC_ENV_VAR } from '../../launcher/install-launcher.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, resolveDataDir } from '../../shared/paths.js';
 import { updateSettingsDocument } from '../../shared/settings-document.js';
@@ -210,6 +211,26 @@ export function stripLegacyClaudeMemAlias(home: string = homedir()): void {
     } catch (error: unknown) {
       console.warn(`[claude-mem] Could not rewrite ${filePath}:`, error instanceof Error ? error.message : String(error));
     }
+  }
+}
+
+/**
+ * The install/update form of stripLegacyClaudeMemAlias: with
+ * CLAUDE_MEM_SKIP_SHELL_RC set it rewrites no shell file and reports each file
+ * still carrying the alias, so the person can remove the line themselves.
+ */
+export function stripLegacyClaudeMemAliasUnlessSkipped(options: {
+  warn: (message: string) => void;
+  home?: string;
+  environmentVariables?: NodeJS.ProcessEnv;
+}): void {
+  const home = options.home ?? homedir();
+  if (!isShellRcSkipRequested(options.environmentVariables ?? process.env)) {
+    stripLegacyClaudeMemAlias(home);
+    return;
+  }
+  for (const aliasFile of findLegacyClaudeMemAlias(home)) {
+    options.warn(`${SKIP_SHELL_RC_ENV_VAR} is set, so the legacy claude-mem alias in ${aliasFile.filePath} was left in place. Remove the alias line yourself, then open a new shell.`);
   }
 }
 
