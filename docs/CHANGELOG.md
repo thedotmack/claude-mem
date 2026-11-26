@@ -17,6 +17,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - The read-only observer starts with new messages when you begin listening. From Terminal, use `npx claude-mem imessage mac` to check access, list chats, save picks, listen and import contact names. `npx claude-mem imessage setup` configures the Photon line.
 - The Mac app includes the observer for Apple silicon and Intel. The Messages source requires Full Disk Access. The Photon source uses your Photon credentials. [Download Claude-Mem Messages for macOS](https://github.com/thedotmack/claude-mem/releases/download/v17.0.0/Claude-Mem-Messages.zip).
 
+## [16.2.1] - 2026-11-26
+
+- **After a release ships, the childhood skill now watches it for 24 hours by default instead of 30 minutes** (#6480). A full day catches slow npm registry updates, late CI and reports from users in other time zones. Checks are close together in the first hour, every 30 minutes until hour 6, then every 2 hours, with a final sweep at the 24-hour mark. A new problem brings that surface back to close checks until it settles. Between checks the agent uses a scheduled check or wake-up instead of holding a session open, and if it can't come back it reports the window as still open, not as clean.
+
 ## [16.2.0] - 2026-11-26
 
 ### iMessage group chats
