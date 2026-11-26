@@ -244,9 +244,9 @@ export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: 
       publish({ choice, ...(installer ? { installer: { stage: appliedStage(choice.branch, data.alreadyPro), error: null } } : {}) })
       if (openCheckout) await this.checkout()
     },
-    // Plays the checkout the terminal would open: waiting, then paid.
+    // Plays the checkout the terminal would open: waiting (with a made-up device code), then paid.
     async checkout() {
-      publish({ checkout: { state: 'waiting', error: null } })
+      publish({ checkout: { state: 'waiting', error: null, userCode: 'K7QM-4XPT' } })
       const failed = failsOnce('checkout')
       setTimeout(() => publish({ checkout: failed ? { state: 'failed', error: SAMPLE_FAILURE_WORDS.checkout } : { state: 'paid', error: null } }), 1500)
     },

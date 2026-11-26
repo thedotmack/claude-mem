@@ -412,6 +412,14 @@
 .checkout-handoff .checkout-status { display: flex; align-items: center; gap: 10px; color: var(--ink); font-size: 17px; font-weight: 550; }
 .checkout-spinner { width: 20px; height: 20px; color: var(--violet); }
 .checkout-handoff .setup-error { margin: 6px 0 0; }
+/* The device code beside "Waiting for this device to connect…": large monospace, with Finish Setup's copy button look. */
+.device-code { align-self: stretch; display: grid; gap: 8px; margin-top: 4px; }
+.checkout-handoff .device-code-label { color: var(--ink); font-size: 15px; font-weight: 600; }
+.device-code-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.device-code-value { padding: 8px 16px; border: 1px solid var(--line); border-radius: 10px; background: #f6f7fc; color: var(--ink); font: 600 30px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .08em; white-space: nowrap; }
+.device-code-row .secondary { min-height: 44px; border-radius: 12px; font-size: 16px; }
+.checkout-handoff .device-code-hint { font-size: 15px; }
+.checkout-handoff .device-code-status { min-height: 1.4em; font-size: 14px; }
 
 /* Finish Setup (PROTO #route-finish-setup): connected tools apart from the ones that can be added (E8). */
 .setup-main.step-finish-setup { width: min(1180px, calc(100% - 64px)); }
@@ -627,6 +635,7 @@
   .checkout-notes, .checkout-terms { font-size: 15px; }
   .checkout-handoff h2 { font-size: 19px; }
   .checkout-handoff p { font-size: 16px; }
+  .device-code-value { font-size: 24px; padding: 8px 12px; }
   .finish-tools { padding: 16px 14px 14px; }
   .finish-tools legend { font-size: 19px; }
   .tool-option { grid-template-columns: 24px 32px 1fr; gap: 10px; font-size: 16px; }

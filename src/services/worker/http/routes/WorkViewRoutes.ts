@@ -55,9 +55,9 @@ import type { SetupScan, SetupScanState } from '../../../prompt-import/setup-sca
 import { readHistoryCounts, type HistoryImport } from '../../../setup/history-import.js';
 import { createSetupTelemetry } from '../../../setup/telemetry.js';
 import { createSetupInstallerResumer } from '../../../setup/resume-installer.js';
-import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
+import { hasActiveSetupSession, hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupCheckout, type SetupCheckoutServed, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
 import { toSetupUsage } from '../../../../shared/setup-usage.js';
-import { historyImportRunning, SETUP_BRANCHES, SETUP_CLOUD_SYNC_OFFERS, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS, setupCloudSyncOffer } from '../../../../shared/setup-funnel.js';
+import { historyImportRunning, SETUP_BRANCHES, SETUP_CLOUD_SYNC_OFFERS, SETUP_DEVICE_CODE_PATTERN, SETUP_INSTALLER_STAGES, SETUP_MEMORY_BILLINGS, setupCloudSyncOffer } from '../../../../shared/setup-funnel.js';
 import { hasPendingInstallSetup, SETUP_DSH_PROFILE_MAX_CHARACTERS, SETUP_INSTALL_NOTE_MAX_CHARACTERS, SETUP_INSTALL_STATUSES } from '../../../../shared/setup-install.js';
 import {
   CONTINUABLE_PLATFORMS, CONVERSATION_SESSION_UUID_PATTERN, OPEN_IN_APP_CLICK_ID_PATTERN, type ConversationContinuation, type ConversationContinuationNotice,
@@ -109,14 +109,18 @@ export function requireWorkViewOrigin(req: Request, res: Response, next: NextFun
 }
 
 // Reads that return share links or comments: the viewer's own page only. Worker CORS lets other local pages read
-// responses, and a cross-origin fetch carries its Origin.
-export function requireWorkViewReadOrigin(req: Request, res: Response, next: NextFunction): void {
-  if (req.get('sec-fetch-site') === 'cross-site' || isForeignLoopbackBrowserWrite(req)) {
-    res.status(403).json({ error: 'Sharing is available only from the local work viewer.' });
-    return;
-  }
-  next();
+// responses, and a cross-origin fetch carries its Origin. `refusal` words the 403 for what the route serves.
+function workViewReadOrigin(refusal: string) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (req.get('sec-fetch-site') === 'cross-site' || isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: refusal });
+      return;
+    }
+    next();
+  };
 }
+export const requireWorkViewReadOrigin = workViewReadOrigin('Sharing is available only from the local work viewer.');
+const requireSetupPageReadOrigin = workViewReadOrigin('The device code is available only from the local setup page.');
 
 const ruleBody = z.object({
   action: z.enum(['approve', 'edit', 'turn-off', 'turn-on', 'dismiss', 'add', 'replace', 'restore-suggestion']),
@@ -359,6 +363,17 @@ function redactSetupInstall(install: SetupStateFile['install']): SetupStateFile[
   return { ...install, selection: email ? { ...selection, emailProvided: true } : selection };
 }
 
+/**
+ * The device code is no page's to read either: typed into someone else's signed-in browser, it would connect this
+ * device to their account. The served state says only that one waits; the setup page reads it from the origin-guarded
+ * GET /api/setup/checkout/device-code.
+ */
+function redactSetupCheckout(checkout: SetupCheckout | null): SetupCheckoutServed | null {
+  if (!checkout) return null;
+  const { deviceCode, ...served } = checkout;
+  return deviceCode && checkout.state === 'waiting' ? { ...served, deviceCodeWaiting: true } : served;
+}
+
 // Cloud Sync can use the existing provider. An explicit offer never changes a local or legacy hosted choice.
 const setupChoiceBody = z.object({
   branch: z.enum(SETUP_BRANCHES),
@@ -378,7 +393,15 @@ const setupInstallerBody = z.object({
   error: z.string().max(2000).nullable().optional(),
   /** The installer mirrors the pairing checkout it is running (funnel Phase 8). */
   checkout: z.enum(['waiting', 'paid', 'failed']).optional(),
-}).strict();
+  /** The pairing's code, sent with `waiting` so the setup page can show it; paid and failed clear it. */
+  deviceCode: z.object({
+    userCode: z.string().regex(SETUP_DEVICE_CODE_PATTERN),
+    // The installer sends Date#toISOString(); nothing else is a time this field takes.
+    expiresAt: z.string().max(40).refine(value => !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value).nullable(),
+  }).strict().optional(),
+}).strict().refine(body => !body.deviceCode || body.checkout === 'waiting', {
+  message: 'A device code is reported only while checkout waits.',
+});
 const setupCheckoutBody = z.object({}).strict();
 const setupResumeBody = z.object({ retry: z.boolean().optional() }).strict();
 const setupCompleteBody = z.object({
@@ -955,6 +978,13 @@ export class WorkViewRoutes extends BaseRouteHandler {
     }));
     app.post('/api/setup/installer', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupInstallerBody), this.wrapHandler(this.saveInstallerStage));
     app.post('/api/setup/checkout', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupCheckoutBody), this.wrapHandler(this.requestCheckout));
+    // The code shown beside "Waiting for this device to connect…": the setup page's own origin only (redactSetupCheckout).
+    app.get('/api/setup/checkout/device-code', workViewLoopbackOnly, requireSetupPageReadOrigin, this.wrapHandler((_req, res) => {
+      const checkout = readSetupState(this.setupStatePath).checkout;
+      res.setHeader('Cache-Control', 'no-store');
+      if (checkout?.state !== 'waiting' || !checkout.deviceCode) { res.status(404).json({ error: 'No device code is waiting.' }); return; }
+      res.json(checkout.deviceCode);
+    }));
     app.post('/api/setup/import', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupImportBody), this.wrapHandler(this.startHistoryImport));
     // Finish Setup's "Stop import": the same guards. It only ends a run; the person's own POST above starts one again.
     app.post('/api/setup/import/stop', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupImportBody), this.wrapHandler(this.stopHistoryImport));
@@ -964,7 +994,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private setupStateView(state: SetupStateFile = readSetupState(this.setupStatePath)): SetupStateView {
     const settings = SettingsDefaultsManager.loadFromFile(this.settingsPath, true, { readOnly: true }) as unknown as Record<string, unknown>;
     const historyImport = this.historyImport?.state() ?? null;
-    return { ...state, install: redactSetupInstall(state.install), alreadyPro: hasProConfiguration(settings), history: this.historyCounts(), historyImport, backgroundWorkRunning: this.backgroundWorkRunning({ countScanWaitingForUploadAnswer: true, failOnUnreadableRefresh: false }) };
+    return { ...state, install: redactSetupInstall(state.install), checkout: redactSetupCheckout(state.checkout), alreadyPro: hasProConfiguration(settings), history: this.historyCounts(), historyImport, backgroundWorkRunning: this.backgroundWorkRunning({ countScanWaitingForUploadAnswer: true, failOnUnreadableRefresh: false }) };
   }
 
   /**
@@ -1140,14 +1170,15 @@ export class WorkViewRoutes extends BaseRouteHandler {
   };
 
   private saveInstallerStage = (req: Request, res: Response): void => {
-    const { stage, error, checkout } = req.body as z.infer<typeof setupInstallerBody>;
+    const { stage, error, checkout, deviceCode } = req.body as z.infer<typeof setupInstallerBody>;
     const state = readSetupState(this.setupStatePath);
     const now = new Date().toISOString();
     // A new installer run starts a fresh hand-off: a choice or checkout left by an earlier, interrupted run is not applied.
     const fresh = stage === 'waiting-for-choice';
     const choice = fresh ? null : state.choice;
     const checkoutState = fresh ? null : checkout
-      ? { state: checkout, requests: state.checkout?.requests ?? 0, error: checkout === 'failed' ? error ?? null : null, updatedAt: now }
+      // Each report replaces the code: only a waiting checkout carries one (the body check), so paid and failed clear it.
+      ? { state: checkout, requests: state.checkout?.requests ?? 0, error: checkout === 'failed' ? error ?? null : null, updatedAt: now, ...(deviceCode ? { deviceCode } : {}) }
       : state.checkout;
     this.saveSetupState({ ...state, choice, checkout: checkoutState, installer: { stage, error: checkout ? state.installer?.error ?? null : error ?? null, updatedAt: now } }, res);
   };

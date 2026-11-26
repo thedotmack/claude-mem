@@ -429,4 +429,11 @@ export const setupFr: Record<string, string> = {
   'This import added {imported} of {sent} memories to your CMEM account · Ready to search.': 'Cette importation a ajouté {imported} mémoires sur {sent} à votre compte CMEM · Prêtes à être recherchées.',
   'The other 1 was already there, or cmem.ai couldn’t read it.': 'L’autre mémoire était déjà là, ou cmem.ai n’a pas pu la lire.',
   'The other {count} were already there, or cmem.ai couldn’t read them.': 'Les {count} autres étaient déjà là, ou cmem.ai n’a pas pu les lire.',
+  // Checkout's device code, shown while the checkout waits
+  'Your device code': 'Votre code d’appareil',
+  'Copy code': 'Copier le code',
+  'cmem.ai asks for this code after you start your free trial.': 'cmem.ai vous demande ce code une fois votre essai gratuit lancé.',
+  'cmem.ai asks for this code after checkout.': 'cmem.ai vous demande ce code après le paiement.',
+  'Code copied.': 'Code copié.',
+  'Select and copy the code above.': 'Sélectionnez et copiez le code ci-dessus.',
 };

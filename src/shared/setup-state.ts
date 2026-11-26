@@ -26,7 +26,21 @@ export interface SetupChoice {
   usage?: SetupUsage;
 }
 export interface SetupInstallerReport { stage: SetupInstallerStage; error: string | null; updatedAt: string }
-export interface SetupCheckout { state: SetupCheckoutState; requests: number; error: string | null; updatedAt: string }
+/**
+ * The pairing's device code while its checkout waits: cmem.ai asks for it once the person has started the trial or
+ * checkout. `expiresAt` (ISO) is when the installer stops waiting on that pairing, or null when cmem.ai gave no expiry.
+ */
+export interface SetupDeviceCode { userCode: string; expiresAt: string | null }
+export interface SetupCheckout {
+  state: SetupCheckoutState; requests: number; error: string | null; updatedAt: string;
+  /** Only while `waiting`, from the installer that holds the pairing. Never in GET /api/setup/state (SetupCheckoutServed). */
+  deviceCode?: SetupDeviceCode;
+}
+/**
+ * The checkout as GET /api/setup/state and its `setup-state` event frame serve it. Any localhost page can read those,
+ * so the code itself stays behind the origin-guarded GET /api/setup/checkout/device-code; this only says one waits.
+ */
+export type SetupCheckoutServed = Omit<SetupCheckout, 'deviceCode'> & { deviceCodeWaiting?: true };
 
 export interface SetupStateFile {
   status: SetupStatus;
@@ -41,7 +55,8 @@ export interface SetupStateFile {
 }
 
 /** What GET /api/setup/state answers: the file plus what the page needs to pre-select. */
-export interface SetupStateView extends SetupStateFile {
+export interface SetupStateView extends Omit<SetupStateFile, 'checkout'> {
+  checkout: SetupCheckoutServed | null;
   /** This machine already has a CMEM Pro configuration: On The Go is pre-selected and checkout is skipped. */
   alreadyPro: boolean;
   /** This machine's own observation history (Finish Setup's import offer); null when the worker cannot read it. */
