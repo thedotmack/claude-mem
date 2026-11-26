@@ -68,6 +68,7 @@ final class AppModel: ObservableObject {
     private var listenerID: UUID?
     private var running: RunningCommand?
     private var userStopped = false
+    private var isShuttingDown = false
     private var focusSaves: [String: Task<Void, Never>] = [:]
     private var lastSave: Task<Bool, Never>?
     private var sourceGeneration = 0
@@ -87,7 +88,7 @@ final class AppModel: ObservableObject {
 
     var needsSetup: Bool { launch == nil || commandProblem != nil || !workerReachable || (source == .mac && access != .granted) }
     var canListen: Bool {
-        guard !needsSetup, workerReachable, pendingSource == nil else { return false }
+        guard !isShuttingDown, !needsSetup, workerReachable, pendingSource == nil else { return false }
         return source == .photon ? photonConfigured && !connectingPhoton : observedCount > 0 && pendingOptOuts.isEmpty
     }
 
@@ -111,6 +112,8 @@ final class AppModel: ObservableObject {
     private var refreshGeneration = 0
 
     func selectSource(_ next: MessageSource) {
+        guard !isShuttingDown else { return }
+        defaults.set(next.rawValue, forKey: "messageSource")
         guard next != source else {
             pendingSource = nil
             return
@@ -124,7 +127,6 @@ final class AppModel: ObservableObject {
         source = next
         sourceGeneration += 1
         chatsGeneration += 1
-        defaults.set(next.rawValue, forKey: "messageSource")
         listener = .stopped
         selection = nil
         chats = []
@@ -139,6 +141,7 @@ final class AppModel: ObservableObject {
     }
 
     func refreshAll() async {
+        guard !isShuttingDown else { return }
         refreshGeneration += 1
         let generation = refreshGeneration
         if source == .mac { access = FullDiskAccess.check() }
@@ -356,6 +359,7 @@ final class AppModel: ObservableObject {
     }
 
     func stopListening() {
+        guard !isShuttingDown else { return }
         userStopped = true
         restartAfterStop = false
         if source == .photon { photonWasListening = false }
@@ -365,7 +369,7 @@ final class AppModel: ObservableObject {
     func handle(_ event: CommandEvent, from id: UUID? = nil) {
         // Exit still owns cleanup for a stopping process. Its late output must
         // not change the active source, status, or the person's launch choice.
-        guard !userStopped, id == nil || id == listenerID else { return }
+        guard !isShuttingDown, !userStopped, id == nil || id == listenerID else { return }
         if case .failed = listener { return }
         switch event {
         case let .started(observing):
@@ -427,6 +431,9 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() {
+        guard !isShuttingDown else { return }
+        isShuttingDown = true
+        refreshGeneration += 1
         // The app is quitting. Preserve whether a healthy Photon listener was
         // active and ignore process events caused by our own teardown.
         listenerID = nil

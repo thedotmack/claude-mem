@@ -63,8 +63,10 @@ final class AppModelTests: XCTestCase {
 
     @MainActor
     func testPhotonConfirmationAfterStopOrSourceSwitchCannotResumeOnNextLaunch() async throws {
-        let choices: [[MessageSource]] = [[], [.mac], [.mac, .photon]]
-        for requested in choices {
+        let choices: [(requested: [MessageSource], quitWhilePending: Bool)] = [
+            ([], false), ([.mac], false), ([.mac, .photon], false), ([.mac], true),
+        ]
+        for (requested, quitWhilePending) in choices {
             let suite = "ClaudeMemMessagesTests-" + UUID().uuidString
             let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
             defer { defaults.removePersistentDomain(forName: suite) }
@@ -94,7 +96,14 @@ final class AppModelTests: XCTestCase {
                 for source in requested {
                     model.selectSource(source)
                     XCTAssertEqual(model.selectedSource, source)
+                    XCTAssertEqual(AppModel(defaults: defaults).source, source)
                 }
+            }
+            if quitWhilePending {
+                model.shutdown()
+                XCTAssertEqual(AppModel(defaults: defaults).source, .mac)
+                XCTAssertFalse(defaults.bool(forKey: "photonWasListening"))
+                continue
             }
             model.handle(.started(observing: 0))
             model.handle(.status(observing: 1, sent: 99, skipped: 0))
@@ -106,6 +115,51 @@ final class AppModelTests: XCTestCase {
             XCTAssertEqual(model.sent, 0)
             XCTAssertFalse(defaults.bool(forKey: "photonWasListening"))
         }
+    }
+
+    @MainActor
+    func testQuittingDuringARefreshKeepsTheHealthyResumeChoiceAndStartsNoNewProcess() async throws {
+        let suite = "ClaudeMemMessagesTests-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        defaults.set("photon", forKey: "messageSource")
+        let model = AppModel(defaults: defaults)
+        model.workerReachable = true
+        model.photonConfigured = true
+        let program = #"""
+        case "$4" in
+          check)
+            touch "$1/checking"
+            while [ ! -f "$1/finish" ]; do sleep 0.02; done
+            echo '{"type":"photon","configured":true,"lineNumbers":[],"worker":{"reachable":true,"url":"http://fixture"}}'
+            ;;
+          observe)
+            printf x >> "$1/listeners"
+            echo '{"type":"started"}'
+            cat >/dev/null
+            ;;
+        esac
+        """#
+        model.launch = CommandLaunch(executable: "/bin/sh", prefix: ["-c", program, "fixture", directory.path])
+        defer { model.shutdown() }
+        model.startListening()
+        for _ in 0..<100 where model.listener == .starting { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertTrue(defaults.bool(forKey: "photonWasListening"))
+        let checking = directory.appendingPathComponent("checking").path
+        let refresh = Task { await model.refreshAll() }
+        for _ in 0..<100 where !FileManager.default.fileExists(atPath: checking) { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: checking))
+        model.shutdown()
+        try Data().write(to: directory.appendingPathComponent("finish"))
+        await refresh.value
+        model.startListening()
+        model.stopListening()
+        XCTAssertFalse(model.canListen)
+        XCTAssertTrue(defaults.bool(forKey: "photonWasListening"))
+        XCTAssertEqual(try String(contentsOf: directory.appendingPathComponent("listeners"), encoding: .utf8), "x")
     }
 
     @MainActor
