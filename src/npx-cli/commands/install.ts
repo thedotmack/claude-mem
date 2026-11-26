@@ -3946,12 +3946,12 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     // them. A worker that booted before they were saved reports `configured: false`: restart it the way
     // `teambrain join` does, once its extraction or history import has finished, so setup does not end with an
     // approved device that never syncs. A worker that cannot answer yet is left alone; sync state stays visible
-    // via the cloud-sync skill.
+    // via the cloud-sync skill. A worker the person's own manager runs is never restarted here: they are told to.
     if (cloudSyncConfigured && workerReady) {
       // The same worker address and local API token (#5141) as the restart that may follow.
       clearPortCache();
       const sync = await workerSyncStatus();
-      if (sync?.configured === false) await restartWorkerToPickUpCloudSync({ log });
+      if (sync?.configured === false) await restartWorkerToPickUpCloudSync({ log, managedExternally: workerManagedExternally });
       else if (sync) log.success('Cloud sync: configured — the worker is reporting sync status.');
     }
   }

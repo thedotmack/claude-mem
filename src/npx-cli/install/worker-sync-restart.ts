@@ -150,6 +150,11 @@ export async function restartWorkerForSyncChange(
 
 /** Printed when the installer could not get the worker onto the approved sync connection. */
 export const CLOUD_SYNC_NOT_PICKED_UP_WARNING = 'Cloud sync: worker has not picked up the sync settings yet — it will on its next restart.';
+/**
+ * Printed instead of restarting when CLAUDE_MEM_WORKER_AUTOSTART=false or CLAUDE_MEM_WORKER_URL is set: the person's
+ * own process manager or container runs that worker, so the installer leaves its lifetime alone (as requireWorkerStopped does).
+ */
+export const CLOUD_SYNC_EXTERNAL_RESTART_WARNING = 'Cloud sync: worker has not picked up the sync settings yet. Your own process manager runs this worker, so restart it there to start syncing.';
 
 /**
  * After Cloud Sync is approved during install, a worker that still reports `configured: false` booted before the
@@ -159,10 +164,16 @@ export const CLOUD_SYNC_NOT_PICKED_UP_WARNING = 'Cloud sync: worker has not pick
  */
 export async function restartWorkerToPickUpCloudSync(deps: {
   log: WorkerRestartLog;
+  /** The worker is run by the person's own manager (CLAUDE_MEM_WORKER_AUTOSTART=false or CLAUDE_MEM_WORKER_URL). */
+  managedExternally?: boolean;
   maxWaitMs?: number;
   waitForBackgroundWork?: typeof waitForBackgroundWorkToFinish;
   restart?: typeof restartWorkerForSyncChange;
 }): Promise<boolean> {
+  if (deps.managedExternally) {
+    deps.log.warn(CLOUD_SYNC_EXTERNAL_RESTART_WARNING);
+    return false;
+  }
   // Read the worker host, port and local API token again: this install may have written them after they were cached.
   clearPortCache();
   try {

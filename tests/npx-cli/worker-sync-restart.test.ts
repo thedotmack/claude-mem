@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
+  CLOUD_SYNC_EXTERNAL_RESTART_WARNING,
   CLOUD_SYNC_NOT_PICKED_UP_WARNING,
   restartWorkerForSyncChange,
   restartWorkerToPickUpCloudSync,
@@ -150,6 +151,23 @@ describe('restarting the worker after Cloud Sync is approved during install', ()
     expect(server.requestsTo('/api/admin/restart')).toHaveLength(1);
     expect(server.state.workerPid).toBe(100);
     expect(lines).toEqual([{ level: 'warn', message: 'Could not restart the claude-mem worker (HTTP 500). Restart it so the change applies: npx claude-mem restart' }]);
+  });
+
+  it('leaves a worker run by the person\'s own manager alone and tells them to restart it there', async () => {
+    const { lines, log } = recordingLog();
+    let waited = false;
+    let restarted = false;
+    const confirmed = await restartWorkerToPickUpCloudSync({
+      log,
+      managedExternally: true,
+      waitForBackgroundWork: async () => { waited = true; },
+      restart: async () => { restarted = true; return true; },
+    });
+    expect(confirmed).toBe(false);
+    expect(waited).toBe(false);
+    expect(restarted).toBe(false);
+    expect(server.requestsTo('/api/admin/restart')).toHaveLength(0);
+    expect(lines).toEqual([{ level: 'warn', message: CLOUD_SYNC_EXTERNAL_RESTART_WARNING }]);
   });
 
   it('falls back to the installer warning when the restart said nothing went wrong', async () => {
