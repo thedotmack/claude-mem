@@ -4,7 +4,34 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+## [17.0.1] - 2026-11-26
+
+## Critical fixes
+
+- **The setup page shows your cmem.ai device code, and reopening after it expires gets a fresh one** (#6500, @thedotmack). After you pick Cloud Sync and start the free trial, cmem.ai asks for a device code. That code was only printed in the terminal, which most people never look at because setup runs in the browser. The checkout step now shows **Your device code** with a copy button, next to "Waiting for this device to connect…". If the code expired, **Reopen** sent you back to a dead link with the same expired code. It now starts a new pairing with a new code. The code is never put in a URL, log line or analytics event, and the page reads it from a route only this machine can reach.
+- **Windows: My Work reads no longer hang when a recent Bash command holds regex-shaped text** (#6471, thanks @zhangkom, closes #6470 reported by @ingermaa). Shell text such as `s.replace(/\r\n/g, ' ')` was taken for an absolute path. Resolving `/\r\n/g,` could produce a UNC network path, and project discovery stalled while Windows tried a network lookup. Text that starts with a slash and a backslash is now ignored on Windows. Drive paths and POSIX paths are read as before.
+- **Windows: OMP capture and Screenpipe saves reach the worker again** (#6481, thanks @AyhamJo7, refs #6477 reported by @Jumpstile). On Windows the OMP hook and the Screenpipe skill posted to port 37777 by default. The worker picks its default port from a hash of the data folder, so on a default Windows install nothing listened on 37777 and OMP sessions were not recorded, with no error shown. Both now work out the default port the same way the worker does. A port saved in `settings.json` is still used first, and macOS and Linux are unchanged. **OMP users on Windows: run `npx claude-mem install --ide omp` once after updating.** The OMP hook is a copied file, so an update alone does not replace it.
+
+## Fixes
+
+- **Claude provider: condensing an oversized field now follows `CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS`** (#6508, thanks @0xABCD01, closes #6503 reported by @JonT6). The setting sized the condense request on the HTTP providers, but the Claude call never passed it. The request asked for the full 12,800 characters, and the extra output was billed and then clipped. At the default setting the Claude condense request now asks for 8,192 characters, the same as the HTTP providers. The Agent SDK has no per-request output cap, so on this path the setting sizes the request and is not a hard limit.
+- **My Work keeps a cut-off answer for diagnosis, and Focus can skip a request it cannot place** (#6441, thanks @0xABCD01, part of #6432 reported by @hello-sebastian). When an API answer ran out of tokens, its text was discarded and the error read as "raise the limit". The partial answer is now saved under `failed-answers/`, the step fails with that file's path first, and the error says a run-out almost always means the model's output degenerated, which a higher limit does not fix. The focus step now accepts an `ignored` list with a reason. An ignored request goes to Other, where you can move it.
+- **The SessionStart timeline lists one turn's observations oldest first** (#6495, thanks @HEOJUNFO). Turns ran oldest to newest, but the observations inside one turn ran newest to oldest, so the last row was not the newest entry. The newest entry is now last, as the timeline's own instructions say.
+- **`claude-mem server jobs retry` no longer reports `requeued` while a worker still holds the job** (#6494, thanks @HEOJUNFO). Cancelling a processing job and retrying it before the provider call returned left the job `queued` for good, and it never ran. The command now sets the job back to `failed` with `retry_republish_failed`, prints the reason and exits 1. Run it again after the provider call has returned and the job is requeued and runs.
+- **Server: `CLAUDE_MEM_MONTHLY_REQUEST_CAP` works without `CLAUDE_MEM_USAGE_METERING=1`** (#6489, thanks @kevincommits). With only the cap set, no requests were counted, so the cap was never reached and no request was answered with 402. Setting the cap now also counts requests. `CLAUDE_MEM_MONTHLY_TOKEN_CAP` still needs metering on.
+- **Server: `GET /v1/jobs` answers 400 for a `since` that is not a date** (#6484, thanks @kevincommits). A value such as `last-week` or `2026-13-45` dropped the filter and returned jobs from every date. It now answers 400 `INVALID_DATE`. A day that is not on the calendar, such as `2026-02-30`, also gets a 400, and epoch milliseconds are now accepted.
+- **OpenClaw: uninstalling gives the memory slot back to the plugin that had it** (#6445, thanks @DeryFerd). Installing took `plugins.slots.memory` from another memory plugin with no record of it, and uninstalling deleted the slot. Install now remembers the previous owner and uninstall restores it. When there was no previous owner, the slot is deleted as before.
+- **Install: the marketplace manifest and `package.json` are written atomically** (#6475, thanks @DeryFerd). A crash, a killed process or a full disk in the middle of a write could leave a truncated file. These were the last two plain writes in the install flow.
+- **My Work names the event type when it drops an unreadable stream frame** (#6476, thanks @DeryFerd). A frame that was not JSON was dropped without a trace, so a feed could stop updating with nothing to say why. The browser console now gets a warning that names the event type.
+- **Messages on Mac: someone leaving a group now reaches the transcript** (#6509, thanks @chuenchen309). The Mac source skipped the leave rows in chat.db. They now read "(Ben left the group)", the same as from the Photon source. Group photo and background changes are still skipped.
+
+## Contributors
+
+Thank you to everyone whose work is in this release: @zhangkom, @AyhamJo7, @0xABCD01, @HEOJUNFO, @kevincommits, @DeryFerd and @chuenchen309 for the fixes, and @ingermaa, @Jumpstile, @JonT6 and @hello-sebastian for the reports.
+
+**Full changelog**: https://github.com/thedotmack/claude-mem/compare/v17.0.0...v17.0.1
+
+## [17.0.0] - 2026-11-26
 
 ### Review Stack in My Work
 

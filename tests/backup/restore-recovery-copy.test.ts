@@ -7,6 +7,7 @@ import { basename, join, sep } from 'node:path';
 import { BackupManager } from '../../src/services/backup/BackupManager.js';
 import { listSnapshotNames } from '../../src/services/backup/snapshot-files.js';
 import { swapDatabaseFromSnapshot } from '../../src/services/backup/restore-swap.js';
+import { RESTORE_FIXTURE_SCHEMA } from './fixtures/restore-schema.js';
 
 const damagedMain = Buffer.from('damaged database bytes worth recovering');
 const damagedWal = Buffer.from('uncheckpointed WAL frames worth recovering');
@@ -20,7 +21,7 @@ async function fixture(run: (dbPath: string, snapshot: string, backups: string, 
   fs.writeFileSync(`${dbPath}-wal`, damagedWal);
   const snapshot = join(backups, 'claude-mem-2026-10-01T00-00-00-000Z.db');
   const db = new Database(snapshot);
-  db.run('CREATE TABLE observations (id INTEGER PRIMARY KEY, note TEXT)');
+  db.exec(RESTORE_FIXTURE_SCHEMA);
   db.run("INSERT INTO observations VALUES (1, 'restored')");
   db.close();
   try { await run(dbPath, snapshot, backups, dir); }

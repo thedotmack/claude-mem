@@ -75,5 +75,34 @@ describe('job listing query pagination bounds', () => {
       const parsed = parseGenericJobListingQuery(mockReq({ offset: '-10' }));
       expect(parsed.offset).toBe(0);
     });
+
+    it('reads an ISO since as the created_at lower bound', () => {
+      const parsed = parseGenericJobListingQuery(mockReq({ since: '2026-01-31T08:00:00Z' }));
+      expect(parsed.since?.toISOString()).toBe('2026-01-31T08:00:00.000Z');
+      const dateOnly = parseGenericJobListingQuery(mockReq({ since: ' 2026-01-31 ' }));
+      expect(dateOnly.since?.toISOString()).toBe('2026-01-31T00:00:00.000Z');
+    });
+
+    it('leaves since unset when it is omitted or empty', () => {
+      expect(parseGenericJobListingQuery(mockReq({})).since).toBeNull();
+      expect(parseGenericJobListingQuery(mockReq({ since: '  ' })).since).toBeNull();
+    });
+
+    it('rejects a since that is not a date instead of dropping the filter', () => {
+      expectInvalidDate(() => parseGenericJobListingQuery(mockReq({ since: 'last-week' })));
+      expectInvalidDate(() => parseGenericJobListingQuery(mockReq({ since: '2026-13-45' })));
+    });
   });
 });
+
+function expectInvalidDate(parse: () => unknown): void {
+  let thrown: unknown;
+  try {
+    parse();
+  } catch (error) {
+    thrown = error;
+  }
+  expect(thrown).toBeInstanceOf(AppError);
+  expect((thrown as AppError).statusCode).toBe(400);
+  expect((thrown as AppError).code).toBe('INVALID_DATE');
+}

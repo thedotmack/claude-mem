@@ -412,6 +412,12 @@ describe('the real project of an agent scratch-folder session', () => {
     expect(pathsIn(input, 'darwin')).toEqual([]);
   });
 
+  it('does not treat a shell regex beginning with slash and backslash as a Windows path', () => {
+    const input = JSON.stringify({ command: String.raw`s.replace(/\r\n/g, ' ')` });
+    expect(pathsIn(input, 'win32')).toEqual([]);
+    expect(pathsIn(input, 'linux')).toEqual([String.raw`/\r\n/g,`]);
+  });
+
 
   it('comes from the repo its tool calls touched most, worktrees counted together, else the no-project pool', () => {
     const root = mkdtempSync(join(tmpdir(), 'scratch-project-'));

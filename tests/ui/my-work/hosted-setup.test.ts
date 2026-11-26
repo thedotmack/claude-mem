@@ -844,3 +844,98 @@ describe('setup failures in plain words', () => {
     expect(app.renderReveal(agents, nothing, { state: 'running', step: 'goals' }, ['codex'])).not.toContain('Your agents can build memory as you work.');
   });
 });
+
+// The page reads the device code from the origin-guarded route each time a setup-state frame says one waits
+// (setup-data.ts readDeviceCode): the newest read wins, a 404 takes the code away, and frames keep the shown code.
+describe('setup page device code', () => {
+  const waitingFrame = { status: 'pending', alreadyPro: false, checkout: { state: 'waiting', error: null, deviceCodeWaiting: true } };
+  function codeNetwork() {
+    const reads: Array<ReturnType<typeof deferred<Response>>> = [];
+    useNetwork((url) => {
+      if (url === '/api/setup/checkout/device-code') { const read = deferred<Response>(); reads.push(read); return read.promise; }
+      // The initial reads stay unanswered, so only the frames below drive the setup state.
+      return new Promise<Response>(() => {});
+    });
+    return reads;
+  }
+
+  it('keeps the shown code between frames until the next read answers', async () => {
+    const app = fixture();
+    const reads = codeNetwork();
+    let latest: any;
+    const stop = app.localSetupSource.subscribe((data: any) => { latest = data; });
+    Stream.latest.send('setup-state', waitingFrame);
+    await until(() => reads.length === 1);
+    reads[0].resolve(Response.json({ userCode: 'K7QM-4XPT', expiresAt: '2099-01-01T00:00:00.000Z' }));
+    await until(() => latest.checkout?.userCode === 'K7QM-4XPT');
+    expect(latest.checkout.expiresAt).toBe('2099-01-01T00:00:00.000Z');
+    Stream.latest.send('setup-state', waitingFrame);
+    await until(() => reads.length === 2);
+    expect(latest.checkout).toMatchObject({ state: 'waiting', userCode: 'K7QM-4XPT', expiresAt: '2099-01-01T00:00:00.000Z' });
+    stop();
+  });
+
+  it('discards a late answer to an older read', async () => {
+    const app = fixture();
+    const reads = codeNetwork();
+    let latest: any;
+    const stop = app.localSetupSource.subscribe((data: any) => { latest = data; });
+    Stream.latest.send('setup-state', waitingFrame);
+    Stream.latest.send('setup-state', waitingFrame);
+    await until(() => reads.length === 2);
+    reads[1].resolve(Response.json({ userCode: 'CCCC-DDDD', expiresAt: null }));
+    await until(() => latest.checkout?.userCode === 'CCCC-DDDD');
+    reads[0].resolve(Response.json({ userCode: 'AAAA-BBBB', expiresAt: null }));
+    await settle();
+    await settle();
+    expect(latest.checkout.userCode).toBe('CCCC-DDDD');
+    stop();
+  });
+
+  it('takes the code away only when the route answers that none waits, and keeps it on any other failure', async () => {
+    const app = fixture();
+    const reads = codeNetwork();
+    let latest: any;
+    const stop = app.localSetupSource.subscribe((data: any) => { latest = data; });
+    Stream.latest.send('setup-state', waitingFrame);
+    await until(() => reads.length === 1);
+    reads[0].resolve(Response.json({ userCode: 'K7QM-4XPT', expiresAt: null }));
+    await until(() => latest.checkout?.userCode === 'K7QM-4XPT');
+    Stream.latest.send('setup-state', waitingFrame);
+    await until(() => reads.length === 2);
+    reads[1].reject(new TypeError('Failed to fetch'));
+    await settle();
+    await settle();
+    expect(latest.checkout.userCode).toBe('K7QM-4XPT');
+    // Any other refusal (a 500 or 403) keeps the shown code too; only a 404 says none waits.
+    Stream.latest.send('setup-state', waitingFrame);
+    await until(() => reads.length === 3);
+    reads[2].resolve(Response.json({ error: 'Something broke.' }, { status: 500 }));
+    await settle();
+    await settle();
+    expect(latest.checkout.userCode).toBe('K7QM-4XPT');
+    Stream.latest.send('setup-state', waitingFrame);
+    await until(() => reads.length === 4);
+    reads[3].resolve(Response.json({ error: 'No device code is waiting.' }, { status: 404 }));
+    await until(() => latest.checkout?.userCode === null);
+    expect(latest.checkout).toMatchObject({ state: 'waiting', userCode: null, expiresAt: null });
+    stop();
+  });
+
+  it('tries the read again while the checkout waits and no code is shown yet', async () => {
+    const app = fixture();
+    const reads = codeNetwork();
+    let latest: any;
+    const stop = app.localSetupSource.subscribe((data: any) => { latest = data; });
+    Stream.latest.send('setup-state', waitingFrame);
+    await until(() => reads.length === 1);
+    reads[0].reject(new TypeError('Failed to fetch'));
+    // No new frame arrives; the page asks again on its own after a short wait.
+    const deadline = Date.now() + 5000;
+    while (reads.length < 2 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(reads.length).toBe(2);
+    reads[1].resolve(Response.json({ userCode: 'K7QM-4XPT', expiresAt: null }));
+    await until(() => latest.checkout?.userCode === 'K7QM-4XPT');
+    stop();
+  }, 10_000);
+});
