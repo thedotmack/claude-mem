@@ -17,6 +17,7 @@ import { SettingsRoutes } from '../../src/services/worker/http/routes/SettingsRo
 import { SessionRoutes } from '../../src/services/worker/http/routes/SessionRoutes.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { logger } from '../../src/utils/logger.js';
+import { recordQuotaExhausted, resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
 import type { ActiveSession, ConversationMessage } from '../../src/services/worker-types.js';
 
 /**
@@ -34,6 +35,7 @@ const ENV_KEYS = [
   'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION',
   'CLAUDE_MEM_OPENROUTER_API_KEY',
   'CLAUDE_MEM_GEMINI_API_KEY',
+  'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
 ] as const;
 
 const NIM_BASE = 'https://integrate.api.nvidia.com/v1';
@@ -429,6 +431,20 @@ describe('isOpenAICompatAvailable', () => {
     process.env.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL = 'https://custom.example.com/v1';
     process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = '';
     expect(isOpenAICompatAvailable(undefined, 'session-model')).toBe(false);
+  });
+
+  it('a session model keeps a bare custom backup usable during quota fallback (Greptile P1)', () => {
+    pinBareCustomEndpoint('true');
+    // The held primary is Claude; the backup's only model is the session id.
+    process.env.CLAUDE_MEM_PROVIDER = 'claude';
+    process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'openai-compatible';
+    recordQuotaExhausted('claude', 'Allowance spent');
+    try {
+      expect(getSelectedProvider(undefined, 'session-model')).toBe('openai-compatible');
+      expect(getSelectedProvider()).toBe('claude');
+    } finally {
+      resetQuotaCooldownsForTesting();
+    }
   });
 });
 

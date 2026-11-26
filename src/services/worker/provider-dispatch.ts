@@ -221,10 +221,11 @@ export function routeAroundUnservableProvider(
 export function quotaFallbackTarget(
   primary: QuotaProvider,
   nowMs: number = Date.now(),
+  sessionModel?: string,
 ): QuotaFallbackProvider | null {
   const fallback = readQuotaFallbackProvider();
   if (fallback === null || fallback === primary) return null;
-  if (!isFallbackAvailable(fallback)) return null;
+  if (!isFallbackAvailable(fallback, sessionModel)) return null;
   if (isQuotaCooldownHolding(fallback, nowMs)) return null;
   return fallback;
 }
@@ -244,10 +245,10 @@ interface RoutedProvider {
  * it on that credential: same models, same prompts. The provider fallback is
  * next in line, once both credentials are held.
  */
-function applyQuotaFallback(primary: SelectableProvider, nowMs: number = Date.now()): RoutedProvider {
+function applyQuotaFallback(primary: SelectableProvider, nowMs: number = Date.now(), sessionModel?: string): RoutedProvider {
   if (!isHeldForQuota(primary, nowMs)) return { provider: primary, fallbackFrom: null };
   if (primary === 'claude' && claudeQuotaStandIn() !== null) return { provider: primary, fallbackFrom: null };
-  const fallback = quotaFallbackTarget(primary, nowMs);
+  const fallback = quotaFallbackTarget(primary, nowMs, sessionModel);
   return fallback === null
     ? { provider: primary, fallbackFrom: null }
     : { provider: fallback, fallbackFrom: primary };
@@ -321,9 +322,9 @@ function noteQuotaFallbackTransition(primary: SelectableProvider, routed: Routed
  * A plain (non-gateway-fallback) selection for a caller about to send. The
  * transition log is kept unless the fallback is turned off.
  */
-function selectWithQuotaFallback(primary: SelectableProvider): ProviderSelection {
+function selectWithQuotaFallback(primary: SelectableProvider, sessionModel?: string): ProviderSelection {
   const nowMs = Date.now();
-  let routed = applyQuotaFallback(primary, nowMs);
+  let routed = applyQuotaFallback(primary, nowMs, sessionModel);
   let gatewayProbeClaimId: number | null = null;
   // A refusing gateway past its window is re-probed by exactly one caller,
   // through the claim the gateway branch uses; the rest stay with the held
@@ -370,7 +371,7 @@ function routedProviderFor(primary: SelectableProvider, platformSource?: string,
       return cmemCapExhaustedAt() === null ? 'claude' : regularProviderAfterCmemCap(platformSource, sessionModel) ?? primary;
     }
   }
-  return applyQuotaFallback(primary).provider;
+  return applyQuotaFallback(primary, Date.now(), sessionModel).provider;
 }
 
 /**
@@ -564,7 +565,7 @@ export function regularProviderAfterCmemCap(platformSource?: string, sessionMode
     if (available(global)) return global;
     if (platformSource && normalizePlatformSource(platformSource) === 'codex' && available('codex')) return 'codex';
   }
-  return quotaFallbackTarget('openrouter');
+  return quotaFallbackTarget('openrouter', Date.now(), sessionModel);
 }
 
 function selectCapFallback(platformSource?: string, sessionModel?: string): ProviderSelection {
@@ -575,7 +576,7 @@ function selectCapFallback(platformSource?: string, sessionModel?: string): Prov
 
 /** Dispatch for an already-chosen primary: the cmem-gateway branch, then the quota fallback. */
 function selectForPrimary(primary: SelectableProvider, platformSource?: string, sessionModel?: string): ProviderSelection {
-  if (primary !== 'openrouter') return selectWithQuotaFallback(primary);
+  if (primary !== 'openrouter') return selectWithQuotaFallback(primary, sessionModel);
   const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
   // A spent cmem allowance is one probe a day. Selecting the gateway again
   // on the immediate fallback resume is what re-sent pro_inference_cap_exhausted.
@@ -597,7 +598,7 @@ function selectForPrimary(primary: SelectableProvider, platformSource?: string, 
     }
     return { provider: 'openrouter', gatewayProbeClaimId: admission.claimId };
   }
-  return selectWithQuotaFallback('openrouter');
+  return selectWithQuotaFallback('openrouter', sessionModel);
 }
 
 /** The last malformed value logged, so a bad setting warns once, not on every generator start. */
