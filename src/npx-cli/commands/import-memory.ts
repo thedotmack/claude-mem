@@ -85,9 +85,14 @@ const RESUME = 'Run the same command again to resume; confirmed records will not
  * behind it changes, so none of these tells the user to run the same command again.
  */
 const SAVE_REFUSALS: Record<MemorySaveRefusalReason, string> = {
-  project_excluded: 'The worker refused to save from this folder because it matches CLAUDE_MEM_EXCLUDED_PROJECTS. '
-    + 'Running the same command here will be refused again. Run it from a folder that is not excluded '
-    + '(the memories still go to --project), or remove this folder from that setting.',
+  // One reason, two causes (src/shared/memory-save-refusal.ts): the folder the command
+  // ran from, or an absolute --project path. The worker does not say which, so the words
+  // cover both; advice for only one would send the other case into a repeat.
+  project_excluded: 'The worker refused to save because the folder this command ran from, or the --project path, '
+    + 'matches CLAUDE_MEM_EXCLUDED_PROJECTS. Running the same command here will be refused again. '
+    + 'If this folder matches, run the command from a folder that is not excluded (the memories still go to --project). '
+    + 'If the --project path matches, name a project that is not excluded. '
+    + 'Or remove the matching entry from that setting.',
 };
 /**
  * An HTTP 413 also comes back on every run: planImport already keeps every save request

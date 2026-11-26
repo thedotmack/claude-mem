@@ -387,6 +387,9 @@ describe('provider import contracts', () => {
       words.push(refused);
     }
     expect(words.join('\n')).toContain('CLAUDE_MEM_EXCLUDED_PROJECTS');
+    // project_excluded has two causes; the words cover both, each with a way out that is not refused again.
+    expect(words.join('\n')).toContain('If this folder matches, run the command from a folder that is not excluded');
+    expect(words.join('\n')).toContain('If the --project path matches, name a project that is not excluded');
     for (const retryable of [async () => { throw new Error('synthetic outage'); }, async () => ({ success: false, skipped: true }), async () => ({ success: false, skipped: true, reason: 'a_reason_this_version_does_not_know' })]) {
       expect(await failure(applyImport(plan, retryable))).toContain('Run the same command again to resume');
     }

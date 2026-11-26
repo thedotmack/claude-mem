@@ -230,9 +230,12 @@ describe('POST /api/memory/save project normalization', () => {
     });
     const route = await startSaveRoute('/tmp/secret');
     try {
-      await expect(
-        applyImport(plan, note => route.save(JSON.parse(saveRequestBody(note, '/tmp/allowed-cwd'))))
-      ).rejects.toThrow('CLAUDE_MEM_EXCLUDED_PROJECTS');
+      const refusedImport = applyImport(plan, note => route.save(JSON.parse(saveRequestBody(note, '/tmp/allowed-cwd'))));
+      await expect(refusedImport).rejects.toThrow('CLAUDE_MEM_EXCLUDED_PROJECTS');
+      // The folder is allowed here, so "run it from another folder" alone would be refused
+      // again: the words must also name the --project path and what to do about it.
+      await expect(refusedImport).rejects.toThrow(/--project path/);
+      await expect(refusedImport).rejects.toThrow('name a project that is not excluded');
       expect(route.observationCount()).toBe(0);
     } finally {
       await route.close();
