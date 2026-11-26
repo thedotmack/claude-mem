@@ -1,6 +1,6 @@
 ---
 title: "OpenAI-Compatible Provider (NVIDIA NIM & others)"
-description: "Run observation extraction on NVIDIA NIM, DeepSeek, Groq, Together, Ollama, LM Studio, or any OpenAI-compatible endpoint"
+description: "Run observation extraction on NVIDIA NIM, DeepSeek, Groq, Together, Ollama, LM Studio, Rapid-MLX, or any OpenAI-compatible endpoint"
 ---
 
 # OpenAI-Compatible Provider
@@ -128,6 +128,7 @@ endpoint or model you pinned yourself.
 | `iflytek` | `https://maas-api.cn-huabei-1.xf-yun.com/v2` | yes |
 | `ollama` | `http://localhost:11434/v1` | no |
 | `lmstudio` | `http://localhost:1234/v1` | no |
+| `rapidmlx` | `http://localhost:8000/v1` | no |
 | `vllm` | `http://localhost:8000/v1` | no |
 | `custom` | — set it yourself | no |
 
@@ -137,6 +138,29 @@ Set `CLAUDE_MEM_OPENAI_COMPAT_MODEL` to whatever `ollama list` (or your server)
 reports, or the provider reports itself unconfigured and dispatch falls through
 to Claude.
 </Note>
+
+## Rapid-MLX
+
+[Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) runs locally on Apple
+Silicon. Start the server:
+
+```bash
+rapid-mlx serve qwen3.5-4b-4bit --port 8000
+```
+
+Get the loaded model id from `http://localhost:8000/v1/models` and set it in
+`~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "rapidmlx",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "mlx-community/Qwen3.5-4B-MLX-4bit"
+}
+```
+
+No API key is required by default. The preset uses `http://localhost:8000/v1`,
+the same default port as vLLM. Restart the worker after changing settings.
 
 ## OpenCode Go and Zen
 

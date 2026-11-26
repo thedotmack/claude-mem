@@ -336,6 +336,14 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'Local and free. Ships no default model, so nothing is auto-loaded that the user did not ask for (#2393).',
   },
   {
+    id: 'rapidmlx',
+    label: 'Rapid-MLX (local, Apple Silicon)',
+    baseUrl: 'http://localhost:8000/v1',
+    defaultModel: '',
+    requiresApiKey: false,
+    hint: 'Local Apple Silicon server. Set the model id from /v1/models.',
+  },
+  {
     id: 'vllm',
     label: 'vLLM (self-hosted)',
     baseUrl: 'http://localhost:8000/v1',

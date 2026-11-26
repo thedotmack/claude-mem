@@ -44,6 +44,7 @@ export const OPENAI_COMPAT_PRESET_OPTIONS: readonly OpenAICompatPresetOption[] =
   { id: 'iflytek', label: 'iFlytek Spark (Astron MaaS)', baseUrl: 'https://maas-api.cn-huabei-1.xf-yun.com/v2', defaultModel: 'spark-x2.5', note: 'Token Plan keys need Base URL https://maas-token-api.cn-huabei-1.xf-yun.com/v2; the default endpoint is pay-as-you-go and answers them with 403.' },
   { id: 'ollama', label: 'Ollama (local)', baseUrl: 'http://localhost:11434/v1', defaultModel: '' },
   { id: 'lmstudio', label: 'LM Studio (local)', baseUrl: 'http://localhost:1234/v1', defaultModel: '' },
+  { id: 'rapidmlx', label: 'Rapid-MLX (local, Apple Silicon)', baseUrl: 'http://localhost:8000/v1', defaultModel: '' },
   { id: 'vllm', label: 'vLLM (self-hosted)', baseUrl: 'http://localhost:8000/v1', defaultModel: '' },
   { id: 'custom', label: 'Custom OpenAI-compatible endpoint', baseUrl: '', defaultModel: '' },
 ];
