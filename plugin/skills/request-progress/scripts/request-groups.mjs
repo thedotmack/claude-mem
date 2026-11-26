@@ -3552,7 +3552,7 @@ var init_session_project = __esm({
     PATH_START = /(?:^|[\s"'`=:(])((?:~[/\\]|\/|[A-Za-z]:[/\\])[^\n\r"'`;|&<>()]*)/g;
     AGENT_HOMES = [".claude", ".codex", ".gemini", ".claude-mem", ".cursor"].map((name) => join9(HOME, name));
     isAgentHome = (path4) => AGENT_HOMES.some((home) => path4 === home || path4.startsWith(`${home}/`) || path4.startsWith(`${home}\\`));
-    isAbsoluteOn = (path4, platform) => path4.startsWith("/") && !path4.startsWith("//") && !(platform === "win32" && path4.startsWith("/\\")) || platform === "win32" && /^[A-Za-z]:[/\\]/.test(path4);
+    isAbsoluteOn = (path4, platform) => path4.startsWith("/") && !path4.startsWith("//") || platform === "win32" && /^[A-Za-z]:[/\\]/.test(path4);
     checkoutForPath = (path4, repoRootCache) => {
       let current = path4;
       while (current !== dirname5(current) && !existsSync11(current)) current = dirname5(current);
