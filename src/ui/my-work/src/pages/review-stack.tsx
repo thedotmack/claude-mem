@@ -13,7 +13,6 @@ import './review-stack.css'
 
 export default function ReviewStack() {
   const { t } = useI18n()
-  const { snapshot, saving, stale, error, refresh, write } = useReviewStack()
   const [mode, setMode] = useState<ReviewStackMode>('work')
   const [focus, setFocus] = useState('')
   const [browseId, setBrowseId] = useState('')
@@ -27,6 +26,8 @@ export default function ReviewStack() {
   const [showImport, setShowImport] = useState(false)
   const [noteCard, setNoteCard] = useState<ReviewStackCard | null>(null)
   const [note, setNote] = useState('')
+  const [cardBusy, setCardBusy] = useState(false)
+  const { snapshot, saving, stale, error, refresh, write } = useReviewStack(cardBusy || showImport || !!noteCard)
   useEffect(() => () => clearTimeout(guideTimer.current), [])
 
   if (!snapshot) return <section className="rounded-xl border bg-card p-5" aria-busy={!error}>
@@ -119,7 +120,7 @@ export default function ReviewStack() {
       {mode === 'browse' && <div className="stack-toolbar"><Button size="sm" variant="outline" disabled={!browseIndex} onClick={() => browse(-1)}><ChevronLeftIcon aria-hidden="true" />{t('Previous')}</Button>
         <span className="text-sm">{interpolate(t('{position} of {total}'), { position: browseIndex + 1, total: deck.cards.length })}</span>
         <Button size="sm" variant="outline" disabled={browseIndex >= deck.cards.length - 1} onClick={() => browse(1)}>{t('Next')}<ChevronRightIcon aria-hidden="true" /></Button></div>}
-      <ReviewCard card={current} mode={mode} disabled={disabled || showImport || !!noteCard} onSeen={() => advance('seen')} onGroup={seeGroup} onBrowse={browse}>
+      <ReviewCard card={current} mode={mode} disabled={disabled || showImport || !!noteCard} onInteraction={setCardBusy} onSeen={() => advance('seen')} onGroup={seeGroup} onBrowse={browse}>
         {mode === 'work' && <div className="stack-actions">
           <Button data-review-seen disabled={disabled} aria-describedby="review-stack-hold-hint" onClick={() => advance('seen')}><CheckIcon aria-hidden="true" />{t('Seen')}</Button>
           <Button variant="outline" disabled={disabled} aria-pressed={!!bookmark?.saved} onClick={toggleBookmark}><BookmarkIcon aria-hidden="true" fill={bookmark?.saved ? 'currentColor' : 'none'} />{bookmark?.saved ? t('Saved') : t('Save')}</Button>

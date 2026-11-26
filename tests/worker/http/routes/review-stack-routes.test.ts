@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import type { AddressInfo } from 'node:net';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import express from 'express';
 import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 import { buildContentOperation } from '../../../../src/services/sync/CanonicalContent.js';
@@ -289,7 +289,7 @@ test('private sections stay out of new review records and follow-ups even with o
   expect(shown).toMatchObject({ id:receipt.firstId, key:'public-asset', focus:'Launch', title:card.title,
     what:card.what, context:card.context, excerpt:'Public excerpt and OPTIONAL_RULE' });
   expect(shown.source).toBeUndefined();
-  expect(shown.preview).toBe('/api/work-view/review-stack/media/' + receipt.firstId);
+  expect(shown.preview).toBe('/api/work-view/review-stack/media/' + receipt.firstId + '?revision=' + createHash('sha256').update(image).digest('hex'));
   const media = await fetch(worker.origin + shown.preview);
   expect(Buffer.from(await media.arrayBuffer())).toEqual(Buffer.from(image, 'base64'));
   expect(snapshot.followUps[0]).toMatchObject({ id:followUpId, body:'Contact the owner.' });
@@ -344,4 +344,36 @@ test('older saved review records hide private sections when read, preserving the
   expect(snapshot.groups[0]).toMatchObject({ id:groupId, focus:'Launch', count:1 });
   expect((await worker.write('action', { action:'undo-group', groupId })).status).toBe(200);
   expect((await worker.write('action', { action:'seen-group', focus:'Launch', cardId:imported.firstId })).status).toBe(200);
+});
+
+test('competing offline images use the winning thumbnail revision and reject a superseded URL', async () => {
+  const laptop = await device('image-laptop'), studio = await device('image-studio');
+  const alternate = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAAD0lEQVR4nGM8ranGwMAAAAY1ARyCBs22AAAAAElFTkSuQmCC';
+  const states = [];
+  for (const [worker, original] of [[laptop, image], [studio, alternate]] as const) {
+    const response = await worker.write('import', { cards:[{ ...card, imageData:'data:image/png;base64,' + original }] });
+    expect(response.status).toBe(200);
+    const initial = (await worker.read()).cards[0];
+    expect(initial.preview).toEndWith('?revision=' + createHash('sha256').update(original).digest('hex'));
+    states.push({ worker, original, initial });
+  }
+  expect(states[0].initial.id).toBe(states[1].initial.id);
+  expect(states[0].initial.preview).not.toBe(states[1].initial.preview);
+  transfer(laptop, studio);
+  transfer(studio, laptop);
+  const winner = (await laptop.read()).cards[0];
+  expect((await studio.read()).cards[0].preview).toBe(winner.preview);
+  const winning = states.find(state => state.initial.preview === winner.preview)!;
+  const losing = states.find(state => state.initial.preview !== winner.preview)!;
+  const get = (path: string) => fetch(losing.worker.origin + path);
+  expect((await get(losing.initial.preview)).status).toBe(404);
+  const active = await get(winner.preview);
+  expect(active.status).toBe(200);
+  expect(Buffer.from(await active.arrayBuffer())).toEqual(Buffer.from(winning.original, 'base64'));
+  const bare = winner.preview.split('?')[0];
+  expect((await get(bare)).status).toBe(200);
+  expect((await get(bare + '?revision=invalid')).status).toBe(400);
+  expect((await get(winner.preview + '&revision=duplicate')).status).toBe(400);
+  expect((await losing.worker.write('action', { action:'bookmark', cardId:winner.id, saved:true, revision:0 })).status).toBe(200);
+  expect((await losing.worker.read()).cards[0].preview).toBe(winner.preview);
 });

@@ -4,13 +4,13 @@ import type { ReviewStackCard, ReviewStackMode } from '../../../../shared/review
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useI18n, interpolate } from '@/lib/i18n'
-import { originalHttps, REVIEW_STACK_URL } from '@/live/review-stack-client'
+import { originalHttps, privateReviewThumbnail } from '@/live/review-stack-client'
 import { GROUP_HOLD_MS, horizontalTravel } from '@/live/review-stack-deck'
 
 /** Private thumbnails need the same fetch wrapper as the deck, even on the local worker. */
 function usePreview(card: ReviewStackCard, retry: number) {
   const candidate = card.preview ?? card.imageData
-  const privatePath = candidate === `${REVIEW_STACK_URL}/media/${encodeURIComponent(card.id)}` ? candidate : undefined
+  const privatePath = privateReviewThumbnail(card.id, candidate)
   const [result, setResult] = useState<{ path: string; url?: string; failed?: boolean }>()
   useEffect(() => {
     if (!privatePath) return
@@ -30,9 +30,12 @@ function usePreview(card: ReviewStackCard, retry: number) {
   return { url: inline ? candidate : originalHttps(candidate), failed: false }
 }
 
-function CardOriginal({ card }: { card: ReviewStackCard }) {
+function CardOriginal({ card, onInteraction }: { card: ReviewStackCard; onInteraction: (active: boolean) => void }) {
   const { t } = useI18n()
   const [expanded, setExpanded] = useState(false)
+  useLayoutEffect(() => {
+    if (expanded) { onInteraction(true); return () => onInteraction(false) }
+  }, [expanded, onInteraction])
   const [retry, setRetry] = useState(0)
   const [broken, setBroken] = useState(false)
   const preview = usePreview(card, retry)
@@ -56,9 +59,9 @@ function CardOriginal({ card }: { card: ReviewStackCard }) {
 
 type Press = { id: number | 'keyboard'; startX: number; startY: number; startedAt: number; width: number; button: boolean }
 
-export function ReviewCard({ card, mode, disabled, onSeen, onGroup, onBrowse, children }: {
+export function ReviewCard({ card, mode, disabled, onSeen, onGroup, onBrowse, onInteraction, children }: {
   card: ReviewStackCard; mode: ReviewStackMode; disabled: boolean; onSeen: () => void; onGroup: () => void
-  onBrowse: (step: number) => void; children: ReactNode
+  onBrowse: (step: number) => void; onInteraction: (active: boolean) => void; children: ReactNode
 }) {
   const { t } = useI18n()
   const press = useRef<Press | null>(null)
@@ -70,7 +73,10 @@ export function ReviewCard({ card, mode, disabled, onSeen, onGroup, onBrowse, ch
   useLayoutEffect(() => { callbacks.current = { onSeen, onGroup, onBrowse } }, [onSeen, onGroup, onBrowse])
 
   function disarm() { clearTimeout(timer.current); timer.current = undefined; setHolding(false) }
-  function cancel() { disarm(); press.current = null; setTravel(0) }
+  function cancel() {
+    disarm(); setTravel(0)
+    if (press.current) { press.current = null; onInteraction(false) }
+  }
   function abandon() { if (press.current) consumed.current = true; cancel() }
   function arm() {
     if (timer.current !== undefined) return
@@ -93,6 +99,7 @@ export function ReviewCard({ card, mode, disabled, onSeen, onGroup, onBrowse, ch
     document.addEventListener('pointerdown', second, true)
     return () => {
       clearTimeout(timer.current)
+      if (press.current) onInteraction(false)
       window.removeEventListener('blur', abandon)
       document.removeEventListener('visibilitychange', hidden)
       document.removeEventListener('keydown', escape)
@@ -106,6 +113,7 @@ export function ReviewCard({ card, mode, disabled, onSeen, onGroup, onBrowse, ch
     const button = !!target.closest('[data-review-seen]')
     if (!button && target.closest('a,input,textarea,select,button:not(.stack-preview)')) return
     press.current = { id: event.pointerId, startX: event.clientX, startY: event.clientY, startedAt: event.timeStamp, width: event.currentTarget.clientWidth, button }
+    onInteraction(true)
     if (button) { target.setPointerCapture(event.pointerId); arm() }
   }
   function pointerMove(event: PointerEvent<HTMLElement>) {
@@ -142,6 +150,7 @@ export function ReviewCard({ card, mode, disabled, onSeen, onGroup, onBrowse, ch
       if (event.repeat || press.current) return
       consumed.current = false
       press.current = { id: 'keyboard', startX: 0, startY: 0, startedAt: event.timeStamp, width: 0, button: true }
+      onInteraction(true)
       arm()
     } else if (event.target === event.currentTarget && !event.repeat) {
       if (mode === 'browse' && ['ArrowLeft', 'ArrowRight'].includes(event.key)) { event.preventDefault(); onBrowse(event.key === 'ArrowRight' ? 1 : -1) }
@@ -156,7 +165,7 @@ export function ReviewCard({ card, mode, disabled, onSeen, onGroup, onBrowse, ch
     onClickCapture={event => { if (consumed.current) { consumed.current = false; event.preventDefault(); event.stopPropagation() } }}
     onKeyDown={keyDown} onKeyUp={event => { if (press.current?.id === 'keyboard' && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); cancel(); onSeen() } }}
     onBlur={() => { if (press.current?.id === 'keyboard') abandon() }}>
-    <CardOriginal key={card.id} card={card} />
+    <CardOriginal key={card.id} card={card} onInteraction={onInteraction} />
     <div className="stack-copy"><span className="text-sm font-medium text-muted-foreground" dir="auto">{card.focus}</span>
       <h2 className="text-xl font-semibold leading-tight" dir="auto">{card.title}</h2>
       <p dir="auto">{card.what}</p><p className="text-sm text-muted-foreground" dir="auto">{card.context}</p>

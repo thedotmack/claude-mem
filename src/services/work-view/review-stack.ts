@@ -24,7 +24,7 @@ export interface ReviewStackRecord {
 }
 export interface ReviewStackUpdate { kind: ReviewStackRecordKind; key: string; value: unknown; expectedHash: string | null }
 type DisclosureOptions = { redactText?: (text: string) => string };
-type ReadOptions = DisclosureOptions & { thumbnailUrl?: (cardId: string) => string };
+type ReadOptions = DisclosureOptions & { thumbnailUrl?: (cardId: string, imageHash: string) => string };
 const cmp = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 const identity = (kind: string, key: string) => kind + '/' + key;
 const partKey = (id: string, contentId: string, type: 'image' | 'excerpt', n: number) =>
@@ -80,7 +80,7 @@ function imageFrom(index: RecordIndex, id: string, card: StoredCard) {
   return bytes ? { mimeType: card.imageType, bytes } : null;
 }
 export function reviewStackImage(records: Iterable<ReviewStackRecord>, id: string,
-  loadValue?: (head: ReviewStackRecord) => unknown): { bytes: Uint8Array; mimeType: string } | null {
+  loadValue?: (head: ReviewStackRecord) => unknown, expectedImageHash?: string): { bytes: Uint8Array; mimeType: string } | null {
   // A native reader holds every current head. Never materialize or validate another card's image for this request.
   const relevant: ReviewStackRecord[] = [];
   const prefix = id + ':';
@@ -90,7 +90,7 @@ export function reviewStackImage(records: Iterable<ReviewStackRecord>, id: strin
   }
   const heads = indexRecords(relevant);
   const card = heads.get<StoredCard>(REVIEW_STACK_CARD_KIND, id);
-  if (!card) return null;
+  if (!card || (expectedImageHash !== undefined && card.imageHash !== expectedImageHash)) return null;
   if (loadValue) {
     for (let n = 0; n < card.imageParts; n++) {
       const key = partKey(id, card.contentId, 'image', n);
@@ -116,7 +116,7 @@ function readCard(index: RecordIndex, id: string, meta: StoredCard, options: Rea
     if (!text) return null;
     card.excerpt = text.join('');
   }
-  if (partCount && imageType) {
+  if (partCount && imageType && imageHash) {
     // The dedicated media read rechecks image bytes before serving them. A deck page
     // needs only the authenticated URL and never serializes thumbnails unnecessarily.
     if (options.thumbnailUrl) {
@@ -124,7 +124,7 @@ function readCard(index: RecordIndex, id: string, meta: StoredCard, options: Rea
         const head = index.rows.get(identity('stack-part', partKey(id, contentId, 'image', n)));
         if (!head || head.deleted) return null;
       }
-      card.preview = options.thumbnailUrl(id);
+      card.preview = options.thumbnailUrl(id, imageHash);
     }
     else {
       const chunks = parts(index, id, meta, 'image');

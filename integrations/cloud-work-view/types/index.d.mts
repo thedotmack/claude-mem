@@ -16,11 +16,11 @@ export declare class ReviewStackError extends Error {
   constructor(status: 400 | 404 | 409 | 413, message: string);
 }
 export function renderReviewStack(records: Iterable<ReviewStackRecord>, options?: {
-  thumbnailUrl?: (cardId: string) => string; redactText?: (text: string) => string;
+  thumbnailUrl?: (cardId: string, imageHash: string) => string; redactText?: (text: string) => string;
 }): ReviewStackSnapshot;
 export function reviewStackPage(snapshot: ReviewStackSnapshot, cursor?: string | null): ReviewStackPage;
 export function reviewStackImage(records: Iterable<ReviewStackRecord>, cardId: string,
-  loadValue?: (head: ReviewStackRecord) => unknown): { bytes: Uint8Array; mimeType: string } | null;
+  loadValue?: (head: ReviewStackRecord) => unknown, expectedImageHash?: string): { bytes: Uint8Array; mimeType: string } | null;
 export function reviewStackWinners(records: Iterable<ReviewStackRecord>): ReviewStackRecord[];
 export function prepareReviewStackWrite(records: Iterable<ReviewStackRecord>, operation: 'import' | 'action', input: unknown,
   mutationId: string, now?: number, options?: { redactText?: (text: string) => string }): {

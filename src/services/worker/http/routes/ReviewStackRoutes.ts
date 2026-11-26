@@ -51,7 +51,7 @@ export class ReviewStackRoutes extends BaseRouteHandler {
       const redactionKey = policy.enabled ? JSON.stringify(policy) : 'off';
       if (this.rendered?.sourceRevision !== revision || this.rendered.redactionKey !== redactionKey) {
         const snapshot = renderReviewStack(records.values(), {
-          thumbnailUrl: id => `${stackPath}/media/${encodeURIComponent(id)}`,
+          thumbnailUrl: (id, imageHash) => `${stackPath}/media/${encodeURIComponent(id)}?revision=${imageHash}`,
           redactText: stripMemoryTags,
         });
         this.rendered = { sourceRevision: revision, redactionKey, snapshot };
@@ -60,12 +60,16 @@ export class ReviewStackRoutes extends BaseRouteHandler {
     }));
 
     app.get(`${stackPath}/media/:id`, workViewLoopbackOnly, requireWorkViewReadOrigin, this.stackHandler((req, res) => {
+      const revision = req.query.revision;
+      if (revision !== undefined && (typeof revision !== 'string' || revision.length !== 64 || /[^a-f0-9]/u.test(revision))) {
+        this.badRequest(res, 'Invalid review image revision.'); return;
+      }
       // Warm the committed reader before opening our transaction. The reader checks its revision again under the lock.
       // Only its own read transaction can cache newly verified rows; a caller's transaction might roll back.
       this.readRecords();
       const image = this.db.transaction(() => reviewStackImage(
         this.readRecords().records.values(), this.toStringParam(req.params.id),
-        head => readSharedRecordValue(this.db, this.deviceId, head),
+        head => readSharedRecordValue(this.db, this.deviceId, head), revision,
       ))();
       if (!image) { this.notFound(res, 'Review image not found.'); return; }
       res.setHeader('X-Content-Type-Options', 'nosniff');

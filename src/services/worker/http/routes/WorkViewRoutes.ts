@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { Database } from 'bun:sqlite';
 import { CLAUDE_CONFIG_DIR, DATA_DIR, DB_PATH, getPackageRoot, USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { currentContextGeneration, onContextInvalidation } from '../../../../shared/context-invalidation.js';
+import { isSharedWorkList } from '../../../work-view/shared-records.mjs';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../../../utils/logger.js';
 import { hasForwardedClientHeaders, hasLoopbackHostHeader, isLocalhost } from '../../../../server/middleware/request-auth-helpers.js';
@@ -658,6 +659,11 @@ export class WorkViewRoutes extends BaseRouteHandler {
         if (!this.ownerEditActive) this.publish();
       }
       if (!reason.startsWith('SyncApply.')) return;
+      // A remote commit can complete an earlier page of reserved rows. Announce it after SQLite commits.
+      if (!changes || changes.kinds.includes('mutation') ||
+        (changes.kinds.includes('work_state') && (!changes.workStateLists || changes.workStateLists.some(isSharedWorkList)))) {
+        this.publishReviewStackChanged();
+      }
       // Older senders have no details, so keep their conservative rebuild. Known
       // observation/prompt pages cannot change MY-RULES.md.
       if (!changes || changes.kinds.includes('mutation')
@@ -2027,6 +2033,11 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   publishSyncStatus(sync: ViewerSyncStatus): void {
     this.broadcast('sync_status', { sync });
+  }
+
+  publishReviewStackChanged(): void {
+    // The shared event stream carries no cards, IDs or decisions. Readers use the guarded private route.
+    this.broadcast('review-stack-changed', {});
   }
 
   /**

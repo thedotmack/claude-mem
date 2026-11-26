@@ -4,6 +4,16 @@ import type {
 
 export const REVIEW_STACK_URL = '/api/work-view/review-stack'
 
+/** Only a same-origin media URL for this card may use the authenticated Work View fetch. */
+export function privateReviewThumbnail(cardId: string, candidate: string | undefined): string | undefined {
+  const path = `${REVIEW_STACK_URL}/media/${encodeURIComponent(cardId)}`
+  if (candidate === path) return candidate
+  const prefix = path + '?revision='
+  if (!candidate?.startsWith(prefix)) return undefined
+  const revision = candidate.slice(prefix.length)
+  return revision.length === 64 && !/[^a-f0-9]/u.test(revision) ? candidate : undefined
+}
+
 export class ReviewStackHttpError extends Error {
   readonly status: number
   constructor(status: number, message: string) { super(message); this.status = status }

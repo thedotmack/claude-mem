@@ -1,4 +1,5 @@
 import { expect, it } from 'bun:test';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import express from 'express';
@@ -154,3 +155,67 @@ browserTest('the built phone and desktop reviewer reads private thumbnails and k
     page?.close(); await chrome.close(); server.closeAllConnections(); server.close(); store.close();
   }
 }, 60_000);
+
+browserTest('a new winning image for the same card clears the losing preview and fetches the authenticated version', async () => {
+  const bundle = process.env.CMEM_TEST_WORK_VIEW_BUNDLE || join(REPOSITORY_ROOT, 'plugin/ui/work-view');
+  const overview = await Bun.file(join(REPOSITORY_ROOT, 'src/ui/my-work/test-fixtures/work-view-snapshot.trimmed.json')).json();
+  const id = 'weekly-' + 'c'.repeat(64);
+  const originals = [
+    image.split(',')[1],
+    'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAAD0lEQVR4nGM8ranGwMAAAAY1ARyCBs22AAAAAElFTkSuQmCC',
+  ];
+  const hashes = originals.map(encoded => createHash('sha256').update(encoded).digest('hex'));
+  const titles = ['First original study', 'Updated original title', 'Winning offline study'];
+  let stage = 0, allowImage: (() => void) | undefined;
+  const newImageGate = new Promise<void>(resolve => { allowImage = resolve; });
+  const requests: Array<{ revision: unknown; owner: string | undefined }> = [];
+  const app = express();
+  app.get(stack, (_req, res) => {
+    const preview = stack + '/media/' + id + '?revision=' + hashes[stage === 2 ? 1 : 0];
+    res.json({ revision:String(stage).repeat(64), cards:[{...cards[0], id, createdAt:1, title:titles[stage], imageData:undefined, preview}],
+      reviews:[], bookmarks:[], followUps:[], groups:[], nextCursor:null });
+  });
+  app.get(stack + '/media/' + id, async (req, res) => {
+    const revision = req.query.revision, owner = req.get('X-Work-Session');
+    requests.push({ revision, owner });
+    const index = hashes.indexOf(String(revision));
+    if (owner !== 'fixture-owner' || index < 0) { res.sendStatus(403); return; }
+    if (index === 1) await newImageGate;
+    res.type('png').send(Buffer.from(originals[index], 'base64'));
+  });
+  app.get('/api/work-view/overview', (_req, res) => res.json(overview));
+  app.get('/api/work-view/session', (_req, res) => res.json({ ok:true }));
+  app.get('/api/work-view/events', (_req, res) => { res.type('text/event-stream'); res.write(': connected\n\n'); });
+  app.get('/api/cloud-sync/renewal-status', (_req, res) => res.json({ trialEndsAt:null, onboarding:null }));
+  app.use('/api', (_req, res) => res.sendStatus(404));
+  app.use('/work-view', express.static(bundle));
+  const html = (await Bun.file(join(bundle, 'index.html')).text()).replace('<head>', '<head><meta name="cmem-work-owner" content="fixture-owner">');
+  app.get('/work', (_req, res) => res.type('html').send(html));
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/work?view=review-stack`;
+  const chrome = launchChrome(url, { remoteDebugging:true, extraFlags:['--no-proxy-server', '--disable-dev-shm-usage'] });
+  let page: DevToolsPage | undefined;
+  const img = "document.querySelector('.stack-preview img')";
+  const bytes = `fetch(${img}.src).then(r => r.arrayBuffer()).then(b => btoa(String.fromCharCode(...new Uint8Array(b))))`;
+  try {
+    page = await connectToPage(chrome, url);
+    await waitFor(page, img + '?.naturalWidth === 1');
+    expect(await page.evaluate(bytes)).toBe(originals[0]);
+    const initialBlob = await page.evaluate(img + '.src');
+    stage = 1;
+    await page.evaluate("window.dispatchEvent(new Event('focus'))");
+    await waitFor(page, img + '.alt === "Updated original title"');
+    expect(await page.evaluate(img + '.src')).toBe(initialBlob);
+    expect(requests).toEqual([{revision:hashes[0], owner:'fixture-owner'}]);
+    stage = 2;
+    await page.evaluate("window.dispatchEvent(new Event('focus'))");
+    await waitFor(page, "document.querySelector('.review-stack')?.textContent.includes('Winning offline study') && !" + img);
+    allowImage!();
+    await waitFor(page, img + '?.naturalWidth === 2');
+    expect(await page.evaluate(bytes)).toBe(originals[1]);
+    expect(requests).toEqual(hashes.map(revision => ({ revision, owner:'fixture-owner' })));
+  } finally {
+    allowImage?.(); page?.close(); await chrome.close(); server.closeAllConnections(); server.close();
+  }
+}, 30_000);

@@ -1,9 +1,24 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { ReviewStackSnapshot } from '../../../../shared/review-stack.ts'
-import { readReviewStack, originalHttps } from './review-stack-client.ts'
+import { readReviewStack, originalHttps, privateReviewThumbnail } from './review-stack-client.ts'
 import { reviewAreaOptions, reviewDeck, horizontalTravel, milestoneCrossed } from './review-stack-deck.ts'
 import { readReviewManifest, importReviewManifest } from './review-stack-import.ts'
+
+test('only the active card’s exact relative thumbnail path and image revision use the session', () => {
+  const id = 'weekly-' + '0'.repeat(64)
+  const path = '/api/work-view/review-stack/media/' + id
+  const revised = path + '?revision=' + 'a'.repeat(64)
+  assert.equal(privateReviewThumbnail(id, path), path)
+  assert.equal(privateReviewThumbnail(id, revised), revised)
+  for (const candidate of [
+    'https://other.example' + revised, '//other.example' + revised, revised + '#fragment',
+    revised + '&extra=value', revised + '&revision=' + 'b'.repeat(64), path + '?revision=invalid',
+    path + '?revision=' + 'Z'.repeat(64), revised.replace(id, 'weekly-' + '1'.repeat(64)),
+  ]) {
+    assert.equal(privateReviewThumbnail(id, candidate), undefined)
+  }
+})
 
 const card = (id: string, focus = 'Design') => ({ id, key: id, focus, title: 'Recorded project deliverable', what: 'A genuine original card.', context: 'The project this card belongs to.', excerpt: 'Source evidence.', createdAt: 1 })
 const empty: ReviewStackSnapshot = { revision: 'r1', cards: [], reviews: [], bookmarks: [], followUps: [], groups: [] }

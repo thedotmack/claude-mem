@@ -1240,7 +1240,10 @@ export class WorkerService implements WorkerRef {
       this.server.registerRoutes(this.workViewRoutes);
       this.server.registerRoutes(new ReviewStackRoutes(
         this.dbManager.getConnection(), this.dbManager.getSessionStore().getLocalSyncDeviceId(),
-        () => this.dbManager.getCloudSync()?.notify(),
+        () => {
+          this.workViewRoutes?.publishReviewStackChanged();
+          this.dbManager.getCloudSync()?.notify();
+        },
       ));
       this.initPhaseTracker.setInitPhase('db_ready');
 
