@@ -107,6 +107,7 @@ test('both publication triggers require the publicly verified Mac asset and an i
   ]);
   expect(workflow.jobs['release-notes'].permissions).toEqual({ contents: 'read' });
   expect(workflow.jobs['release-notes'].steps[0].with?.ref).toBe('${{ github.sha }}');
+  expect(workflow.jobs['release-notes'].steps.find(step => step.uses === 'actions/upload-artifact@v4')?.with?.overwrite).toBe(true);
   const publishScript = workflow.jobs.publish.steps.find(step => step.name === 'Publish')!.run!;
   expect(publishScript).toContain('github-tagged-release.mjs publication-state');
   expect(publishScript).not.toContain('GITHUB_EVENT_NAME');

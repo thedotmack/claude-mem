@@ -50,6 +50,7 @@ jobs:
           name: tagged-release-notes
           path: ${{ runner.temp }}/tagged-release-notes.md
           if-no-files-found: error
+          overwrite: true
 
   publish:
     needs: attach-messages
