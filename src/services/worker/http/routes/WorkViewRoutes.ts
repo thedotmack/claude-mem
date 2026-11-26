@@ -63,6 +63,7 @@ import {
   type ConversationOpenedInApp,
 } from '../../../../shared/conversation-continuation.js';
 import type { ConversationContinuationRunner } from '../../../work-view/conversation-continuation-runner.js';
+import { WORK_VIEW_USAGE_VIEWS } from '../../../../shared/work-view-pages.js';
 
 /** True while a process with this pid exists (signal 0 checks without signalling). */
 function processIsAlive(pid: number): boolean {
@@ -108,7 +109,7 @@ export function requireWorkViewOrigin(req: Request, res: Response, next: NextFun
 
 // Reads that return share links or comments: the viewer's own page only. Worker CORS lets other local pages read
 // responses, and a cross-origin fetch carries its Origin.
-function requireWorkViewReadOrigin(req: Request, res: Response, next: NextFunction): void {
+export function requireWorkViewReadOrigin(req: Request, res: Response, next: NextFunction): void {
   if (req.get('sec-fetch-site') === 'cross-site' || isForeignLoopbackBrowserWrite(req)) {
     res.status(403).json({ error: 'Sharing is available only from the local work viewer.' });
     return;
@@ -244,10 +245,9 @@ const suggestionBody = z.object({
 
 // The viewer's page ids (src/ui/my-work/src/live/usage.ts `UsageView`: setup plus App.tsx `View`): a closed list, so a
 // usage report can carry nothing else. A focus area is My Work filtered to that area, so it counts as `work`, never by name.
-const WORK_VIEW_PAGES = ['setup', 'work', 'rules', 'suggested', 'past-focus'] as const;
 const usageBody = z.discriminatedUnion('event', [
-  z.object({ event: z.literal('opened'), view: z.enum(WORK_VIEW_PAGES) }).strict(),
-  z.object({ event: z.literal('switched'), view: z.enum(WORK_VIEW_PAGES), previousView: z.enum(WORK_VIEW_PAGES) }).strict(),
+  z.object({ event: z.literal('opened'), view: z.enum(WORK_VIEW_USAGE_VIEWS) }).strict(),
+  z.object({ event: z.literal('switched'), view: z.enum(WORK_VIEW_USAGE_VIEWS), previousView: z.enum(WORK_VIEW_USAGE_VIEWS) }).strict(),
 ]);
 
 /** The line that makes Claude Code load the approved rules with the owner's user-level instructions.

@@ -1,4 +1,32 @@
 // Node consumable boundary. The rich record codecs keep their native wire fields.
+import type { ReviewStackSnapshot, ReviewStackPage, ReviewStackWriteResult, ReviewStackRecordKind } from './review-stack.js';
+export type {
+  ReviewStackSnapshot, ReviewStackCard, ReviewStackPage, ReviewStackImportCard, ReviewStackAction,
+  ReviewStackWriteResult, ReviewStackImportResult, ReviewStackActionResult, ReviewStackReview,
+  ReviewStackBookmark, ReviewStackFollowUp, ReviewStackGroup,
+} from './review-stack.js';
+export { isReviewStackKind, REVIEW_STACK_CARD_KIND, REVIEW_STACK_CARD_TOOL_SCHEMA, REVIEW_STACK_IMPORT_LIMIT } from './review-stack.js';
+export interface ReviewStackRecord {
+  kind: string; key: string; value: unknown; hash: string; revision: string; deleted: boolean;
+  writer?: string; batchId?: string; valueOmitted?: true; sourceId?: number | string; valueHash?: string;
+}
+export interface ReviewStackUpdate { kind: ReviewStackRecordKind; key: string; value: unknown; expectedHash: string | null }
+export declare class ReviewStackError extends Error {
+  readonly status: 400 | 404 | 409 | 413;
+  constructor(status: 400 | 404 | 409 | 413, message: string);
+}
+export function renderReviewStack(records: Iterable<ReviewStackRecord>, options?: {
+  thumbnailUrl?: (cardId: string) => string; redactText?: (text: string) => string;
+}): ReviewStackSnapshot;
+export function reviewStackPage(snapshot: ReviewStackSnapshot, cursor?: string | null): ReviewStackPage;
+export function reviewStackImage(records: Iterable<ReviewStackRecord>, cardId: string,
+  loadValue?: (head: ReviewStackRecord) => unknown): { bytes: Uint8Array; mimeType: string } | null;
+export function reviewStackWinners(records: Iterable<ReviewStackRecord>): ReviewStackRecord[];
+export function prepareReviewStackWrite(records: Iterable<ReviewStackRecord>, operation: 'import' | 'action', input: unknown,
+  mutationId: string, now?: number, options?: { redactText?: (text: string) => string }): {
+    updates: ReviewStackUpdate[]; result: ReviewStackWriteResult;
+  };
+
 export interface CloudWorkDocument {
   id: string;
   kind: 'prompt' | 'observation' | 'summary' | 'work_state';

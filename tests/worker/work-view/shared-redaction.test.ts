@@ -13,6 +13,8 @@ import { decodeChanges } from '../../../src/services/sync/SyncClient.js';
 import { publishSharedRecords, readSharedRecords } from '../../../src/services/work-view/shared-record-store.mjs';
 import { createSharedBatch, createSharedEntry, sharedRecordKey, sharedValueHash } from '../../../src/services/work-view/shared-records.mjs';
 import { isSharedProjectionValue } from '../../../src/services/work-view/shared-projection.mjs';
+import { prepareReviewStackWrite, renderReviewStack } from '../../../src/services/work-view/review-stack.js';
+import { redactSharedValue } from '../../../src/services/work-view/shared-redaction.mjs';
 import { WorkStateSource } from '../../../src/services/work-view/data-source.mjs';
 
 const AWS = 'AKIA' + 'ABCDEFGHIJKLMNOP';
@@ -53,6 +55,34 @@ function serializedDatabase(f: Fixture) {
   const tables = f.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as Array<{ name: string }>;
   return tables.map(({ name }) => JSON.stringify(f.db.query(`SELECT * FROM "${name}"`).all())).join('\n');
 }
+
+test('review excerpts and 5-word titles honor source and recipient redaction before persistence', () => {
+  const a = fixture('a'), b = fixture('b'), c = fixture('c');
+  const prefix = 'x'.repeat(3990) + ' ';
+  const excerpt = prefix + AWS + ' ' + 'z'.repeat(15_978 - prefix.length);
+  const body = { cards: [{
+    key: 'design-file', title: 'Review this private design ' + AWS, focus: 'Design',
+    what: 'The new cover brings the original print design into view.',
+    context: 'We are reviewing each draft ahead of the final publication.',
+    excerpt,
+  }] };
+  const importCard = (device: Fixture) => {
+    const {updates} = prepareReviewStackWrite([], 'import', body, '86837e86-e937-4b4b-ae8a-0670a697a0be', 1, {redactText:redactSharedValue});
+    expect(updates.filter(u => u.key.includes(':excerpt:'))).toHaveLength(1);
+    publishSharedRecords(device.db, { deviceId:device.deviceId, project:'Review', updates, validateValue:isSharedProjectionValue });
+  };
+  policy(false); importCard(a); const wire = wires(a);
+  policy(true); importCard(c);
+  expect(apply(b, wire).quarantined).toBe(0);
+  for (const recipient of [b, c]) {
+    const state = read(recipient);
+    expect(state.diagnostics.invalid).toBe(0);
+    const view = renderReviewStack(state.records.values(), {redactText:redactSharedValue});
+    expect(view.cards[0].excerpt).toBe(excerpt.replace(AWS, "<redacted type='aws_access_key'/>"));
+    expect(view.cards[0].title).toBe("Review this private design <redacted type='aws_access_key'/>");
+    expect(serializedDatabase(recipient)).not.toContain(AWS);
+  }
+});
 
 test('origin redaction precedes payload and manifest hashes', () => {
   policy(true);

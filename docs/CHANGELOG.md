@@ -6,14 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-### iMessage group chats
+### Review Stack in My Work
 
-- **The iMessage group chat observer keeps Claude-Mem notes on a group chat** (#6457). Add a Photon iMessage line to the group and run `npx claude-mem imessage setup`. Each group chat gets its own Claude-Mem project with what the group decided, planned, asked for and shared, and who said what. It only reads: it never sends, reacts or changes a group. See [docs/imessage-group-observer.md](imessage-group-observer.md).
+- Open **Review Stack** in local My Work or in your signed-in Cloud Sync Work View to review files, images, links and other work your agents submit. Browse lets you flip through a stack. Switch to Work to mark a card Seen, save it for later or leave a follow-up.
+- Hold **Seen** for three seconds to mark a whole Focus Area seen. You can undo the group action, revisit a card and find saved items and follow-ups across paired devices.
 
-### iMessage on your Mac
+### Claude-Mem Messages for macOS
 
-- **Claude-Mem Messages, a Mac app that keeps notes on the iMessage chats you pick** (#6482). It lists your chats and group chats from the Messages app on your own Mac. Tick the ones to observe and write what to watch for in each ("plans and who's bringing what", "money: who paid, who owes"). New messages in those chats become notes in one Claude-Mem project per chat. It only reads: it never sends, reacts or changes a chat, and nothing is added to the group. Only new messages are read, from when it starts listening. The app needs Full Disk Access, and its setup screen walks you through turning it on. Download the unsigned build from the "iMessage Mac app" check, or build it with `integrations/imessage-mac/scripts/build-app.sh`. See [docs/imessage-mac-app.md](imessage-mac-app.md).
-- **`claude-mem imessage mac` commands** do the same from Terminal: `check`, `chats`, `pick` (with `--focus` for what to watch for), `observe` and `contacts`.
+- Choose Messages on your Mac or an authorized Photon iMessage line in the app. For Mac Messages, select the chats and the topics to watch. For Photon, add the line to the groups you want to observe. New group conversations become searchable Claude-Mem notes in a project for each chat.
+- The read-only observer starts with new messages when you begin listening. From Terminal, use `npx claude-mem imessage mac` to check access, list chats, save picks, listen and import contact names. `npx claude-mem imessage setup` configures the Photon line.
+- The Mac app includes the observer for Apple silicon and Intel. The Messages source requires Full Disk Access. The Photon source uses your Photon credentials. [Download Claude-Mem Messages for macOS](https://github.com/thedotmack/claude-mem/releases/download/v17.0.0/Claude-Mem-Messages.zip).
+
+## [16.1.6] - 2026-11-26
+
+- Cloud Sync trial links now identify whether a user followed the GitHub README, the local timeline invitation, the startup message or the installer’s terminal link.
 
 ## [16.1.5] - 2026-11-25
 

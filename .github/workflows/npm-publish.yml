@@ -15,7 +15,14 @@ permissions:
   id-token: write
 
 jobs:
+  messages:
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/imessage-mac-app.yml
+
   publish:
+    needs: messages
     if: startsWith(github.ref, 'refs/tags/v')
     concurrency:
       group: npm-publish-${{ github.repository }}
@@ -48,3 +55,48 @@ jobs:
             fi
           fi
           npm publish
+
+  attach-messages:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: messages-release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Claude-Mem-Messages
+          path: release-artifacts
+      # This job handles the previously verified archive as bytes. It never
+      # executes the app or checks out release code with the write credential.
+      - name: Attach the Mac app and verify the published download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          name=Claude-Mem-Messages.zip
+          file="release-artifacts/$name"
+          label="Claude-Mem Messages ($GITHUB_SHA)"
+          asset() {
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" \
+              --jq '.assets[] | select(.name == "Claude-Mem-Messages.zip")'
+          }
+          existing=$(asset)
+          if [[ -z "$existing" ]]; then
+            gh release upload "$GITHUB_REF_NAME" "$file#$label" --repo "$GITHUB_REPOSITORY"
+            existing=$(asset)
+            expected="sha256:$(sha256sum "$file" | cut -d ' ' -f1)"
+            test "$(jq -r '.digest' <<< "$existing")" = "$expected"
+          fi
+          # A new build on a retry can have different archive timestamps. Keep
+          # the verified asset for this exact commit and recheck its public bytes.
+          test "$(jq -r '.label' <<< "$existing")" = "$label"
+          test "$(jq -r '.state' <<< "$existing")" = uploaded
+          download="$RUNNER_TEMP/$name"
+          curl --fail --silent --show-error --location --retry 4 --retry-all-errors --max-time 90 \
+            --output "$download" "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$name"
+          digest="sha256:$(sha256sum "$download" | cut -d ' ' -f1)"
+          test "$digest" = "$(jq -r '.digest' <<< "$existing")"
+          printf '%s %s\n' "$name" "$digest" >> "$GITHUB_STEP_SUMMARY"
