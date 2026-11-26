@@ -90,5 +90,14 @@ type Mark = { label: string; more: string | null; name: string | null };
       { label: segundo, more: '+1', name: `${segundo} e mais 1 dia` },
       { label: quarto, more: '+2', name: `${quarto} e mais 2 dias` },
     ]);
+
+    await page.evaluate(`window.__setLocale('ru')`);
+    await page.settle();
+    const [первый, второй, четвёртый] = await expectedLabels('ru');
+    expect(await readRail()).toEqual([
+      { label: первый, more: null, name: null },
+      { label: второй, more: '+1', name: `${второй}; дополнительных дней: 1` },
+      { label: четвёртый, more: '+2', name: `${четвёртый}; дополнительных дней: 2` },
+    ]);
   } finally { page?.close(); await chrome?.close(); server.stop(true); }
 }, 60_000);
