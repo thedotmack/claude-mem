@@ -186,8 +186,14 @@ async function* merge<T>(sources: AsyncIterable<T>[]): AsyncIterable<T> {
  * only for a fixed token; a renewed one gets a fresh token on reconnect.
  */
 function authRejected(error: unknown): boolean {
+  // The SDK wraps nice-grpc's numeric code as grpcCode and uses the
+  // provider's free-form details as its message. Older transports expose code.
+  if (error && typeof error === 'object') {
+    const { grpcCode, code } = error as { grpcCode?: unknown; code?: unknown };
+    if (grpcCode === 7 || grpcCode === 16 || code === 7 || code === 16) return true;
+  }
   const message = error instanceof Error ? error.message : String(error);
-  return /unauthenticated|permission denied|invalid token/i.test(message);
+  return /unauthenticated|permission[ _]denied|invalid token/i.test(message);
 }
 
 function isFatal(error: unknown, renewableTokens: boolean): boolean {
