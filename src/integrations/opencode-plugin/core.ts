@@ -20,6 +20,32 @@ import { formatHostForUrl, normalizeWorkerBaseUrl } from "../../shared/worker-ur
 import { localApiTokenHeadersFor } from "../../shared/local-api-token.js";
 import { stripMemoryTags } from "../../utils/tag-stripping.js";
 import { deliverLiveObserverHandoff } from "../../shared/live-observer-handoff.js";
+import {
+  SEMANTIC_CONTEXT_MAX_LIMIT,
+  SEMANTIC_CONTEXT_MIN_QUERY_CHARS,
+} from "../../shared/semantic-context.js";
+
+export type SemanticInjectionSettings = {
+  enabled: boolean;
+  limit: number;
+  format: string;
+};
+
+export function semanticInjectionSettings(raw: Record<string, unknown>): SemanticInjectionSettings {
+  const enabled = String(raw.CLAUDE_MEM_SEMANTIC_INJECT ?? "").trim().toLowerCase() === "true";
+  const parsedLimit = Number.parseInt(String(raw.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT ?? ""), 10);
+  const limit = Number.isFinite(parsedLimit)
+    ? Math.min(Math.max(parsedLimit, 1), SEMANTIC_CONTEXT_MAX_LIMIT)
+    : 5;
+  const rawFormat = typeof raw.CLAUDE_MEM_SEMANTIC_INJECT_FORMAT === "string"
+    ? raw.CLAUDE_MEM_SEMANTIC_INJECT_FORMAT.trim()
+    : "";
+  return {
+    enabled,
+    limit,
+    format: rawFormat || "narrative",
+  };
+}
 
 export interface OpenCodeClient {
   session?: {
@@ -191,6 +217,40 @@ async function workerGetText(path: string): Promise<string | null> {
   }
 }
 
+export async function fetchSemanticForPrompt(
+  promptText: string,
+  cwd: string,
+  settings: SemanticInjectionSettings,
+  platformSource: string,
+): Promise<string> {
+  const query = stripMemoryTags(promptText).trim();
+  if (!settings.enabled || query.length < SEMANTIC_CONTEXT_MIN_QUERY_CHARS) {
+    return "";
+  }
+  try {
+    const response = await fetch(`${WORKER_BASE_URL}/api/context/semantic`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        q: query,
+        cwd,
+        limit: settings.limit,
+        format: settings.format,
+        platformSource: normalizePlatformSource(platformSource),
+      }),
+      signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      return "";
+    }
+    const data = (await response.json()) as { context?: unknown } | null;
+    return typeof data?.context === "string" ? data.context : "";
+  } catch {
+    return "";
+  }
+}
+
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
 // Memory context per checkout and OpenCode session: fetched on the session's
@@ -203,6 +263,13 @@ interface CachedMemoryContext {
   failedAt?: number;
 }
 const contextByOpenCodeSessionId = new Map<string, CachedMemoryContext>();
+
+interface SemanticCacheEntry {
+  prompt: string;
+  request: Promise<string>;
+  failedAt?: number;
+}
+const semanticByOpenCodeSessionId = new Map<string, SemanticCacheEntry>();
 
 // A failed context fetch is remembered this long before the next build tries
 // again: OpenCode builds a system prompt for every request, and a hung worker
@@ -331,6 +398,12 @@ export interface ClaudeMemCore {
    * re-fetched after a failure window. Returns null/empty when there is none.
    */
   memoryContext(sessionID: string): Promise<string | null>;
+  /** Prime per-prompt semantic recall for the current turn, or clear stale cache when skipped. */
+  primeSemanticContext(sessionID: string, promptText: string): void;
+  /** Read the cached semantic block for the current turn without issuing a new request. */
+  semanticContext(sessionID: string): Promise<string>;
+  /** Drop the cached semantic block for this session. */
+  forgetSemanticContext(sessionID: string): void;
   /** The `claude_mem_search` tool body. */
   search(query: string): Promise<string>;
   timeline(anchor: number): Promise<string>;
@@ -436,14 +509,62 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
 
     forgetMemoryContext(sessionID) {
       contextByOpenCodeSessionId.delete(contextKeyFor(sessionID));
+      semanticByOpenCodeSessionId.delete(contextKeyFor(sessionID));
     },
 
     forgetSession(sessionID) {
       contextByOpenCodeSessionId.delete(contextKeyFor(sessionID));
+      semanticByOpenCodeSessionId.delete(contextKeyFor(sessionID));
     },
 
     memoryContext(sessionID) {
       return memoryContextFor(sessionID, ctx.directory);
+    },
+
+    primeSemanticContext(sessionID, promptText) {
+      const key = contextKeyFor(sessionID);
+      const settingsPath = join(SettingsDefaultsManager.get("CLAUDE_MEM_DATA_DIR"), "settings.json");
+      const rawSettings = SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true });
+      const parsed = semanticInjectionSettings(rawSettings as unknown as Record<string, unknown>);
+      const query = stripMemoryTags(promptText).trim();
+      if (!parsed.enabled || query.length < SEMANTIC_CONTEXT_MIN_QUERY_CHARS) {
+        semanticByOpenCodeSessionId.delete(key);
+        return;
+      }
+
+      const cached = semanticByOpenCodeSessionId.get(key);
+      if (
+        cached &&
+        cached.prompt === query &&
+        cached.failedAt !== undefined &&
+        Date.now() - cached.failedAt < FAILED_CONTEXT_RETRY_MS
+      ) {
+        return;
+      }
+      semanticByOpenCodeSessionId.delete(key);
+
+      while (semanticByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
+        const oldestKey = semanticByOpenCodeSessionId.keys().next().value;
+        if (oldestKey === undefined) break;
+        semanticByOpenCodeSessionId.delete(oldestKey);
+      }
+
+      const entry: SemanticCacheEntry = {
+        prompt: query,
+        request: fetchSemanticForPrompt(query, ctx.directory, parsed, PLATFORM_SOURCE),
+      };
+      semanticByOpenCodeSessionId.set(key, entry);
+      void entry.request.then((context) => {
+        if (!context) entry.failedAt = Date.now();
+      });
+    },
+
+    semanticContext(sessionID) {
+      return semanticByOpenCodeSessionId.get(contextKeyFor(sessionID))?.request ?? Promise.resolve("");
+    },
+
+    forgetSemanticContext(sessionID) {
+      semanticByOpenCodeSessionId.delete(contextKeyFor(sessionID));
     },
 
     async timeline(anchor) {
