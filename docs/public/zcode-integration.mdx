@@ -43,7 +43,7 @@ You do not need to restart ZCode. Start a new ZCode session, or run `/reload`, s
 
 ## Verify
 
-1. Run `npx claude-mem zcode status`. It prints `ZCode hooks: installed`.
+1. Run `npx claude-mem zcode status`. It prints `ZCode hooks: installed`. It prints `disabled` when `hooks.enabled` is not `true`, and `incomplete` when a hook or the `claude-mem` MCP server is missing. See [Troubleshooting](#troubleshooting).
 2. Start a new ZCode session in a project and ask the agent to read a file.
 3. Watch the observation arrive in the viewer.
 4. In a new session, ask ZCode to search your memory. It uses the `mcp__claude-mem__*` tools.
@@ -77,7 +77,8 @@ Each hook is a `process` hook (the Bun runtime plus the worker script, with no s
 
 ## Troubleshooting
 
-- **Hooks do not run**: check that `hooks.enabled` is `true` in `~/.zcode/cli/config.json`. A missing key means off. The installer keeps your `false` and prints a warning. Set it to `true`, then start a new session or run `/reload`.
+- **Hooks do not run, or status says disabled**: check that `hooks.enabled` is `true` in `~/.zcode/cli/config.json`. A missing key means off. The installer keeps your `false` and prints a warning. Set it to `true`, then start a new session or run `/reload`.
+- **Status says incomplete**: a hook or the `claude-mem` MCP server was removed from `~/.zcode/cli/config.json`. The status line names what is missing. Run `npx claude-mem zcode install` again.
 - **Bun not found**: the hooks run Bun by its absolute path. If you moved or reinstalled Bun, run `npx claude-mem zcode install` again.
 - **Changes do not load**: start a new ZCode session or run `/reload`.
 - **More detail**: ZCode writes its logs to `~/.zcode/v2/logs/`. Claude-Mem writes its logs to `~/.claude-mem/logs/`.

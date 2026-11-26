@@ -9,9 +9,12 @@ import {
   installZCode,
   isClaudeMemZCodeHook,
   mergeZCodeHooks,
+  readZCodeStatus,
   removeZCodeHooks,
   uninstallZCode,
+  ZCODE_STATUS_LABELS,
   zcodeConfigPath,
+  type ZCodeStatus,
 } from '../../src/services/integrations/ZCodeHooksInstaller.js';
 
 const realInstallPathsSnapshot = { ...realInstallPathsModule };
@@ -326,5 +329,101 @@ describe('uninstallZCode and checkZCodeStatus', () => {
     expect(checkZCodeStatus(configPath)).toBe(1);
     expect(errors.mock.calls.flat().join('\n')).toContain('unreadable config');
     expect((console.log as unknown as { mock: { calls: unknown[][] } }).mock.calls.flat().join('\n')).not.toContain('not installed');
+  });
+});
+
+describe('readZCodeStatus', () => {
+  const fullConfig = () => ({
+    hooks: { enabled: true, events: buildZCodeHooks(BUN, WORKER) },
+    mcp: { servers: { 'claude-mem': { command: 'node' }, other: { command: 'y' } } },
+  });
+  const statusOf = (content: unknown) => {
+    const configPath = scratchConfigPath();
+    writeConfig(configPath, content);
+    return readZCodeStatus(configPath);
+  };
+
+  test('installed: every hook, hooks.enabled true and the MCP entry', () => {
+    expect(statusOf(fullConfig()).status).toBe('installed');
+  });
+
+  test('installed also with a user hook on the same event', () => {
+    const config = fullConfig();
+    config.hooks.events.PostToolUse.unshift(USER_HOOK);
+    expect(statusOf(config).status).toBe('installed');
+  });
+
+  test.each([
+    ['missing', undefined],
+    ['false', false],
+    ['not a boolean', 'true'],
+  ])('disabled when hooks.enabled is %s', (_label, enabled) => {
+    const config: Record<string, any> = fullConfig();
+    if (enabled === undefined) delete config.hooks.enabled;
+    else config.hooks.enabled = enabled;
+    expect(statusOf(config).status).toBe('disabled');
+  });
+
+  test('incomplete when one event is missing, and names it', () => {
+    const config = fullConfig();
+    delete (config.hooks.events as Record<string, unknown>).Stop;
+    expect(statusOf(config)).toEqual({ status: 'incomplete', detail: 'missing Stop' });
+  });
+
+  test('incomplete when SessionStart has start but not context', () => {
+    const config = fullConfig();
+    config.hooks.events.SessionStart = config.hooks.events.SessionStart.slice(0, 1);
+    expect(statusOf(config)).toEqual({ status: 'incomplete', detail: 'missing SessionStart' });
+  });
+
+  test('incomplete when the claude-mem MCP entry is missing', () => {
+    const config = fullConfig();
+    delete (config.mcp.servers as Record<string, unknown>)['claude-mem'];
+    expect(statusOf(config)).toEqual({ status: 'incomplete', detail: 'missing the claude-mem MCP server' });
+  });
+
+  test('incomplete before disabled, so install is the first fix', () => {
+    const config: Record<string, any> = fullConfig();
+    delete config.hooks.enabled;
+    delete config.mcp.servers['claude-mem'];
+    expect(statusOf(config).status).toBe('incomplete');
+  });
+
+  test('incomplete when only the MCP entry is left', () => {
+    const status = statusOf({ mcp: { servers: { 'claude-mem': { command: 'node' } } } });
+    expect(status.status).toBe('incomplete');
+    expect(status.detail).toContain('SessionStart');
+  });
+
+  test('not installed with no config, or with only user hooks and servers', () => {
+    expect(readZCodeStatus(path.join(scratchConfigPath(), 'none.json')).status).toBe('not-installed');
+    expect(statusOf({ hooks: { enabled: true, events: { PostToolUse: [USER_HOOK] } }, mcp: { servers: { other: {} } } }).status)
+      .toBe('not-installed');
+  });
+
+  test('unreadable on invalid JSON or a wrong shape', () => {
+    expect(statusOf('{ not json').status).toBe('unreadable');
+    expect(statusOf({ hooks: [] }).status).toBe('unreadable');
+  });
+
+  test('status prints the label for the state and exits 0 only when installed', () => {
+    const errors = quiet();
+    const cases: Array<[ZCodeStatus, unknown]> = [
+      ['installed', fullConfig()],
+      ['disabled', { ...fullConfig(), hooks: { events: buildZCodeHooks(BUN, WORKER) } }],
+      ['incomplete', { hooks: fullConfig().hooks }],
+      ['not-installed', {}],
+      ['unreadable', '[]'],
+    ];
+    for (const [status, content] of cases) {
+      const configPath = scratchConfigPath();
+      writeConfig(configPath, content);
+      (console.log as unknown as { mockClear: () => void }).mockClear();
+      errors.mockClear();
+      expect(checkZCodeStatus(configPath)).toBe(status === 'installed' ? 0 : 1);
+      const printed = [...(console.log as unknown as { mock: { calls: unknown[][] } }).mock.calls, ...errors.mock.calls].flat().join('\n');
+      expect(printed).toContain(`ZCode hooks: ${ZCODE_STATUS_LABELS[status]}`);
+      rmSync(scratch!, { recursive: true, force: true });
+    }
   });
 });

@@ -215,21 +215,54 @@ export function uninstallZCode(configPath: string = zcodeConfigPath()): number {
   }
 }
 
-export function checkZCodeStatus(configPath: string = zcodeConfigPath()): number {
+/**
+ * What `claude-mem zcode status` reports; readZCodeStatus is its one writer.
+ * Only `installed` means capture and recall can work.
+ */
+export type ZCodeStatus = 'installed' | 'disabled' | 'incomplete' | 'not-installed' | 'unreadable';
+
+export const ZCODE_STATUS_LABELS: Record<ZCodeStatus, string> = {
+  installed: 'installed',
+  disabled: 'disabled, hooks.enabled is not true so ZCode does not run them',
+  incomplete: 'incomplete, run npx claude-mem zcode install',
+  'not-installed': 'not installed',
+  unreadable: 'unreadable config',
+};
+
+const ownHooks = (rules: unknown): ZCodeHookCommand[] => Array.isArray(rules)
+  ? rules.flatMap((rule) => Array.isArray(rule?.hooks) ? rule.hooks.filter(isClaudeMemZCodeHook) : [])
+  : [];
+// The args after the worker path, e.g. ["hook","zcode","context"].
+const hookTail = (hook: ZCodeHookCommand) => JSON.stringify((hook.args as unknown[]).slice(1));
+
+export function readZCodeStatus(configPath: string = zcodeConfigPath()): { status: ZCodeStatus; detail?: string } {
+  let config: ZCodeConfig;
   try {
-    const events = readZCodeConfig(configPath).hooks?.events ?? {};
-    const installed = Object.values(events).some((rules) => Array.isArray(rules)
-      && rules.some((rule) => Array.isArray(rule?.hooks) && rule.hooks.some(isClaudeMemZCodeHook)));
-    if (installed) {
-      console.log(`  ZCode hooks: installed (${configPath})`);
-      return 0;
-    }
+    config = readZCodeConfig(configPath);
   } catch (error) {
-    console.error(`  ZCode hooks: unreadable config (${(error as Error).message})`);
-    return 1;
+    return { status: 'unreadable', detail: (error as Error).message };
   }
-  console.log('  ZCode hooks: not installed');
-  return 1;
+  const events = config.hooks?.events ?? {};
+  const servers = config.mcp?.servers;
+  const hasServer = servers !== undefined && Object.hasOwn(servers, MCP_SERVER_NAME);
+  const missing = Object.entries(buildZCodeHooks('bun', 'worker-service.cjs')).flatMap(([event, rules]) => {
+    const present = new Set(ownHooks(events[event]).map(hookTail));
+    return rules.every((rule) => present.has(hookTail(rule.hooks[0]))) ? [] : [event];
+  });
+  if (!hasServer) missing.push(`the ${MCP_SERVER_NAME} MCP server`);
+  if (!hasServer && !Object.values(events).some((rules) => ownHooks(rules).length > 0)) return { status: 'not-installed' };
+  if (missing.length > 0) return { status: 'incomplete', detail: `missing ${missing.join(', ')}` };
+  // ZCode runs no hooks unless this is true; a missing key means off.
+  if (config.hooks?.enabled !== true) return { status: 'disabled', detail: configPath };
+  return { status: 'installed', detail: configPath };
+}
+
+export function checkZCodeStatus(configPath: string = zcodeConfigPath()): number {
+  const { status, detail } = readZCodeStatus(configPath);
+  const line = `  ZCode hooks: ${ZCODE_STATUS_LABELS[status]}${detail ? ` (${detail})` : ''}`;
+  if (status === 'unreadable') console.error(line);
+  else console.log(line);
+  return status === 'installed' ? 0 : 1;
 }
 
 export async function handleZCodeCommand(subcommand: string | undefined, _args: string[]): Promise<number> {
