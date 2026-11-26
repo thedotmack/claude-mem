@@ -21,8 +21,38 @@ jobs:
       contents: read
     uses: ./.github/workflows/imessage-mac-app.yml
 
+  release-notes:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Prepare notes from the exact tagged changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/tagged-release-notes.md"
+          # An existing release may have its own notes or a dated changelog.
+          if ! node scripts/github-tagged-release.mjs notes > "$notes"; then
+            gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null
+            : > "$notes"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tagged-release-notes
+          path: ${{ runner.temp }}/tagged-release-notes.md
+          if-no-files-found: error
+
   publish:
-    needs: messages
+    needs: attach-messages
     if: startsWith(github.ref, 'refs/tags/v')
     concurrency:
       group: npm-publish-${{ github.repository }}
@@ -47,17 +77,15 @@ jobs:
       - name: Publish
         shell: bash
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
-            state=$(node scripts/github-tagged-release.mjs publication-state)
-            if [[ "$state" == published ]]; then
-              echo "npm already serves the requested tag commit."
-              exit 0
-            fi
+          state=$(node scripts/github-tagged-release.mjs publication-state)
+          if [[ "$state" == published ]]; then
+            echo "npm already serves the requested tag commit."
+            exit 0
           fi
           npm publish
 
   attach-messages:
-    needs: publish
+    needs: [messages, release-notes]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -69,6 +97,10 @@ jobs:
         with:
           name: Claude-Mem-Messages
           path: release-artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          name: tagged-release-notes
+          path: release-notes
       # This job handles the previously verified archive as bytes. It never
       # executes the app or checks out release code with the write credential.
       - name: Attach the Mac app and verify the published download
@@ -79,6 +111,28 @@ jobs:
           name=Claude-Mem-Messages.zip
           file="release-artifacts/$name"
           label="Claude-Mem Messages ($GITHUB_SHA)"
+          tag_commit() {
+            local ref
+            ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME")
+            while [[ "$(jq -r '.object.type' <<< "$ref")" == tag ]]; do
+              ref=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -er '.object.sha' <<< "$ref")")
+            done
+            jq -er 'select(.object.type == "commit") | .object.sha' <<< "$ref"
+          }
+          test "$(tag_commit)" = "$GITHUB_SHA"
+          # A direct tag push can arrive before a maintainer creates the release.
+          # A concurrently created release wins with its original title and notes.
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null; then
+            notes=release-notes/tagged-release-notes.md
+            test -s "$notes"
+            release_flags=()
+            if [[ "${GITHUB_REF_NAME%%+*}" == *-* ]]; then release_flags+=(--prerelease); fi
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "$GITHUB_REF_NAME" --notes-file "$notes" "${release_flags[@]}" ||
+              gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null
+          fi
+          test "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')" = false
+          test "$(tag_commit)" = "$GITHUB_SHA"
           asset() {
             gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" \
               --jq '.assets[] | select(.name == "Claude-Mem-Messages.zip")'
