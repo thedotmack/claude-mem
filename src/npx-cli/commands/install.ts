@@ -4,7 +4,7 @@ import { spawnSync } from 'child_process';
 import { explainTelemetryConsent, loadTelemetryConfig, recordTelemetryDecision, resolveTelemetryConsent } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { spawnHidden } from '../../shared/spawn.js';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs';
 import { applyConfiguredSkillSelection, readDisabledSkills, skillSelectionFailureMessage } from '../../shared/skill-selection.js';
 import { RUNTIME_REQUIRED_SKILLS } from '../../shared/runtime-skills.js';
 import type { SetupInstallCatalog, SetupInstallSelection, SetupMode } from '../../shared/setup-install.js';
@@ -963,7 +963,7 @@ export function writeTrimmedMarketplaceManifest(marketplaceDir: string): void {
   });
   if (shipped.length === manifest.plugins.length) return;
 
-  writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, plugins: shipped }, null, 2)}\n`);
+  writeJsonFileAtomic(manifestPath, { ...manifest, plugins: shipped });
 }
 
 /**
@@ -985,7 +985,7 @@ export function writeTrimmedMarketplacePackageJson(packageRoot: string, marketpl
   delete pkg.devDependencies;
   delete pkg.trustedDependencies;
 
-  writeFileSync(join(marketplaceDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
+  writeJsonFileAtomic(join(marketplaceDir, 'package.json'), pkg);
 }
 
 /**
