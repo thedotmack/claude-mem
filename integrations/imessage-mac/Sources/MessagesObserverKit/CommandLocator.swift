@@ -112,16 +112,24 @@ public enum CommandLocator {
         override: String?,
         searchPath: String,
         home: String = FileManager.default.homeDirectoryForCurrentUser.path,
-        isExecutable: (String) -> Bool
+        isExecutable: (String) -> Bool,
+        nodeVersion: (String) -> String? = { _ in nil }
     ) -> CommandLaunch? {
         if let override, !override.trimmingCharacters(in: .whitespaces).isEmpty {
             let path = (override as NSString).expandingTildeInPath
             return isExecutable(path) ? CommandLaunch(executable: path, prefix: [], path: searchPath) : nil
         }
+        // A folder whose own node is too old is passed over, so an old Node in
+        // Homebrew or /usr/local never wins over a working one further on.
+        // A folder whose node can't be asked is still used.
+        func tooOld(_ folder: String) -> Bool {
+            guard let version = nodeVersion(folder) else { return false }
+            return !isSupportedNode(version.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
         let folders = searchPath.split(separator: ":").map(String.init)
         for folder in folders {
             let npx = "\(folder)/npx"
-            if isExecutable(npx) { return CommandLaunch(executable: npx, prefix: ["--yes", package], path: searchPath) }
+            if isExecutable(npx), !tooOld(folder) { return CommandLaunch(executable: npx, prefix: ["--yes", package], path: searchPath) }
         }
         let launcherFolder = "\(home)/.local/bin"
         for folder in folders where folder != launcherFolder {
@@ -129,5 +137,36 @@ public enum CommandLocator {
             if isExecutable(candidate) { return CommandLaunch(executable: candidate, prefix: [], path: searchPath) }
         }
         return nil
+    }
+
+    /// Asks `<folder>/node --version`, with the child's PATH so asdf and mise
+    /// shims can find their own tools. Runs that node directly, never the login
+    /// shell or a shell profile, and
+    /// gives up after a few seconds. Nil when there is no node there or it
+    /// didn't answer.
+    public static func nodeVersion(in folder: String, path: String, timeout: TimeInterval = 5) -> String? {
+        let node = "\(folder)/node"
+        guard FileManager.default.isExecutableFile(atPath: node) else { return nil }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: node)
+        process.arguments = ["--version"]
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = path
+        process.environment = environment
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice
+        let done = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in done.signal() }
+        do { try process.run() } catch { return nil }
+        if done.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            return nil
+        }
+        guard process.terminationStatus == 0 else { return nil }
+        let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return text?.isEmpty == false ? text : nil
     }
 }

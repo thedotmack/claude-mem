@@ -131,9 +131,12 @@ final class AppModel: ObservableObject {
             let path = CommandLocator.searchPath(home: home, extraFolders: CommandLocator.versionManagerFolders(home: home),
                                                  lateFolders: CommandLocator.shimFolders(home: home),
                                                  inherited: ProcessInfo.processInfo.environment["PATH"])
-            return CommandLocator.resolve(override: override.isEmpty ? nil : override, searchPath: path) {
-                FileManager.default.isExecutableFile(atPath: $0)
-            }
+            return CommandLocator.resolve(
+                override: override.isEmpty ? nil : override,
+                searchPath: path,
+                isExecutable: { FileManager.default.isExecutableFile(atPath: $0) },
+                nodeVersion: { CommandLocator.nodeVersion(in: $0, path: path) }
+            )
         }.value
         launch = found
         commandProblem = found == nil

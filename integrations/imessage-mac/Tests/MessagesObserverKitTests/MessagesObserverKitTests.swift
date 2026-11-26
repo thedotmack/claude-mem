@@ -62,6 +62,29 @@ final class CommandLocatorTests: XCTestCase {
         XCTAssertFalse(CommandLocator.isSupportedNode("default"))
     }
 
+    func testPassesOverAFolderWhoseNodeIsTooOld() {
+        let path = "/opt/homebrew/bin:/Users/a/.asdf/shims:/c"
+        let versions = ["/opt/homebrew/bin": "v18.20.0\n", "/Users/a/.asdf/shims": "v22.13.0"]
+        let picked = CommandLocator.resolve(override: nil, searchPath: path, home: "/Users/a",
+                                            isExecutable: { $0.hasSuffix("/npx") }, nodeVersion: { versions[$0] })
+        XCTAssertEqual(picked?.executable, "/Users/a/.asdf/shims/npx")
+        // A node that can't be asked doesn't rule its folder out.
+        let unknown = CommandLocator.resolve(override: nil, searchPath: path, home: "/Users/a",
+                                             isExecutable: { $0.hasSuffix("/npx") }, nodeVersion: { _ in nil })
+        XCTAssertEqual(unknown?.executable, "/opt/homebrew/bin/npx")
+    }
+
+    func testAsksNodeItsVersionWithoutAShell() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+        try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: folder) }
+        XCTAssertNil(CommandLocator.nodeVersion(in: folder, path: "/usr/bin:/bin"))
+        let node = "\(folder)/node"
+        try "#!/bin/sh\necho v22.13.0\n".write(toFile: node, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: node)
+        XCTAssertEqual(CommandLocator.nodeVersion(in: folder, path: "/usr/bin:/bin"), "v22.13.0")
+    }
+
     func testPrefersNpxAndNeverTheHookLauncher() {
         let path = "/Users/a/.local/bin:/a:/b"
         let npx = CommandLocator.resolve(override: nil, searchPath: path, home: "/Users/a") { $0 == "/b/npx" || $0 == "/a/claude-mem" }
