@@ -165,6 +165,23 @@ describe('ChatDbSource', () => {
     expect(Date.now() - started).toBeLessThan(5_000);
   });
 
+  it('keeps its place when a read fails partway, so no message is lost', () => {
+    let failOnce = true;
+    const src = new ChatDbSource({
+      dbPath: fake.path, label, watch: false,
+      isObserved: guid => {
+        if (guid === DIRECT && failOnce) { failOnce = false; throw new Error('database is locked'); }
+        return guid === GROUP || guid === DIRECT;
+      },
+    });
+    src.start();
+    fake.message({ chat: GROUP, guid: 'p1', at: T0, text: 'first', from: ANA });
+    fake.message({ chat: DIRECT, guid: 'p2', at: T0 + MIN, text: 'second', from: CAL });
+    expect(() => src.poll()).toThrow('database is locked');
+    expect(src.poll().map(event => (event as { messageGuid: string }).messageGuid)).toEqual(['p1', 'p2']);
+    expect(src.poll()).toEqual([]);
+  });
+
   it('waits before reading again after a read error, even right after a full page', async () => {
     const warnings: string[] = [];
     const src = new ChatDbSource({ dbPath: fake.path, label, isObserved: guid => guid === GROUP, watch: false, pollMs: 100, log: { info: () => {}, warn: message => warnings.push(message) } });

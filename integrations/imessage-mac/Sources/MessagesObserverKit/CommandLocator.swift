@@ -22,7 +22,11 @@ public struct CommandLaunch: Equatable, Sendable {
 
 /// Finds claude-mem the way a terminal would. An app started from Finder gets
 /// a bare PATH (/usr/bin:/bin:/usr/sbin:/sbin), so the usual install places
-/// and the login shell's PATH are added in front of it.
+/// and the Node version managers' folders are added in front of it.
+///
+/// It never runs the login shell to read its PATH: shell profiles are plain
+/// files anything on the Mac can edit, and the app holds Full Disk Access, so
+/// running them from the app would hand that access to whatever is in them.
 public enum CommandLocator {
     /// Folders where npm, Homebrew, Bun, Volta, nvm and friends put commands.
     public static func commonFolders(home: String) -> [String] {
@@ -37,11 +41,30 @@ public enum CommandLocator {
         ]
     }
 
-    /// The child's PATH: login shell PATH first, then the common folders, then the system ones. No repeats.
-    public static func searchPath(home: String, shellPath: String?, inherited: String?) -> String {
+    /// Node's bin folders from nvm, fnm, asdf and mise, newest version first.
+    /// Found by listing folders, never by running a shell.
+    public static func versionManagerFolders(home: String, fileManager: FileManager = .default) -> [String] {
+        func versions(_ root: String, bin: String) -> [String] {
+            let names = (try? fileManager.contentsOfDirectory(atPath: root)) ?? []
+            return names
+                .filter { !$0.hasPrefix(".") }
+                .sorted { $0.compare($1, options: .numeric) == .orderedDescending }
+                .map { "\(root)/\($0)\(bin)" }
+                .filter { fileManager.fileExists(atPath: $0) }
+        }
+        var folders = versions("\(home)/.nvm/versions/node", bin: "/bin")
+        folders += versions("\(home)/Library/Application Support/fnm/node-versions", bin: "/installation/bin")
+        folders += versions("\(home)/.local/share/fnm/node-versions", bin: "/installation/bin")
+        folders += ["\(home)/.asdf/shims", "\(home)/.local/share/mise/shims", "/opt/homebrew/opt/node/bin", "/usr/local/opt/node/bin"]
+            .filter { fileManager.fileExists(atPath: $0) }
+        return folders
+    }
+
+    /// The child's PATH: version manager folders first, then the common folders, then the system ones. No repeats.
+    public static func searchPath(home: String, extraFolders: [String], inherited: String?) -> String {
         var seen = Set<String>()
         var folders: [String] = []
-        let parts = (shellPath ?? "").split(separator: ":").map(String.init)
+        let parts = extraFolders
             + commonFolders(home: home)
             + (inherited ?? "/usr/bin:/bin:/usr/sbin:/sbin").split(separator: ":").map(String.init)
         for folder in parts where !folder.isEmpty && !seen.contains(folder) {
@@ -81,34 +104,5 @@ public enum CommandLocator {
             if isExecutable(candidate) { return CommandLaunch(executable: candidate, prefix: [], path: searchPath) }
         }
         return nil
-    }
-
-    /// The login shell's PATH, read once with a short time limit. Nil if the shell does not answer.
-    public static func loginShellPath(shell: String = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh",
-                                      timeout: TimeInterval = 5) -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: shell)
-        // A marker keeps the PATH apart from anything a profile prints.
-        process.arguments = ["-l", "-c", "printf '__CMEM_PATH__%s__CMEM_END__' \"$PATH\""]
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        process.standardInput = FileHandle.nullDevice
-        do { try process.run() } catch { return nil }
-        let deadline = Date().addingTimeInterval(timeout)
-        while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
-        if process.isRunning {
-            process.terminate()
-            return nil
-        }
-        let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        return extractMarkedPath(text)
-    }
-
-    public static func extractMarkedPath(_ text: String) -> String? {
-        guard let start = text.range(of: "__CMEM_PATH__"),
-              let end = text.range(of: "__CMEM_END__", range: start.upperBound..<text.endIndex) else { return nil }
-        let path = String(text[start.upperBound..<end.lowerBound])
-        return path.isEmpty ? nil : path
     }
 }

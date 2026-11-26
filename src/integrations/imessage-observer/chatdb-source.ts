@@ -98,9 +98,6 @@ interface ChangeRow extends MessageRow {
   retracted_ms: number;
 }
 
-/** Columns that only newer macOS versions have, read as NULL where missing. */
-const OPTIONAL_MESSAGE_COLUMNS = ['attributedBody', 'associated_message_emoji', 'date_edited', 'date_retracted', 'group_action_type', 'group_title', 'other_handle', 'item_type', 'cache_has_attachments'];
-
 export class ChatDbSource implements MessageSource {
   readonly name = 'Messages on this Mac';
   private db: ReadOnlyDb | null = null;
@@ -156,41 +153,59 @@ export class ChatDbSource implements MessageSource {
     }
   }
 
-  /** Reads everything new since the last call. */
+  /**
+   * Reads everything new since the last call. The read position moves only
+   * once the whole read has worked, so a read error loses nothing: the next
+   * read starts from the same place.
+   */
   poll(): ObserverEvent[] {
     const db = this.db;
     if (!db) throw new Error('ChatDbSource.start() was not called');
     const events: ObserverEvent[] = [];
     const rows = db.all<MessageRow>(`${this.selectSql()} WHERE m.ROWID > ? ORDER BY m.ROWID LIMIT ${PAGE}`, this.lastRowId);
-    this.morePending = rows.length === PAGE;
+    let lastRowId = this.lastRowId;
     for (const row of rows) {
-      this.lastRowId = Math.max(this.lastRowId, row.rowid);
+      lastRowId = Math.max(lastRowId, row.rowid);
       if (!this.options.isObserved(row.chat_guid)) continue;
       const event = this.toEvent(row);
       if (event) events.push(event);
     }
-    if (this.has('date_edited') || this.has('date_retracted')) events.push(...this.changes(db));
+    let commitChanges = () => {};
+    if (this.has('date_edited') || this.has('date_retracted')) {
+      const changes = this.changes(db, lastRowId);
+      events.push(...changes.events);
+      commitChanges = changes.commit;
+    }
+    this.lastRowId = lastRowId;
+    commitChanges();
+    this.morePending = rows.length === PAGE;
     return events;
   }
 
-  /** Edits and unsends of earlier messages, since the last call. */
-  private changes(db: ReadOnlyDb): ObserverEvent[] {
+  /**
+   * Edits and unsends of earlier messages, since the last call. Returns the
+   * events and a commit that records them as seen, for poll() to run once
+   * the whole read has worked.
+   */
+  private changes(db: ReadOnlyDb, upToRowId: number): { events: ObserverEvent[]; commit: () => void } {
     const changed = this.changedMsSql();
     const rows = db.all<ChangeRow>(
       `SELECT * FROM (${this.selectSql(`, ${changed} AS changed_ms, ${this.col('date_retracted', appleDateMs('m.date_retracted'), '0')} AS retracted_ms`)}`
       + ` WHERE m.ROWID > ? AND m.ROWID <= ?) WHERE changed_ms > 0 AND changed_ms >= ? ORDER BY changed_ms LIMIT ${PAGE}`,
-      Math.max(0, this.lastRowId - EDIT_LOOKBACK_ROWS), this.lastRowId, this.lastChangeMs,
+      Math.max(0, upToRowId - EDIT_LOOKBACK_ROWS), upToRowId, this.lastChangeMs,
     );
+    let lastChangeMs = this.lastChangeMs;
+    const seen = new Set(this.seenChanges);
     const events: ObserverEvent[] = [];
     for (const row of rows) {
       const key = `${row.rowid}:${row.changed_ms}`;
-      if (row.changed_ms <= 0 || this.seenChanges.has(key)) continue;
-      if (row.changed_ms > this.lastChangeMs) {
-        this.lastChangeMs = row.changed_ms;
-        this.seenChanges.clear();
+      if (row.changed_ms <= 0 || seen.has(key)) continue;
+      if (row.changed_ms > lastChangeMs) {
+        lastChangeMs = row.changed_ms;
+        seen.clear();
       }
-      this.seenChanges.add(key);
-      if (this.seenChanges.size > 1000) this.seenChanges.clear();
+      seen.add(key);
+      if (seen.size > 1000) seen.clear();
       if (!this.options.isObserved(row.chat_guid)) continue;
       const occurredAt = new Date(row.changed_ms);
       if (row.retracted_ms > 0) {
@@ -200,7 +215,13 @@ export class ChatDbSource implements MessageSource {
         if (text) events.push({ type: 'edited', chatGuid: row.chat_guid, messageGuid: row.guid, text, occurredAt });
       }
     }
-    return events;
+    return {
+      events,
+      commit: () => {
+        this.lastChangeMs = lastChangeMs;
+        this.seenChanges = seen;
+      },
+    };
   }
 
   async chat(guid: string): Promise<ChatInfo | null> {

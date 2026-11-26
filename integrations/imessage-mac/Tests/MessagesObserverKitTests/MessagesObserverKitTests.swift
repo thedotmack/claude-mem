@@ -42,8 +42,8 @@ final class CommandEventTests: XCTestCase {
 }
 
 final class CommandLocatorTests: XCTestCase {
-    func testSearchPathPutsTheShellFirstWithoutRepeats() {
-        let path = CommandLocator.searchPath(home: "/Users/a", shellPath: "/Users/a/.nvm/bin:/usr/bin", inherited: "/usr/bin:/bin")
+    func testSearchPathPutsVersionManagersFirstWithoutRepeats() {
+        let path = CommandLocator.searchPath(home: "/Users/a", extraFolders: ["/Users/a/.nvm/bin", "/usr/bin"], inherited: "/usr/bin:/bin")
         let parts = path.split(separator: ":").map(String.init)
         XCTAssertEqual(parts.first, "/Users/a/.nvm/bin")
         XCTAssertEqual(parts.filter { $0 == "/usr/bin" }.count, 1)
@@ -66,16 +66,21 @@ final class CommandLocatorTests: XCTestCase {
         XCTAssertNil(CommandLocator.resolve(override: "/x/missing", searchPath: path) { _ in false })
     }
 
-    func testReadsThePathBetweenMarkers() {
-        XCTAssertEqual(CommandLocator.extractMarkedPath("Welcome!\n__CMEM_PATH__/a:/b__CMEM_END__"), "/a:/b")
-        XCTAssertNil(CommandLocator.extractMarkedPath("no markers"))
-    }
-
-    func testLoginShellPathAnswers() {
-        // Runs the real login shell on the build machine.
-        let path = CommandLocator.loginShellPath(shell: "/bin/zsh")
-        XCTAssertNotNil(path)
-        XCTAssertTrue(path?.contains("/usr/bin") ?? false)
+    func testFindsNodeVersionManagerFoldersNewestFirstWithoutAShell() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        for version in ["v18.20.0", "v22.11.0", "v9.0.0"] {
+            try FileManager.default.createDirectory(atPath: "\(home)/.nvm/versions/node/\(version)/bin", withIntermediateDirectories: true)
+        }
+        try FileManager.default.createDirectory(atPath: "\(home)/.asdf/shims", withIntermediateDirectories: true)
+        let folders = CommandLocator.versionManagerFolders(home: home)
+        XCTAssertEqual(Array(folders.prefix(3)), [
+            "\(home)/.nvm/versions/node/v22.11.0/bin",
+            "\(home)/.nvm/versions/node/v18.20.0/bin",
+            "\(home)/.nvm/versions/node/v9.0.0/bin",
+        ])
+        XCTAssertTrue(folders.contains("\(home)/.asdf/shims"))
+        XCTAssertFalse(folders.contains("\(home)/.local/share/mise/shims"))
     }
 }
 

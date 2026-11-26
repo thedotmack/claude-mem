@@ -63,7 +63,9 @@ final class AppModel: ObservableObject {
     private var lastSave: Task<Void, Never>?
     private var restartAfterStop = false
 
-    var needsSetup: Bool { access != .granted || launch == nil }
+    /// Setup stays open while the command can't be found or didn't answer, so a
+    /// wrong command can always be replaced.
+    var needsSetup: Bool { access != .granted || launch == nil || commandProblem != nil }
 
     var visibleChats: [ChatItem] {
         let query = search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -111,8 +113,8 @@ final class AppModel: ObservableObject {
         let override = commandPath
         let found: CommandLaunch? = await Task.detached {
             let home = FileManager.default.homeDirectoryForCurrentUser.path
-            let shell = CommandLocator.loginShellPath()
-            let path = CommandLocator.searchPath(home: home, shellPath: shell, inherited: ProcessInfo.processInfo.environment["PATH"])
+            let path = CommandLocator.searchPath(home: home, extraFolders: CommandLocator.versionManagerFolders(home: home),
+                                                 inherited: ProcessInfo.processInfo.environment["PATH"])
             return CommandLocator.resolve(override: override.isEmpty ? nil : override, searchPath: path) {
                 FileManager.default.isExecutableFile(atPath: $0)
             }
@@ -123,6 +125,13 @@ final class AppModel: ObservableObject {
                 ? "Claude-Mem isn't installed, or Node isn't on your PATH. In Terminal run: npx claude-mem install"
                 : "Nothing runnable at \(override).")
             : nil
+    }
+
+    /// Uses a command the person pasted, or goes back to finding one when the path is empty.
+    func useCommand(_ path: String) async {
+        commandPath = path.trimmingCharacters(in: .whitespaces)
+        launch = nil
+        await refreshAll()
     }
 
     private var runner: CommandRunner? { launch.map(CommandRunner.init(launch:)) }

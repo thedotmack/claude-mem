@@ -78,12 +78,16 @@ struct SetupView: View {
                                 .font(.callout)
                             Text("npx claude-mem install").font(.body.monospaced()).textSelection(.enabled)
                                 .padding(8).background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-                            HStack {
-                                TextField("Or the full path to claude-mem", text: $pathField)
-                                    .textFieldStyle(.roundedBorder)
-                                Button("Use") {
-                                    model.commandPath = pathField
-                                    Task { await model.refreshAll() }
+                        }
+                        // Always here, so a wrong command can be replaced or cleared.
+                        HStack {
+                            TextField("Full path to claude-mem (leave empty to find it)", text: $pathField)
+                                .textFieldStyle(.roundedBorder)
+                            Button("Use") { Task { await model.useCommand(pathField) } }
+                            if !model.commandPath.isEmpty {
+                                Button("Clear") {
+                                    pathField = ""
+                                    Task { await model.useCommand("") }
                                 }
                             }
                         }

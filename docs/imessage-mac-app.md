@@ -25,10 +25,12 @@ npx claude-mem install
 ```
 
 The app runs Claude-Mem's command line through `npx claude-mem@latest`, so it
-needs Node, found on your normal Terminal PATH (Homebrew, nvm and the usual
-folders). The `claude-mem` launcher that install puts in `~/.local/bin` only
-runs hooks, so the app doesn't use it. If the app can't find Node, paste the
-full path to a `claude-mem` command into the setup screen.
+needs Node. It looks in the usual places: Homebrew, nvm, fnm, asdf, mise,
+Volta and Bun. It doesn't run your shell profile to find it, because the app
+holds Full Disk Access. The `claude-mem` launcher that install puts in
+`~/.local/bin` only runs hooks, so the app doesn't use it. If the app can't
+find Node, or picked the wrong command, paste the full path to a `claude-mem`
+command into the setup screen, or clear it to search again.
 
 ### 2. Get the app
 
