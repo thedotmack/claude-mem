@@ -177,6 +177,44 @@ describe('installZCode', () => {
     expect(printed).toContain('hooks.enabled');
   });
 
+  // ZCode has one switch for all hooks. Setting it for ours also starts the
+  // hooks the user already had in the file, so the install has to say so.
+  test('says how many of the user\'s own hooks it turned on with hooks.enabled', () => {
+    spyOn(console, 'error').mockImplementation(() => {});
+    const log = spyOn(console, 'log').mockImplementation(() => {});
+    const configPath = scratchConfigPath();
+
+    writeConfig(configPath, { hooks: { events: { PreToolUse: [USER_HOOK] } } });
+    expect(installZCode(configPath)).toBe(0);
+    expect(readConfig(configPath).hooks.enabled).toBe(true);
+    expect(log.mock.calls.flat().join('\n')).toContain('ZCode will also run your 1 other hook in that file');
+
+    log.mockClear();
+    const twoHooksInOneRule = { matcher: '*', hooks: [{ type: 'process', command: '/usr/bin/notify' }, { type: 'process', command: '/usr/bin/lint' }] };
+    writeConfig(configPath, { hooks: { events: { PreToolUse: [USER_HOOK], Stop: [twoHooksInOneRule] } } });
+    expect(installZCode(configPath)).toBe(0);
+    expect(log.mock.calls.flat().join('\n')).toContain('ZCode will also run your 3 other hooks in that file');
+  });
+
+  test('prints no such notice when it turns on no hook of the user', () => {
+    spyOn(console, 'error').mockImplementation(() => {});
+    spyOn(console, 'warn').mockImplementation(() => {});
+    const log = spyOn(console, 'log').mockImplementation(() => {});
+    const configPath = scratchConfigPath();
+
+    // No config yet: there is nothing of the user's to turn on.
+    expect(installZCode(configPath)).toBe(0);
+    for (const hooks of [
+      { enabled: true, events: { PreToolUse: [USER_HOOK] } }, // the user's hooks already ran
+      { enabled: false, events: { PreToolUse: [USER_HOOK] } }, // the user's off stays off
+      { events: buildZCodeHooks(BUN, WORKER) }, // only claude-mem's own hooks
+    ]) {
+      writeConfig(configPath, { hooks });
+      expect(installZCode(configPath)).toBe(0);
+    }
+    expect(log.mock.calls.flat().join('\n')).not.toContain('will also run your');
+  });
+
   test('refuses a config that is not usable JSON and leaves it unchanged', () => {
     quiet();
     const configPath = scratchConfigPath();

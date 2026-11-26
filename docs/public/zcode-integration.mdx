@@ -72,7 +72,7 @@ Each hook is a `process` hook (the Bun runtime plus the worker script, with no s
 - **No `PermissionRequest`**: Claude-Mem has no handler for it.
 - **No `SessionEnd`**: ZCode has no such event. The `Stop` hook writes the summary.
 - **No transcript**: ZCode deletes the hook's `transcript_path` file after the hook runs, so Claude-Mem does not read it.
-- **One switch for all hooks**: ZCode runs hooks only when `hooks.enabled` is `true`, and a missing key means off. The installer sets it to `true`, which also turns on any hooks of your own in that file. If you have other hooks, uninstall leaves `hooks.enabled: true` in place.
+- **One switch for all hooks**: ZCode runs hooks only when `hooks.enabled` is `true`, and a missing key means off. The installer sets it to `true`, which also turns on any hooks of your own in that file, and it prints how many. If you have other hooks, uninstall leaves `hooks.enabled: true` in place.
 - **User scope only**: workspace configs (`<project>/.zcode/config.json`, `zcode.json`) and ZCode plugins are not changed.
 
 ## Troubleshooting

@@ -105,6 +105,13 @@ export function mergeZCodeHooks(events: ZCodeHookEvents, ours: ZCodeHookEvents):
   return next;
 }
 
+/** How many hooks of the user's own the events hold; claude-mem's are not counted. */
+function countUserZCodeHooks(events: ZCodeHookEvents): number {
+  return Object.values(removeZCodeHooks(events))
+    .flatMap((rules) => Array.isArray(rules) ? rules : [])
+    .reduce((count, rule) => count + (Array.isArray(rule?.hooks) ? rule.hooks.length : 0), 0);
+}
+
 const isObject = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -154,6 +161,9 @@ export function installZCode(configPath: string = zcodeConfigPath()): number {
     mkdirSync(path.dirname(configPath), { recursive: true });
     backupOnce(configPath);
     const hooks = config.hooks ?? {};
+    // ZCode has one switch for every hook in this file, and a missing key
+    // means off. Turning it on for ours also starts the user's own hooks.
+    const userHooksTurnedOn = hooks.enabled === undefined ? countUserZCodeHooks(hooks.events ?? {}) : 0;
     if (hooks.enabled === undefined) hooks.enabled = true;
     hooks.events = mergeZCodeHooks(hooks.events ?? {}, buildZCodeHooks(bunPath, workerPath));
     config.hooks = hooks;
@@ -165,6 +175,10 @@ export function installZCode(configPath: string = zcodeConfigPath()): number {
     console.log(`    Bun runtime: ${bunPath}`);
     console.log(`    Worker: ${workerPath}`);
     console.log(`    MCP server: ${mcpServerPath}`);
+    if (userHooksTurnedOn > 0) {
+      const otherHooks = `${userHooksTurnedOn} other hook${userHooksTurnedOn === 1 ? '' : 's'}`;
+      console.log(`  hooks.enabled was not set, so ZCode ran no hooks. It is now true, and ZCode will also run your ${otherHooks} in that file.`);
+    }
     if (hooks.enabled === false) {
       console.warn(`  hooks.enabled is false in ${configPath}; ZCode will not run the hooks until you set it to true.`);
     }
