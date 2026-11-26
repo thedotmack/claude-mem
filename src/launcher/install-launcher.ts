@@ -267,12 +267,21 @@ export type ShellPathSetupOutcome =
   | 'already-on-path'
   | 'rc-file-already-configured'
   | 'rc-file-updated'
-  | 'rc-file-update-failed';
+  | 'rc-file-update-failed'
+  | 'rc-file-skipped';
+
+/** Set to 1 or true to keep the installer from editing shell rc files. */
+export const SKIP_SHELL_RC_ENV_VAR = 'CLAUDE_MEM_SKIP_SHELL_RC';
+
+function isTruthyFlag(value: string | undefined): boolean {
+  return value !== undefined && ['1', 'true'].includes(value.trim().toLowerCase());
+}
 
 /**
  * Appends `export PATH="$HOME/.local/bin:$PATH"` to the user's shell rc when
  * `~/.local/bin` is not on PATH and the rc does not already mention it, then
  * prepends it to this process's PATH. Never rewrites existing rc content.
+ * `CLAUDE_MEM_SKIP_SHELL_RC=1` skips the rc edit and returns 'rc-file-skipped'.
  */
 export function ensureLocalBinOnShellPath(options: {
   purposeLabel: string;
@@ -285,6 +294,14 @@ export function ensureLocalBinOnShellPath(options: {
 
   const currentPath = host.environmentVariables.PATH ?? '';
   if (currentPath.split(':').some((entry) => entry.replace(/\/+$/, '') === localBinDirectory)) return 'already-on-path';
+
+  if (isTruthyFlag(host.environmentVariables[SKIP_SHELL_RC_ENV_VAR])) {
+    logger.info(
+      `${SKIP_SHELL_RC_ENV_VAR} is set, so ${purposeLabel} left your shell rc files alone. `
+      + `Keep ${localBinDirectory} on your PATH yourself.`,
+    );
+    return 'rc-file-skipped';
+  }
 
   const { path: configFile, shell } = detectShellConfigFile(
     host.homeDirectory,
