@@ -4,11 +4,10 @@ import { OTHER_FOCUS_AREA_ID } from '../../data.ts'
 import { isThemeChoice, type ThemeChoice } from '../../lib/theme.ts'
 import { resolveFocusAreaId } from '../../live/to-focus-model.ts'
 import { usageReport } from '../../live/usage.ts'
+import { WORK_VIEW_SECTIONS } from '../../../../../shared/work-view-pages.ts'
 import type { SliceCreator } from '../create-store.ts'
 import { homeAnchorFromHash, type HomeAnchor } from '../home-anchor.ts'
 import type { OpenRequest, Page, Section, StoreEnvironment, ViewSlice, ViewState } from '../store-types.ts'
-
-const SECTIONS: readonly Section[] = ['work', 'rules', 'suggested', 'past-focus']
 
 interface Route {
   page: Page; section: Section; focusChoice: string | null; requestId: string | null; theme: ThemeChoice | null
@@ -21,7 +20,7 @@ interface Route {
  */
 export function readRoute(url: URL): Route {
   const view = url.searchParams.get('view') as Section | null
-  const section = view && SECTIONS.includes(view) ? view : 'work'
+  const section = view && WORK_VIEW_SECTIONS.includes(view) ? view : 'work'
   const focusChoice = section === 'work' ? url.searchParams.get('focus') || null : null
   const theme = url.searchParams.get('theme')
   return {

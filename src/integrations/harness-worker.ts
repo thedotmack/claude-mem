@@ -129,7 +129,7 @@ export function startHarnessWorker(): Promise<void> {
 }
 
 /** A bounded client shared by the native Pi extension and DSH plugin. */
-export function createHarnessWorkerClient() {
+export function createHarnessWorkerClient({ startIfNeeded = true }: { startIfNeeded?: boolean } = {}) {
   let baseUrl = resolveHarnessWorkerUrl();
   let contextTimeoutMs = resolveHarnessContextTimeoutMs();
   let auth = resolveHarnessAuthHeaders(baseUrl);
@@ -147,6 +147,7 @@ export function createHarnessWorkerClient() {
       } catch (error) {
         // An HTTP failure belongs to the running server. Only a transport failure starts a worker.
         if (!isConnectionRefusedError(error)) throw error;
+        if (!startIfNeeded) throw new Error('Start Claude-Mem in Terminal with npx claude-mem start, then listen again.');
         await startHarnessWorker();
       }
     },

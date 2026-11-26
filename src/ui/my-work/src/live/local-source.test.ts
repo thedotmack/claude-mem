@@ -67,6 +67,34 @@ function harness(fetcher: typeof fetch, bootstrapTimeoutMs = 100, page: Pick<Loc
 }
 
 describe('compact local source', () => {
+  it('delivers review hints from the current local or owner-pinned stream and recovers missed changes on reconnect', () => {
+    for (const sharedOwner of [undefined, 'alice']) {
+      const { local, streams, urls } = harness(async () => json(overview()), 100, { sharedOwner })
+      let notices = 0
+      const stopReview = local.subscribeToReviewStackChanges!(() => { notices++ })
+      const stop = local.subscribeToLiveUpdates(() => {}, () => {})
+      const mark = sharedOwner ? 'work-view-changed' : 'review-stack-changed'
+      try {
+        assert.equal(streams.length, 1)
+        if (sharedOwner) assert.ok(urls[0].includes('session=alice'))
+        streams[0].onopen?.()
+        streams[0].emit(sharedOwner ? 'review-stack-changed' : 'work-view-changed', {})
+        assert.equal(notices, 0)
+        streams[0].emit(mark, {})
+        streams[0].onopen?.()
+        assert.equal(notices, 2)
+        stopReview()
+        streams[0].emit(mark, {})
+        assert.equal(notices, 2)
+        const stopAgain = local.subscribeToReviewStackChanges!(() => { notices++ })
+        stop()
+        streams[0].emit(mark, {})
+        assert.equal(notices, 2)
+        stopAgain()
+      } finally { stopReview(); stop() }
+    }
+  })
+
   it('reuses unchanged compact requests while renewing connection health', async () => {
     const { local, streams } = harness(async () => json(overview()))
     const shown: WorkModel[] = []

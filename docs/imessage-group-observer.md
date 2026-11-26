@@ -7,6 +7,8 @@ memory or pull it into an agent's context like any other project.
 
 The observer only reads. It never sends a message, reacts, or changes a group.
 
+The Mac app also supports a dedicated Photon line. Choose **Photon line** to connect an existing project and listen from the menu bar. [Claude-Mem Messages for Mac](imessage-mac-app.md#photon-line)
+
 ## Set it up
 
 ### 1. Get a Photon account and a dedicated line

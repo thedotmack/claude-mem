@@ -239,7 +239,7 @@ export function publishSharedReview(database, { deviceId, project, descriptor, c
 }
 
 export function getSharedReviews(database, deviceId, options = {}) {
-  return readSharedRecords(database, { ...options, deviceId, validateValue: validator });
+  return readSharedRecords(database, { reviewStack: 'exclude', ...options, deviceId, validateValue: validator });
 }
 
 /** The displayed canonical grouping, including both groups a join may change. */
