@@ -80,7 +80,7 @@ export class SharedLedgerAdapter {
   }
 
   sharedReader() {
-    return this.readShared ??= createSharedRecordReader(this.db, { deviceId: this.deviceId, validateValue: isSharedProjectionValue });
+    return this.readShared ??= createSharedRecordReader(this.db, { deviceId: this.deviceId, validateValue: isSharedProjectionValue, reviewStack: 'exclude' });
   }
 
   shared() { return this.sharedReader()(); }

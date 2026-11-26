@@ -301,6 +301,8 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
 
   /** Rows showing a continued conversation (subscribeToConversationContinuations), one entry per subscription. */
   const conversationContinuationListeners = new Set<(event: ConversationContinuationEvent) => void>()
+  const reviewStackChanges = new EventTarget()
+  const notifyReviewStackChanged = () => reviewStackChanges.dispatchEvent(new Event('change'))
   /**
    * Tells every row, even when one before it throws: a row that missed a 'replied' notice or a reopened stream would
    * show 'Working…' until the stream next reopens. The throw is reported as that listener's own error, so it never reads
@@ -383,6 +385,10 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   const localSource: WorkDataSource = {
     sourceKind: SOURCE_KIND,
     ...conversationContinuation,
+    subscribeToReviewStackChanges(listener) {
+      reviewStackChanges.addEventListener('change', listener)
+      return () => reviewStackChanges.removeEventListener('change', listener)
+    },
 
     /** app.js `refresh`: when an SSE snapshot arrived while this read was in flight, the event's newer model wins. */
     async loadWorkModel() {
@@ -575,7 +581,10 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
           const reopened = eventStreamHasOpened
           eventStreamHasOpened = true
           // Notices may have been missed while the stream was closed, so every row showing a continued conversation reads it again.
-          if (reopened) tellConversationContinuationListeners('live-updates-reconnected')
+          if (reopened) {
+            tellConversationContinuationListeners('live-updates-reconnected')
+            notifyReviewStackChanged()
+          }
         }
         if (sharedOwner) {
           // The stream's cookie was captured when it opened. A fresh owner-pinned request
@@ -599,8 +608,14 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
             } catch { /* Fresh HTTP authorization handles account changes; fallback handles failed reads. */ }
             finally { refreshing = false }
           }
-          stream.addEventListener('work-view-changed', () => { if (current()) void refreshFromHint() })
-        }
+          stream.addEventListener('work-view-changed', () => {
+            if (!current()) return
+            notifyReviewStackChanged()
+            void refreshFromHint()
+          })
+        } else stream.addEventListener('review-stack-changed', () => {
+          if (current()) notifyReviewStackChanged()
+        })
         stream.addEventListener('work-view', (event) => {
           if (sharedOwner || !current()) return
           let snapshot: unknown

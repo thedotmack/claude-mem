@@ -18,7 +18,7 @@ const serverBetaOnlyToolNameSet = new Set<string>(SERVER_BETA_ONLY_TOOL_NAMES);
  * Tools whose handlers require worker runtime (local search, note writes and raw tool I/O). Advertising them there only invites a call
  * that always fails with unsupported_runtime.
  */
-export const WORKER_ONLY_TOOL_NAMES = ['dumb_search', 'save_memory', 'get_tool_uses'] as const;
+export const WORKER_ONLY_TOOL_NAMES = ['dumb_search', 'save_memory', 'get_tool_uses', 'get_review_stack', 'import_review_cards'] as const;
 
 const workerOnlyToolNameSet = new Set<string>(WORKER_ONLY_TOOL_NAMES);
 
