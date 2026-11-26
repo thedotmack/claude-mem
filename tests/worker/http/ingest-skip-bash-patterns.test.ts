@@ -11,9 +11,12 @@ import { logger } from '../../../src/utils/logger.js';
 // applied through the env override in SettingsDefaultsManager.loadFromFile.
 describe('ingestObservation — CLAUDE_MEM_SKIP_BASH_PATTERNS', () => {
   let prevPattern: string | undefined;
+  let prevCompound: string | undefined;
 
   beforeEach(() => {
     prevPattern = process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS;
+    prevCompound = process.env.CLAUDE_MEM_SKIP_BASH_COMPOUND;
+    delete process.env.CLAUDE_MEM_SKIP_BASH_COMPOUND;
     setIngestContext({
       sessionManager: {} as any,
       dbManager: {} as any,
@@ -24,6 +27,8 @@ describe('ingestObservation — CLAUDE_MEM_SKIP_BASH_PATTERNS', () => {
   afterEach(() => {
     if (prevPattern === undefined) delete process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS;
     else process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = prevPattern;
+    if (prevCompound === undefined) delete process.env.CLAUDE_MEM_SKIP_BASH_COMPOUND;
+    else process.env.CLAUDE_MEM_SKIP_BASH_COMPOUND = prevCompound;
   });
 
   const bash = (command: string) =>
@@ -38,6 +43,48 @@ describe('ingestObservation — CLAUDE_MEM_SKIP_BASH_PATTERNS', () => {
     process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = '^(ls|cat|pwd)\\b';
     const result = await bash('ls -la');
     expect(result).toEqual({ ok: true, status: 'skipped', reason: 'bash_pattern_excluded' });
+  });
+
+  it('keeps a compound command if any segment does not match in opt-in mode', async () => {
+    process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = '^(ls|cat|pwd)\\b';
+    process.env.CLAUDE_MEM_SKIP_BASH_COMPOUND = 'true';
+    await expect(bash('cat a && rm -rf b')).rejects.toThrow();
+  });
+
+  it('skips only when every compound segment matches, respecting quoted separators', async () => {
+    process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = '^(ls|cat|pwd)\\b';
+    process.env.CLAUDE_MEM_SKIP_BASH_COMPOUND = 'true';
+    expect(await bash('cat "a;b" && pwd; ls | cat')).toEqual({ ok: true, status: 'skipped', reason: 'bash_pattern_excluded' });
+  });
+
+  it('keeps ambiguous shell syntax in opt-in mode', async () => {
+    process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = '^(ls|cat|pwd)\\b';
+    process.env.CLAUDE_MEM_SKIP_BASH_COMPOUND = 'true';
+    for (const command of ['ls $(touch x)', 'ls "$(touch x)"', 'ls > out', 'cat <(echo x)', 'ls `touch x`', 'ls "unterminated', 'ls \\', 'ls # comment', 'ls %VAR%', 'ls ^& rm', "ls '%VAR%'", "ls 'a & rm'", 'ls "a\nrm"']) {
+      await expect(bash(command)).rejects.toThrow();
+    }
+  });
+
+  it('applies the opt-in to PowerShell and Codex shell observations too', async () => {
+    process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = '^(ls|cat|pwd)\\b';
+    process.env.CLAUDE_MEM_SKIP_BASH_COMPOUND = 'true';
+    for (const [toolName, toolInput] of [
+      ['PowerShell', { command: 'ls; rm -r b' }],
+      ['exec_command', { cmd: 'ls && rm -rf b' }],
+    ] as const) {
+      await expect(ingestObservation({ contentSessionId: 'test-session', toolName, toolInput, toolResponse: {} })).rejects.toThrow();
+    }
+  });
+
+  it('retains whole-command matching when the opt-in is absent', async () => {
+    process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = '^(ls|cat|pwd)\\b';
+    expect(await bash('cat a && rm -rf b')).toEqual({ ok: true, status: 'skipped', reason: 'bash_pattern_excluded' });
+  });
+
+  it('does not introduce skips for commands that failed whole-command matching', async () => {
+    process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = '^(ls|pwd)$';
+    process.env.CLAUDE_MEM_SKIP_BASH_COMPOUND = 'true';
+    await expect(bash('ls && pwd')).rejects.toThrow();
   });
 
   // A command that is not skipped falls through to the database path, which the

@@ -81,6 +81,48 @@ function getBashSkipPattern(pattern: string): RegExp | null {
   return compiled;
 }
 
+// This is deliberately not a shell parser. When syntax is ambiguous across
+// Bash and PowerShell, retain the observation rather than drop part of it.
+function simpleCommandSegments(command: string): string[] | null {
+  const segments: string[] = [];
+  let start = 0;
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    // cmd.exe expands %VAR% even inside quotes; ^ and ! also have shell-
+    // specific meanings. Without the actual shell, don't guess their effect.
+    if ('%^!'.includes(char)) return null;
+    if (quote === "'") {
+      // cmd.exe does not treat single quotes as quoting. A separator or a
+      // double quote here could change its command boundaries.
+      if ('&|;\n\r"'.includes(char)) return null;
+      if (char === "'") quote = null;
+      continue;
+    }
+    if (char === '`' || char === '\\' || char === '$') return null;
+    if (quote === '"') {
+      if (char === '\n' || char === '\r') return null;
+      if (char === '"') quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if ('<>(){}#'.includes(char)) return null;
+    if (';|&\n\r'.includes(char)) {
+      const segment = command.slice(start, i).trim();
+      if (segment) segments.push(segment);
+      if ((char === '|' || char === '&') && command[i + 1] === char) i++;
+      start = i + 1;
+    }
+  }
+  if (quote) return null;
+  const last = command.slice(start).trim();
+  if (last) segments.push(last);
+  return segments.length ? segments : null;
+}
+
 // The shell command CLAUDE_MEM_SKIP_BASH_PATTERNS is matched against. Claude
 // Code sends `Bash` + `command` (Cursor and Windsurf adapters normalize to the
 // same shape); the Codex transcript watcher sends `exec_command` + `cmd`; on
@@ -260,7 +302,10 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     // A bad user regex never throws here — getBashSkipPattern returns null, so the
     // command is captured as if no pattern was set.
     const pattern = getBashSkipPattern(skipBashPatterns);
-    if (pattern && pattern.test(command)) {
+    const segments = settings.CLAUDE_MEM_SKIP_BASH_COMPOUND === 'true'
+      ? simpleCommandSegments(command)
+      : [command];
+    if (pattern && pattern.test(command) && segments && segments.every(segment => pattern.test(segment))) {
       return { ok: true, status: 'skipped', reason: 'bash_pattern_excluded' };
     }
   }
