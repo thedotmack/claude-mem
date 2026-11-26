@@ -12,6 +12,8 @@
  * The v1 -> v2 hook mapping this file implements:
  *
  *   v1 `tool.execute.after`              -> ctx.tool.hook("execute.after")
+ *   —  (pre-validation detection, no V1 equivalent)
+ *                                       -> ctx.tool.hook("execute.before")
  *   v1 `chat.message` (user)             -> ctx.session.hook("prompt")
  *   v1 `experimental.session.compacting` -> ctx.session.hook("compaction") drops the
  *                                           cached memory; the bus event
@@ -32,6 +34,7 @@
  * and read defensively: the plugin API is still beta and field shapes can move.
  */
 
+import { isClaudeMemTool, WORK_STATE_WRITE_TOOL } from "../../shared/work-state-tool.js";
 import { CONTEXT_TAG_CLOSE, CONTEXT_TAG_OPEN } from "../../utils/context-injection.js";
 import { createCore, type ClaudeMemCore, type CoreContext } from "./core.js";
 
@@ -52,6 +55,15 @@ export interface V2ToolExecuteAfterEvent {
   error?: { message?: string } | string;
 }
 
+/** The V2 `execute.before` envelope, before the host validates the tool input. */
+export interface V2ToolExecuteBeforeEvent {
+  tool: string;
+  sessionID: string;
+  agent: string;
+  info?: { name?: string; description?: string; input?: unknown };
+  input: Record<string, unknown>;
+}
+
 export interface V2PromptEvent {
   sessionID: string;
   prompt: { text?: string };
@@ -59,6 +71,7 @@ export interface V2PromptEvent {
 
 export interface V2ContextEvent {
   sessionID: string;
+  agent: string;
   system: Array<{ type: string; text?: string }>;
 }
 
@@ -111,10 +124,18 @@ export interface OpenCodePluginContextV2 extends CoreContext {
    */
   location?: { directory?: string; workspaceID?: string };
   tool?: {
-    hook?: (
-      name: "execute.after",
-      callback: (event: V2ToolExecuteAfterEvent) => Promise<void> | void,
-    ) => Promise<V2Registration>;
+    hook?: {
+      (
+        name: "execute.before",
+        callback: (event: V2ToolExecuteBeforeEvent) => Promise<void> | void,
+      ): Promise<V2Registration>;
+      (
+        name: "execute.after",
+        callback: (event: V2ToolExecuteAfterEvent) => Promise<void> | void,
+      ): Promise<V2Registration>;
+    };
+    /** The host's tool catalog, used to recover a schema for Code Mode calls. */
+    list?: () => Promise<Array<{ id: string; name?: string; input?: unknown }>>;
     transform?: (
       callback: (editor: {
         add(tool: {
@@ -241,6 +262,23 @@ async function consumeBus(
 }
 
 /**
+ * Names the root-level `required` keys a tool call did not supply, so the
+ * `execute.before` trace can log key names without ever logging input values.
+ * Only a literal top-level array is trusted: `$ref`/`anyOf` and nested schemas
+ * are deliberately not resolved, because guessing a key name would produce a
+ * false warning about a call that may still be valid.
+ */
+export function missingRequiredKeys(schema: unknown, input: Record<string, unknown>): string[] {
+  if (!schema || typeof schema !== "object") return [];
+  const required = (schema as { required?: unknown }).required;
+  if (!Array.isArray(required)) return [];
+  return required.filter(
+    (key): key is string =>
+      typeof key === "string" && !Object.prototype.hasOwnProperty.call(input, key),
+  );
+}
+
+/**
  * V2 hands the tool result over as an object, not the string V1's
  * `output.output` carried. The observed shape is
  * `{ output: { exit, truncated, output }, content: [{ type: "text", text }] }`,
@@ -322,6 +360,32 @@ export async function setupV2(
 
   const toolDomain = context.tool;
   const sessionDomain = context.session;
+
+  // Pre-validation detection. This registration is deliberately local: register()
+  // disposes every prior registration when a hook throws, so a host that does
+  // not support execute.before must not tear down the capture hooks below.
+  if (toolDomain?.hook) {
+    const hook = toolDomain.hook.bind(toolDomain);
+    try {
+      registrations.push(await hook("execute.before", async (event: V2ToolExecuteBeforeEvent) => {
+        if (!event?.sessionID) return;
+        const named = event.info?.name ?? event.tool;
+        if (!isClaudeMemTool(event.tool) && !WORK_STATE_WRITE_TOOL.test(named ?? "")) return;
+        const input = (event.input ?? {}) as Record<string, unknown>;
+        // Code Mode calls can arrive without info; resolve the schema from the catalog.
+        const schema = event.info?.input ?? (await toolDomain.list?.() ?? []).find((tool) => {
+          const last = event.tool.split(".").at(-1);
+          return tool.id === event.tool || tool.name === last || tool.id.replace(/[._]/g, "_").endsWith(`_${last}`);
+        })?.input;
+        const missing = missingRequiredKeys(schema, input);
+        if (missing.length === 0) return; // before validation: the call may still be repaired or refused by policy
+        console.warn(`[claude-mem] pre-validation: ${event.tool} session=${event.sessionID} missing=${missing.sort().join(",")}`);
+      }));
+    } catch (error: unknown) {
+      // Best effort: a beta host may not expose this hook yet.
+      console.warn("[claude-mem] execute.before unavailable", error);
+    }
+  }
 
   // Primary capture path: every tool execution becomes an observation.
   if (toolDomain?.hook) {

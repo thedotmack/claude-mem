@@ -22,6 +22,7 @@
  * | concern              | V1 hook name                         | V2 registration                               |
  * |----------------------|--------------------------------------|-----------------------------------------------|
  * | tool capture         | `tool.execute.after`                 | `ctx.tool.hook("execute.after")`              |
+ * | pre-validation trace | — (no V1 equivalent)                 | `ctx.tool.hook("execute.before")`             |
  * | user prompt          | `chat.message` (role === "user")     | `ctx.session.hook("prompt")`                  |
  * | memory injection     | `experimental.chat.system.transform` | `ctx.session.hook("context")`                 |
  * | compaction           | `experimental.session.compacting`    | `ctx.session.hook("compaction")` drops the    |
@@ -97,6 +98,7 @@ export const REGISTERED_OPENCODE_HOOKS = [
  * namespaced, so these are not bare hook names.
  */
 export const REGISTERED_OPENCODE_V2_HOOKS = [
+  { domain: "tool", hook: "execute.before" },
   { domain: "tool", hook: "execute.after" },
   { domain: "session", hook: "prompt" },
   { domain: "session", hook: "context" },

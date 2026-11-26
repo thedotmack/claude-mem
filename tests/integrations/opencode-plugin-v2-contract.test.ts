@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
   setupV2,
@@ -123,20 +123,30 @@ function createV2Context(
   ctx: OpenCodePluginContextV2;
   hooks: RegisteredHook[];
   tools: Array<Record<string, unknown>>;
+  hookCallbacks: Map<string, (event: any) => Promise<void>>;
   disposeCount: () => number;
 } {
   const hooks: RegisteredHook[] = [];
   const tools: Array<Record<string, unknown>> = [];
+  const hookCallbacks = new Map<string, (event: any) => Promise<void>>();
   let disposed = 0;
 
   const ctx: OpenCodePluginContextV2 = {
     directory: "/tmp/x",
     client: {},
     tool: {
-      hook: async (name, _callback) => {
+      hook: async (name, callback) => {
         hooks.push({ domain: "tool", name });
+        hookCallbacks.set(`tool.${name}`, callback as (event: any) => Promise<void>);
         return { dispose: async () => { disposed++; } };
       },
+      // The host exposes its tool catalog here. The default entry reproduces
+      // the real work_state_write schema so a Code Mode call without `info`
+      // can still be matched by the execute.before fallback.
+      list: async () => [
+        { id: "claude-mem_work_state_write", name: "work_state_write",
+          input: { type: "object", required: ["list", "fields"] } },
+      ],
       transform: async (callback) => {
         hooks.push({ domain: "tool", name: "transform" });
         callback({
@@ -146,8 +156,9 @@ function createV2Context(
       },
     },
     session: {
-      hook: async (name, _callback) => {
+      hook: async (name, callback) => {
         hooks.push({ domain: "session", name });
+        hookCallbacks.set(`session.${name}`, callback as (event: any) => Promise<void>);
         return { dispose: async () => { disposed++; } };
       },
     },
@@ -161,7 +172,7 @@ function createV2Context(
     ...overrides,
   };
 
-  return { ctx, hooks, tools, disposeCount: () => disposed };
+  return { ctx, hooks, tools, hookCallbacks, disposeCount: () => disposed };
 }
 
 describe("OpenCode V2 hook registration", () => {
@@ -212,17 +223,101 @@ describe("OpenCode V2 hook registration", () => {
     expect(typeof tool.execute).toBe("function");
   });
 
+  it("registers execute.before without losing the other V2 hooks", async () => {
+    const { ctx, hooks } = createV2Context();
+    await setupV2(ctx);
+    expect(hooks.map(h => `${h.domain}.${h.name}`)).toContain("tool.execute.before");
+    expect(hooks.map(h => `${h.domain}.${h.name}`)).toContain("tool.execute.after");
+    expect(REGISTERED_OPENCODE_V2_HOOKS).toEqual(expect.arrayContaining([
+      { domain: "tool", hook: "execute.before" },
+    ]));
+  });
+
+  it("keeps every other hook when the host rejects execute.before", async () => {
+    const { ctx, hooks } = createV2Context();
+    ctx.tool!.hook = (async (name: string, callback: any) => {
+      if (name === "execute.before") throw new Error("unsupported hook");
+      hooks.push({ domain: "tool", name });
+      return { dispose: async () => {} };
+    }) as any;
+    const cleanup = await setupV2(ctx);
+    expect(hooks.map(h => `${h.domain}.${h.name}`)).toContain("session.context");
+    expect(hooks.map(h => `${h.domain}.${h.name}`)).not.toContain("tool.execute.before");
+    await cleanup();
+  });
+
+  it("warns with key names only and posts nothing to the worker", async () => {
+    const warn = spyOn(console, "warn");
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response("{}", { status: 200 }));
+    const { ctx, hookCallbacks } = createV2Context();
+    await setupV2(ctx);
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "claude-mem_work_state_write", sessionID: "s1", agent: "primary",
+      info: { name: "work_state_write", description: "write work state", input: { type: "object", required: ["list", "fields"] } },
+      input: { list: "plans", secret: "do-not-log" },
+    });
+    const line = warn.mock.calls.flat().join(" ");
+    expect(line).toContain("claude-mem_work_state_write");
+    expect(line).toContain("fields");
+    expect(line).not.toContain("do-not-log");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    warn.mockRestore();
+    fetchSpy.mockRestore();
+  });
+
+  it("stays silent on a call whose required keys are present", async () => {
+    const warn = spyOn(console, "warn");
+    const { ctx, hookCallbacks } = createV2Context();
+    await setupV2(ctx);
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "claude-mem_work_state_write", sessionID: "s1", agent: "primary",
+      info: { name: "work_state_write", input: { type: "object", required: ["list", "fields"] } },
+      input: { list: "plans", fields: { task: "x" } },
+    });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("ignores tools that do not belong to claude-mem", async () => {
+    const warn = spyOn(console, "warn");
+    const { ctx, hookCallbacks } = createV2Context();
+    await setupV2(ctx);
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "shell", sessionID: "s1", agent: "primary", input: {},
+    });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("finds the schema in the catalog when a Code Mode call has no info", async () => {
+    const warn = spyOn(console, "warn");
+    const { ctx, hookCallbacks } = createV2Context();
+    // Un outil absent du catalogue factice par défaut : sans ce repli, aucune clé ne serait nommée.
+    ctx.tool!.list = async () => [{
+      id: "claude-mem_observation_add", name: "observation_add",
+      input: { type: "object", required: ["content"] },
+    }] as any;
+    await setupV2(ctx);
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "claude-mem.observation_add", sessionID: "s1", agent: "primary",
+      input: { list: "plans" },
+    });
+    expect(warn.mock.calls.flat().join(" ")).toContain("content");
+    warn.mockRestore();
+  });
+
   it("disposes every registration and stops the event stream on cleanup", async () => {
     const { ctx, disposeCount } = createV2Context();
     const cleanup = await setupV2(ctx);
 
-    // 4 hook registrations + 1 tool transform; the event stream is not a
+    // 5 hook registrations + 1 tool transform; the event stream is not a
     // registration but is aborted by the same cleanup. Nothing is disposed
     // until cleanup runs.
     expect(disposeCount()).toBe(0);
 
     await cleanup();
-    expect(disposeCount()).toBe(5);
+    expect(disposeCount()).toBe(6);
   });
 });
 
@@ -590,8 +685,8 @@ describe("OpenCode V2 setup failure", () => {
       },
       session: {
         hook: (name: string) => {
-          // The first session registration (prompt) fails after the tool hook
-          // was already registered.
+          // The first session registration (prompt) fails after both tool
+          // hooks (execute.before and execute.after) were registered.
           if (name === "prompt") {
             if (failure === "throw") throw new Error("hook rejected");
             return Promise.reject(new Error("hook rejected"));
@@ -609,8 +704,10 @@ describe("OpenCode V2 setup failure", () => {
     it(`disposes the registrations made before a later one fails (${failure})`, async () => {
       const host = failingHost(failure);
       await expect(setupV2(host.ctx)).rejects.toThrow("hook rejected");
-      expect(host.registered()).toBe(1);
-      expect(host.disposed()).toBe(1);
+      // Both tool registrations precede the failing prompt hook, and both are
+      // disposed by register()'s rollback.
+      expect(host.registered()).toBe(2);
+      expect(host.disposed()).toBe(2);
       // Setup failed before it opened the event stream.
       expect(host.stream.subscriptions).toBe(0);
     });
