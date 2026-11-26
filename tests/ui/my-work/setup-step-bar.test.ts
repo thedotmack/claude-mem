@@ -306,6 +306,7 @@ describe('setup tool marks', () => {
     ['openclaw', 'OpenClaw'], ['windsurf', 'Windsurf'], ['t3code', 'T3 Code'], ['kimi', 'Kimi Code'], ['devin', 'Devin CLI / Desktop'],
     ['cursor', 'Cursor'], ['grok-bot', 'Grok Bot'], ['copilot-cli', 'Copilot CLI'], ['copilot-vscode', 'Copilot in VS Code'], ['omp', 'OMP'], ['hermes', 'Hermes Agent'], ['pi', 'Pi'],
     ['dsh', 'DeepSeek Harness'], ['goose', 'Goose'], ['roo-code', 'Roo Code'], ['warp', 'Warp'], ['zed', 'Zed'],
+    ['zcode', 'ZCode'],
   ];
   const SAME_TOOL = [['codex', 'codex-cli'], ['antigravity', 'antigravity-cli']];
   const mark = (id: string, name: string) => app.renderMark(id, name).replace(/data:[^"]+/, (uri: string) => `image:${uri.length}:${uri.slice(-24)}`);
