@@ -240,6 +240,17 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'Key (ag_...) from aigrow.gg; model ids such as claude-haiku-5.5 or gemini-3.8-flash, listed with prices by GET aigrow.gg/v1/models, no key needed.',
   },
   {
+    id: 'straitly',
+    label: 'Straitly (straitly.ai)',
+    baseUrl: 'https://api.straitly.ai/v1',
+    // A cheap, fast model for the same reason as NVIDIA's default: extraction
+    // is high volume. Ids carry a vendor prefix where the catalog has one and
+    // are passed verbatim.
+    defaultModel: 'deepseek/deepseek-v4-1-flash-1017',
+    requiresApiKey: true,
+    hint: 'Key (sk-...) from the API keys page at straitly.ai; model ids such as deepseek/deepseek-v4-1-flash-1017 or claude-haiku-5-5, listed at straitly.ai/models and by GET api.straitly.ai/v1/models, no key needed.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
