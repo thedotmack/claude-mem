@@ -602,6 +602,47 @@ describe('agent runner', () => {
     }
   });
 
+  it('OpenCode: an explicit config replaces the global one instead of merging with it', () => {
+    const home = mkdtempSync(join(tmpdir(), 'opencode-explicit-config-'));
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    const previousConfig = process.env.OPENCODE_CONFIG;
+    try {
+      mkdirSync(join(home, 'opencode'), { recursive: true });
+      writeFileSync(join(home, 'opencode', 'opencode.json'), JSON.stringify({
+        model: 'global/model',
+        provider: { global: { models: { 'global/model': {} } } },
+      }));
+      process.env.XDG_CONFIG_HOME = home;
+
+      // A partial explicit config keeps no field from the global one: the CLI's
+      // own default model is used, exactly as before the shared reader existed.
+      const partial = join(home, 'partial.json');
+      writeFileSync(partial, JSON.stringify({
+        provider: { explicit: { models: { 'explicit/model': {} } } },
+      }));
+      process.env.OPENCODE_CONFIG = partial;
+      expect(readOpenCodeUserConfig()).toEqual({
+        provider: { explicit: { models: { 'explicit/model': {} } } },
+      });
+
+      // A model-only explicit config keeps no provider from the global one.
+      const modelOnly = join(home, 'model-only.json');
+      writeFileSync(modelOnly, JSON.stringify({ model: 'explicit/model' }));
+      process.env.OPENCODE_CONFIG = modelOnly;
+      expect(readOpenCodeUserConfig()).toEqual({ model: 'explicit/model' });
+
+      // A readable but empty explicit config isolates the global one too.
+      const empty = join(home, 'empty.json');
+      writeFileSync(empty, '{}');
+      process.env.OPENCODE_CONFIG = empty;
+      expect(readOpenCodeUserConfig()).toEqual({});
+    } finally {
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = previousXdg;
+      if (previousConfig === undefined) delete process.env.OPENCODE_CONFIG; else process.env.OPENCODE_CONFIG = previousConfig;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('OpenCode: an error event fails the run even when the CLI exits 0', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-opencode-error-'));
     const calls: SpawnCall[] = [];

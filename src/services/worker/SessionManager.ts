@@ -536,6 +536,7 @@ export class SessionManager {
     lastAssistantMessage?: string,
     promptNumber?: number,
     enqueuedAtEpochMs?: number,
+    cwd?: string,
   ): number {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
@@ -545,7 +546,11 @@ export class SessionManager {
     const message: PendingMessage = {
       type: 'summarize',
       prompt_number: promptNumber ?? session.lastPromptNumber,
-      last_assistant_message: lastAssistantMessage
+      last_assistant_message: lastAssistantMessage,
+      // Carry the checkout like an observation does: the generator resolves
+      // the host/project model from the message's cwd, and a summary-only turn
+      // has no observation to inherit one from.
+      ...(cwd ? { cwd } : {})
     };
 
     const messageId = this.buffer.enqueue(sessionDbId, message, enqueuedAtEpochMs);

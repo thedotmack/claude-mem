@@ -38,21 +38,33 @@ function makeSession(overrides: Partial<ActiveSession> = {}): ActiveSession {
   };
 }
 
-class TestProvider extends OpenAICompatibleProvider<{ apiKey: string; model: string }> {
+type TestConfig = { apiKey: string; model: string; summaryModel?: string };
+
+class TestProvider extends OpenAICompatibleProvider<TestConfig> {
   protected readonly providerName = 'TestProvider';
   protected readonly syntheticIdPrefix = 'test';
   protected readonly forwardEmptyMessageResponse = false;
   readonly queriedModels: string[] = [];
+  config: TestConfig = { apiKey: 'test-api-key', model: 'session-model' };
+  /** Simulated host resolution: only a message from this cwd gets the host models. */
+  hostCwd?: string;
+  hostConfig?: TestConfig;
 
-  protected getConfig() {
-    return { apiKey: 'test-api-key', model: 'session-model' };
+  protected getConfig(): TestConfig {
+    return this.config;
+  }
+
+  protected override configForSession(_session: ActiveSession, host?: { cwd?: string }): TestConfig {
+    const config = this.getConfig();
+    if (!this.hostCwd || host?.cwd !== this.hostCwd || !this.hostConfig) return config;
+    return { ...config, ...this.hostConfig };
   }
 
   protected missingApiKeyError(): Error {
     return new Error('missing key');
   }
 
-  protected async query(_history: ConversationMessage[], config: { apiKey: string; model: string }): Promise<ProviderQueryResult> {
+  protected async query(_history: ConversationMessage[], config: TestConfig): Promise<ProviderQueryResult> {
     this.queriedModels.push(config.model);
     return { content: '' };
   }
@@ -178,6 +190,51 @@ describe('OpenAICompatibleProvider summary tier routing', () => {
     await provider.startSession(makeSession({ observerModel: 'session-model' }));
 
     expect(provider.queriedModels).toEqual(['session-model']);
+  });
+
+  it('host-mode-summary-composition: host main model drives observations and host small model drives summaries', async () => {
+    loadFromFileSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',
+      CLAUDE_MEM_TIER_SUMMARY_MODEL: '',
+    }));
+
+    const provider = new TestProvider({} as any, {
+      getMessageIterator: async function* () {
+        yield { type: 'observation', tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 2, cwd: '/tmp/host-project' };
+        yield { type: 'summarize', last_assistant_message: 'done', cwd: '/tmp/host-project' };
+      },
+    } as any);
+    provider.hostCwd = '/tmp/host-project';
+    provider.hostConfig = { model: 'main-hote', summaryModel: 'small-hote' };
+    const session = makeSession();
+
+    await provider.startSession(session);
+
+    expect(provider.queriedModels).toEqual(['main-hote', 'small-hote']);
+    // The per-turn refresh carried by #6493 records the model that actually
+    // served the turn; in host mode that is the translated host main model.
+    expect(session.lastModelId).toBe('main-hote');
+  });
+
+  it('host-mode-summary-routing-disabled: routing off keeps the summary on the host main model', async () => {
+    loadFromFileSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_TIER_ROUTING_ENABLED: 'false',
+      CLAUDE_MEM_TIER_SUMMARY_MODEL: '',
+    }));
+
+    const provider = new TestProvider({} as any, {
+      getMessageIterator: async function* () {
+        yield { type: 'summarize', last_assistant_message: 'done', cwd: '/tmp/host-project' };
+      },
+    } as any);
+    provider.hostCwd = '/tmp/host-project';
+    provider.hostConfig = { model: 'main-hote', summaryModel: 'small-hote' };
+
+    await provider.startSession(makeSession());
+
+    expect(provider.queriedModels).toEqual(['main-hote']);
   });
 
   it('reuses the persisted synthetic id when an in-memory session restarts', async () => {

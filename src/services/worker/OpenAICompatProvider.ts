@@ -24,7 +24,9 @@
  */
 
 import { getCredential } from '../../shared/EnvManager.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
+import { readOpenCodeHostConfig } from '../../shared/opencode-host-config.js';
+import { resolveEndpointModelId } from '../../shared/opencode-model-id.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { keysForEndpoint } from '../../shared/cmem-gateway.js';
@@ -140,8 +142,24 @@ export interface OpenAICompatConfig {
    * observation.
    */
   requiresApiKey: boolean;
+  /**
+   * Endpoint-ready small model taken from the host's OpenCode config (#6485).
+   * Present only when the host gate is on and the host declares a small model;
+   * the summary tier uses it after CLAUDE_MEM_TIER_SUMMARY_MODEL and before the
+   * observer model.
+   */
+  summaryModel?: string;
   /** Set for a Telegram wrap-up request (OpenAICompatibleProvider.formatTelegramWrapup). */
   plainText?: boolean;
+}
+
+/**
+ * Where the observer's host-configured model may be read from (#6485). The cwd
+ * is the observed project: when present, its own OpenCode configs (and its
+ * parents') are read as well as the global ones.
+ */
+export interface OpenAICompatHostOptions {
+  cwd?: string;
 }
 
 /**
@@ -452,6 +470,55 @@ export function stripLeadingThinkBlock(content: string): string {
 /** Endpoint a key was last withheld from, so a status poll logs it once, not per read. */
 let lastWithheldKeyUrl: string | null = null;
 
+/** Unmapped host ids already warned about, so alternating ids still warn once each. */
+const MAX_WARNED_UNMAPPED_HOST_MODEL_IDS = 64;
+const warnedUnmappedHostModelIds = new Set<string>();
+
+/** Translate a host display key, never sending it to an endpoint unchanged. */
+function translateHostModel(
+  hostModelId: string,
+  provider: Record<string, unknown> | undefined,
+): string | undefined {
+  const endpointModelId = resolveEndpointModelId(hostModelId, provider);
+  if (endpointModelId) return endpointModelId;
+  if (!warnedUnmappedHostModelIds.has(hostModelId)) {
+    warnedUnmappedHostModelIds.add(hostModelId);
+    // A Set keeps insertion order, so evicting the first entry drops the oldest
+    // warning and bounds memory even if a config lists many unknown ids.
+    if (warnedUnmappedHostModelIds.size > MAX_WARNED_UNMAPPED_HOST_MODEL_IDS) {
+      const oldest = warnedUnmappedHostModelIds.values().next().value;
+      if (oldest) warnedUnmappedHostModelIds.delete(oldest);
+    }
+    logger.warn('SDK', `Host model "${hostModelId}" is not declared in the OpenCode provider config; keeping the configured fallback model.`);
+  }
+  return undefined;
+}
+
+/**
+ * The host's observer and summary models, endpoint-ready (#6485).
+ *
+ * Read only when the operator opted in and the caller supplied host options.
+ * Status, availability and wrap-up callers pass none and keep the pinned
+ * config. The shared reader returns only model, smallModel and provider; no
+ * tool, plugin, MCP or permission setting crosses into the worker.
+ */
+function hostObserverModels(
+  settings: SettingsDefaults,
+  hostOptions: OpenAICompatHostOptions | undefined,
+): { model?: string; summaryModel?: string } {
+  if (!hostOptions || settings.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST !== 'true') return {};
+  const host = readOpenCodeHostConfig({
+    cwd: hostOptions.cwd,
+    includeProject: Boolean(hostOptions.cwd),
+  });
+  const model = host.model ? translateHostModel(host.model, host.provider) : undefined;
+  const summaryModel = host.smallModel ? translateHostModel(host.smallModel, host.provider) : undefined;
+  return {
+    ...(model ? { model } : {}),
+    ...(summaryModel ? { summaryModel } : {}),
+  };
+}
+
 /**
  * Resolve the endpoint tuple.
  *
@@ -467,6 +534,7 @@ let lastWithheldKeyUrl: string | null = null;
  */
 export function resolveOpenAICompatConfig(
   settingsPath: string = USER_SETTINGS_PATH,
+  hostOptions?: OpenAICompatHostOptions,
 ): OpenAICompatConfig {
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
   const preset = resolveOpenAICompatPreset(settings.CLAUDE_MEM_OPENAI_COMPAT_PRESET);
@@ -479,7 +547,10 @@ export function resolveOpenAICompatConfig(
   const apiUrl = baseUrl ? resolveOpenRouterChatCompletionsUrl(baseUrl) : '';
 
   const configuredModel = (settings.CLAUDE_MEM_OPENAI_COMPAT_MODEL ?? '').trim();
-  const model = configuredModel || preset.defaultModel;
+  // Precedence: explicit setting, then the host's translated model (opt-in),
+  // then the preset. A host id never replaces an explicit observer model.
+  const hostModels = hostObserverModels(settings, hostOptions);
+  const model = configuredModel || hostModels.model || preset.defaultModel;
 
   // One credential name for every endpoint, on purpose: the .env whitelist in
   // EnvManager is a security boundary (#2375), and a per-vendor name would mean
@@ -510,6 +581,7 @@ export function resolveOpenAICompatConfig(
     model,
     apiUrl,
     preset,
+    ...(hostModels.summaryModel ? { summaryModel: hostModels.summaryModel } : {}),
   };
 }
 
@@ -536,19 +608,28 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
   }
 
   /**
-   * The host's endpoint-ready observer model (Task 4) wins over the global
-   * setting/preset for this session's observer, but only when the operator has
-   * opted in with CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION='true'. With the
-   * gate off (the default) the original resolution stands: global setting, then
-   * preset. This is a worker-side decision — the plugin keeps transporting the
-   * observerModel field either way. Applied last and only to the model field;
-   * every other config field stays as the global config resolved it. The second
-   * parameter is reserved for #6485.
+   * The observer config for one live session, composing two independent
+   * opt-ins (#6485 + #6486).
+   *
+   * First resolve the base config with `host`: when
+   * CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST='true' this reads the host's own
+   * OpenCode config and may replace the preset model with its translated
+   * endpoint id. Then, only when
+   * CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION='true', the endpoint-ready id
+   * parked on the session is applied last, so it wins over both the host model
+   * and the explicit setting. Turning the session opt-in off must not disable
+   * host mode.
+   *
+   * Only model fields are touched. Init, availability, wrap-up, WorkView and
+   * api-agent resolve without host options and keep the pinned config.
    */
-  protected override configForSession(session: ActiveSession, host?: { cwd?: string }): OpenAICompatConfig {
-    void host;
-    const config = this.getConfig();
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  protected override configForSession(session: ActiveSession, host?: OpenAICompatHostOptions): OpenAICompatConfig {
+    const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+    // Keep getConfig() as the pinned path so provider subclasses and the init
+    // turn retain their existing config. Host mode opts into the full resolver.
+    const config = host && settings.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST === 'true'
+      ? resolveOpenAICompatConfig(paths.settings(), host)
+      : this.getConfig();
     if (settings.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION !== 'true') return config;
     // Defense in depth: the init schema already rejects a blank id, but any
     // other writer must not replace a valid configured model with whitespace.

@@ -33,10 +33,14 @@ export function resolveTierAlias(model: string, settings: SettingsDefaults): str
   }
 }
 
-export function resolveSummaryTierModel(currentModel: string, settings: SettingsDefaults): string {
+export function resolveSummaryTierModel(
+  currentModel: string,
+  settings: SettingsDefaults,
+  hostSmallModel?: string,
+): string {
   if (settings.CLAUDE_MEM_TIER_ROUTING_ENABLED === 'false') {
     return currentModel;
   }
 
-  return settings.CLAUDE_MEM_TIER_SUMMARY_MODEL || currentModel;
+  return settings.CLAUDE_MEM_TIER_SUMMARY_MODEL || hostSmallModel || currentModel;
 }
