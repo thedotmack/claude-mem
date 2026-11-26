@@ -98,7 +98,7 @@ final class AppModel: ObservableObject {
         refreshGeneration += 1
         let generation = refreshGeneration
         access = FullDiskAccess.check()
-        if launch == nil || !commandPath.isEmpty { await locateCommand() }
+        if launch == nil || !commandPath.isEmpty { await locateCommand(generation: generation) }
         guard generation == refreshGeneration, let runner else { return }
         let result: CommandResult
         do {
@@ -128,7 +128,9 @@ final class AppModel: ObservableObject {
         if access == .granted, listenOnLaunch, observedCount > 0, running == nil, !userStopped { startListening() }
     }
 
-    func locateCommand() async {
+    /// Finds the command. Its answer is dropped when a newer refresh has
+    /// started meanwhile, since the search can take a few seconds.
+    private func locateCommand(generation: Int) async {
         let override = commandPath
         if !override.isEmpty, !commandPathConfirmed {
             launch = nil
@@ -148,6 +150,7 @@ final class AppModel: ObservableObject {
                 isTrusted: { CommandLocator.notWritableByOthers($0) }
             )
         }.value
+        guard generation == refreshGeneration else { return }
         launch = found
         commandProblem = found == nil
             ? (override.isEmpty
