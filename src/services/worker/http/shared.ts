@@ -302,7 +302,7 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     // A bad user regex never throws here — getBashSkipPattern returns null, so the
     // command is captured as if no pattern was set.
     const pattern = getBashSkipPattern(skipBashPatterns);
-    const segments = settings.CLAUDE_MEM_SKIP_BASH_COMPOUND === 'true'
+    const segments = settings.CLAUDE_MEM_SKIP_BASH_PATTERNS_MATCH_EVERY_SEGMENT === 'true'
       ? simpleCommandSegments(command)
       : [command];
     if (pattern && pattern.test(command) && segments && segments.every(segment => pattern.test(segment))) {
