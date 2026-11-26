@@ -387,6 +387,24 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
     request.startedAtEpoch = request.original.atEpoch ?? null;
     request.progress = request.groupId ? ledger?.progress?.[request.groupId] ?? null : null;
     request.completedAtEpoch = request.lifecycle && (request.lifecycle.complete === true || ['done', 'completed', 'complete', 'shipped', 'delivered'].includes(request.lifecycle.status.toLowerCase())) ? request.lifecycle.atEpoch : null;
+    // No recorded work closed this request, but every conversation behind it
+    // is a captured session that has ended (its row no longer reads 'active':
+    // completion is written only at finalize and cleared if the session
+    // resumes). The request stopped running when the last of them ended, so
+    // it is not presented as still in progress. This dates the end only; the
+    // recorded status above still says what the work's state is.
+    if (request.completedAtEpoch == null && relatedIds.size) {
+      const endedAt = [];
+      for (const id of relatedIds) {
+        const session = sessions.get(id);
+        if (!session || !session.status || session.status === 'active') { endedAt.length = 0; break; }
+        const end = session.completed_at_epoch
+          ?? Math.max(0, ...related.filter((prompt) => prompt.session_db_id === id).map((prompt) => prompt.created_at_epoch ?? 0), session.started_at_epoch ?? 0);
+        if (!end) { endedAt.length = 0; break; }
+        endedAt.push(end);
+      }
+      if (endedAt.length) request.completedAtEpoch = Math.max(...endedAt);
+    }
     request.requestedBy = metadata('requestedBySource')[0]?.item.requestedBy ?? null;
     request.requestedBySource = metadata('requestedBySource')[0]?.record ?? null;
     request.shipEstimate = metadata('shipEstimateSource')[0]?.item.shipEstimate ?? null;

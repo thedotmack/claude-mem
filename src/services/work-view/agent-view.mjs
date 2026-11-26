@@ -1,6 +1,6 @@
 // A read-only projection of recorded work and observation activity. A captured
 // tool call establishes its author, never the assignee or live presence.
-import { buildHumanRequests } from './request-projection.mjs';
+import { buildHumanRequests, originalFor } from './request-projection.mjs';
 import { goalKindOf, OWNER_GOALS_LIST, isOwnerGoalsList } from './owner-goals.mjs';
 import { buildRules } from './my-rules.mjs';
 import { buildFocusAreas, placeRequests } from './my-focus.mjs';
@@ -435,6 +435,26 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
     if (stop) evidence.push({ evidence: stop.source, atEpoch: stop.stoppedAtEpoch, sourceRef: { kind: 'work-state', id: stop.entryId } });
     if (group.launch?.returnedAtEpoch) evidence.push({ evidence: 'agent-call-returned', atEpoch: group.launch.returnedAtEpoch, sourceRef: group.launch.shared ? null : { kind: 'tool-use', id: group.launch.toolUseId } });
     return evidence.filter((entry) => entry.atEpoch >= lastActive).sort((a, b) => b.atEpoch - a.atEpoch)[0] ?? null;
+  }
+
+  // A session whose only loaded evidence is its asks — its observations aged
+  // out of the window above and it recorded no work — still backs its request
+  // card (buildHumanRequests builds one from its prompts), so it needs its
+  // agent group: without one the card's agentIds can only stay empty, and the
+  // card falls back to "Agent not recorded" once the session ends. The group
+  // is the session's own main group, the one its observations would have made.
+  const promptsBySessionId = new Map();
+  for (const prompt of prompts) {
+    if (!promptsBySessionId.has(prompt.session_db_id)) promptsBySessionId.set(prompt.session_db_id, []);
+    promptsBySessionId.get(prompt.session_db_id).push(prompt);
+  }
+  const groupedSessionIds = new Set([...groups.values()].filter((group) => !group.isSubagent).map((group) => group.sessionId));
+  for (const session of sessions) {
+    if (session.id == null || groupedSessionIds.has(session.id)) continue;
+    const own = promptsBySessionId.get(session.id) ?? [];
+    if (!originalFor(session, own)) continue;
+    const group = getGroup({ session, agentId: null, agentType: null, project: session.project });
+    group.lastActivityEpoch = Math.max(group.lastActivityEpoch, session.started_at_epoch ?? 0, ...own.map((prompt) => prompt.created_at_epoch ?? 0));
   }
 
   const agents = [...groups.values()].map((group) => {
