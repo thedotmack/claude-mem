@@ -1,7 +1,8 @@
 import type { Database } from 'bun:sqlite';
 import type { Application, Request, Response } from 'express';
 import { REVIEW_STACK_CARD_KIND, type ReviewStackSnapshot } from '../../../../shared/review-stack.js';
-import { getRedactionConfig, redactJsonStrings } from '../../../../utils/redaction.js';
+import { getRedactionConfig } from '../../../../utils/redaction.js';
+import { stripMemoryTags } from '../../../../utils/tag-stripping.js';
 import {
   prepareReviewStackWrite, renderReviewStack, reviewStackImage, reviewStackPage, ReviewStackError,
 } from '../../../work-view/review-stack.js';
@@ -14,6 +15,13 @@ const stackPath = '/api/work-view/review-stack';
 // Callers pass the loopback host guard. Include the worker's actual port in both tool results.
 const deckUrl = (req: Request) => `${req.protocol}://${req.get('host')}/?view=review-stack`;
 
+function validateReviewValue(...args: Parameters<typeof isSharedProjectionValue>): boolean {
+  if (!isSharedProjectionValue(...args)) {
+    throw new ReviewStackError(400, 'Add enough visible text to review this item after private sections are removed.');
+  }
+  return true;
+}
+
 /** Review data belongs to this installation. Cloud Sync transfers its reserved rows only when shared My Work is enabled. */
 export class ReviewStackRoutes extends BaseRouteHandler {
   private readonly readRecords;
@@ -21,7 +29,7 @@ export class ReviewStackRoutes extends BaseRouteHandler {
 
   constructor(private readonly db: Database, private readonly deviceId: string, private readonly notify: () => void) {
     super();
-    this.readRecords = createSharedRecordReader(db, { deviceId, validateValue: isSharedProjectionValue, reviewStack: 'metadata' });
+    this.readRecords = createSharedRecordReader(db, { deviceId, validateValue: validateReviewValue, reviewStack: 'metadata' });
   }
 
   setupRoutes(app: Application): void {
@@ -44,7 +52,7 @@ export class ReviewStackRoutes extends BaseRouteHandler {
       if (this.rendered?.sourceRevision !== revision || this.rendered.redactionKey !== redactionKey) {
         const snapshot = renderReviewStack(records.values(), {
           thumbnailUrl: id => `${stackPath}/media/${encodeURIComponent(id)}`,
-          redactText: policy.enabled ? text => redactJsonStrings(text, policy) : undefined,
+          redactText: stripMemoryTags,
         });
         this.rendered = { sourceRevision: revision, redactionKey, snapshot };
       }
@@ -72,13 +80,12 @@ export class ReviewStackRoutes extends BaseRouteHandler {
         this.readRecords();
         // The read, state changes and replay receipt commit under the same SQLite writer lock.
         const { result, changed } = this.db.transaction(() => {
-          const policy = getRedactionConfig();
           const write = prepareReviewStackWrite(this.readRecords().records.values(), operation, req.body, id, Date.now(), {
-            redactText: policy.enabled ? text => redactJsonStrings(text, policy) : undefined,
+            redactText: stripMemoryTags,
           });
           const { changed } = publishSharedRecords(this.db, {
             deviceId: this.deviceId, project: '__my_work__', reader: this.readRecords,
-            validateValue: isSharedProjectionValue, updates: write.updates,
+            validateValue: validateReviewValue, updates: write.updates,
           });
           return { result: write.result, changed };
         }).immediate();

@@ -9,9 +9,9 @@ import { decodeChanges } from '../../../../src/services/sync/SyncClient.js';
 import { ReviewStackRoutes } from '../../../../src/services/worker/http/routes/ReviewStackRoutes.js';
 import { WORKER_JSON_BODY_LIMIT_BYTES } from '../../../../src/shared/worker-http-limits.js';
 import { _resetRedactionConfigCache } from '../../../../src/utils/redaction.js';
-import { createSharedRecordReader, readSharedRecordValue } from '../../../../src/services/work-view/shared-record-store.mjs';
+import { createSharedRecordReader, publishSharedRecords, readSharedRecordValue } from '../../../../src/services/work-view/shared-record-store.mjs';
 import { isSharedProjectionValue } from '../../../../src/services/work-view/shared-projection.mjs';
-import { reviewStackImage } from '../../../../src/services/work-view/review-stack.js';
+import { prepareReviewStackWrite, reviewStackImage } from '../../../../src/services/work-view/review-stack.js';
 
 const dispose: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const close of dispose.splice(0).reverse()) await close(); });
@@ -262,4 +262,86 @@ test('current policy masks saved card metadata, links, notes and focus names whi
   const afterUndo = await (await fetch(worker.url + '?cursor=' + encodeURIComponent(restored.nextCursor))).json();
   expect(afterUndo.reviews.map((review: { cardId:string }) => review.cardId).sort())
     .toEqual(shown.filter(item => item.focusId === other.focusId).map(item => item.id).sort());
+});
+
+test('private sections stay out of new review records and follow-ups even with optional redaction off', async () => {
+  const setRedaction = fixtureRedaction('review-private', 'OPTIONAL_RULE');
+  setRedaction(false);
+  const worker = await device('review-private-sections');
+  const secret = 'PRIVATE_REVIEW_CONTENT';
+  const hidden = '<private>' + secret + '</private>';
+  const marked = {
+    ...card, key:'public-asset', focus:'Launch' + hidden, title:card.title + hidden,
+    what:card.what + hidden, context:card.context + hidden, excerpt:'Public excerpt' + hidden + ' and OPTIONAL_RULE',
+    source:'https://assets.example/' + hidden, preview:'https://assets.example/cover/' + hidden,
+  };
+  const importId = randomUUID();
+  const response = await worker.write('import', { cards:[marked] }, importId);
+  expect(response.status).toBe(200);
+  const receipt = await response.json();
+  expect(await (await worker.write('import', { cards:[marked] }, importId)).json()).toEqual(receipt);
+  const followUpId = randomUUID();
+  const note = { action:'follow-up', cardId:receipt.firstId, body:'Contact the owner.' + hidden };
+  expect((await worker.write('action', note, followUpId)).status).toBe(200);
+  expect((await worker.write('action', { ...note, body:note.body.replace(secret, secret + '2') }, followUpId)).status).toBe(409);
+  const snapshot = await worker.read();
+  const shown = snapshot.cards[0];
+  expect(shown).toMatchObject({ id:receipt.firstId, key:'public-asset', focus:'Launch', title:card.title,
+    what:card.what, context:card.context, excerpt:'Public excerpt and OPTIONAL_RULE' });
+  expect(shown.source).toBeUndefined();
+  expect(shown.preview).toBe('/api/work-view/review-stack/media/' + receipt.firstId);
+  const media = await fetch(worker.origin + shown.preview);
+  expect(Buffer.from(await media.arrayBuffer())).toEqual(Buffer.from(image, 'base64'));
+  expect(snapshot.followUps[0]).toMatchObject({ id:followUpId, body:'Contact the owner.' });
+  const rows = () => worker.store.db.query('SELECT fields FROM work_state_entries ORDER BY id').all();
+  expect(JSON.stringify(rows())).not.toContain(secret);
+
+  setRedaction(true);
+  expect((await worker.read()).cards[0].excerpt).toContain("<redacted type='review-private'/>");
+  const protectedImport = await worker.write('import', { cards:[{ ...marked, key:'both-policies' }] });
+  expect(protectedImport.status).toBe(200);
+  const protectedId = (await protectedImport.json()).firstId;
+  setRedaction(false);
+  const protectedCard = (await worker.read()).cards.find((item: { id:string }) => item.id === protectedId);
+  expect(protectedCard.excerpt).toBe("Public excerpt and <redacted type='review-private'/>");
+  expect(JSON.stringify(rows())).not.toContain(secret);
+
+  const before = rows();
+  expect((await worker.write('import', { cards:[{ ...marked, key:'asset-' + hidden }] })).status).toBe(400);
+  const missingTitle = await worker.write('import', { cards:[{ ...marked, key:'missing-title', title:'<private>Entire Cover Title</private>' }] });
+  expect(missingTitle.status).toBe(400);
+  expect(await missingTitle.json()).toHaveProperty('error');
+  expect((await worker.write('action', { ...note, body:hidden })).status).toBe(400);
+  expect(rows()).toEqual(before);
+});
+
+test('older saved review records hide private sections when read, preserving their card and group identities', async () => {
+  fixtureRedaction('review-legacy', 'UNUSED_FIXTURE_PATTERN')(false);
+  const worker = await device('review-private-legacy');
+  const hidden = '<private>PRIVATE_LEGACY_REVIEW</private>';
+  const marked = { ...card, key:card.key + hidden, focus:'Launch' + hidden, title:card.title + hidden,
+    what:card.what + hidden, context:card.context + hidden, excerpt:'Before' + hidden + ' and after',
+    source:'https://assets.example/' + hidden, preview:'https://assets.example/art/' + hidden };
+  // Recreate the older writer that emitted valid review rows without applying the author's private tags.
+  const read = createSharedRecordReader(worker.store.db, { deviceId:worker.id, validateValue:isSharedProjectionValue });
+  function legacyWrite(operation: 'import' | 'action', input: unknown, id = randomUUID()) {
+    const write = prepareReviewStackWrite(read().records.values(), operation, input, id);
+    publishSharedRecords(worker.store.db, { deviceId:worker.id, project:'__my_work__', updates:write.updates,
+      validateValue:isSharedProjectionValue, reader:read });
+    return write.result;
+  }
+  const imported = legacyWrite('import', { cards:[marked] });
+  if (!('firstId' in imported)) throw new Error('Expected an import receipt.');
+  const noteId = randomUUID(), groupId = randomUUID();
+  legacyWrite('action', { action:'follow-up', cardId:imported.firstId, body:'Inspect original.' + hidden }, noteId);
+  legacyWrite('action', { action:'seen-group', focus:marked.focus }, groupId);
+  const snapshot = await worker.read();
+  expect(JSON.stringify(snapshot)).not.toContain('PRIVATE_LEGACY_REVIEW');
+  expect(snapshot.cards[0]).toMatchObject({ id:imported.firstId, key:imported.firstId, focus:'Launch', title:card.title,
+    what:card.what, context:card.context, excerpt:'Before and after' });
+  expect(snapshot.cards[0].source).toBeUndefined();
+  expect(snapshot.followUps[0]).toMatchObject({ id:noteId, cardId:imported.firstId, body:'Inspect original.' });
+  expect(snapshot.groups[0]).toMatchObject({ id:groupId, focus:'Launch', count:1 });
+  expect((await worker.write('action', { action:'undo-group', groupId })).status).toBe(200);
+  expect((await worker.write('action', { action:'seen-group', focus:'Launch', cardId:imported.firstId })).status).toBe(200);
 });
