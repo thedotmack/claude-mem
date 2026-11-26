@@ -507,7 +507,7 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
       const setup = reason === 'setup-scan';
       const task = buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase, localDeviceId, saveFocus,
         judge: setup ? null : configuredJudge(settingsPath), focusJudge: setup ? null : configuredFocusJudge(settingsPath) });
-      return { ...(await runAgentTask(task)), steps: task.steps };
+      return { ...(await runAgentTask(task)), steps: task.steps, groupsLeftWithoutReview: task.groupsLeftWithoutReview };
     },
     // Jev labels open work-state items on every check; read from settings each time, like the judges.
     labelWorkState: async () => {

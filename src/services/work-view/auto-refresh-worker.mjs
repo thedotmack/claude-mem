@@ -4,8 +4,9 @@
 // Owner rule (Oct 22): AI magic, not speed. No minimum interval, no day
 // window, no group cap, and a run is never stopped for taking long; it ends
 // when the agent finishes or fails. One run at a time. The one exception:
-// after failed runs only, the scheduled check backs off (below). A run that
-// works, and runNow, keep no minimum interval.
+// after failed runs, and runs that left groups without a review, the scheduled
+// check backs off (below). A run that finishes everything due, and runNow, keep
+// no minimum interval.
 // Status lives in refresh.json beside the ledger; My Work shows it live.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -37,6 +38,10 @@ export function refreshIntervalMs(minutes) {
 // limit is tried again in the window after it resets, never skipping one.
 // An interval set longer than four hours (CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN) caps the wait at one
 // interval instead: the timer only ticks once per interval, so a shorter wait would show a next check that never happens.
+// A run that left groups without a review (#6432) counts with the failed ones for this wait, though it is reported
+// ok and its other work is saved: those groups are still due, so the next ten-minute check would start a run that
+// asks the model for the same groups again, which is the Oct 25 loop. Such a run was a failed run before #6432, so
+// the model is asked for those groups exactly as often as it was.
 const MAX_FAILURE_BACKOFF_MS = 4 * 60 * 60000;
 
 const processIsAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -46,8 +51,9 @@ export class AutoRefreshWorker {
    * @param {object} options
    * @param {string} options.dir                ledger folder (~/.claude-mem/work-view)
    * @param {() => any} options.openDatabase    read-only claude-mem.db handle with close()
-   * @param {(job: {needs: object, reason: string}) => Promise<{state: string, agent: string|null, result: string|null, error: string|null}>} options.runJob
-   *   runs the job on the first logged-in agent; 'waiting-for-agent' when there is none yet (agent-runner/run.ts)
+   * @param {(job: {needs: object, reason: string}) => Promise<{state: string, agent: string|null, result: string|null, error: string|null, groupsLeftWithoutReview?: number}>} options.runJob
+   *   runs the job on the first logged-in agent; 'waiting-for-agent' when there is none yet (agent-runner/run.ts).
+   *   groupsLeftWithoutReview: due groups an ok run left without a review (refresh-task.ts)
    * @param {() => boolean} [options.enabled]   scheduled refresh on: setup not running and CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH, read on every check
    * @param {() => boolean} [options.setupRunning]  setup is running, so no refresh may spend tokens, not even one the owner asks for
    * @param {() => string} options.localDeviceId the worker's sync device id ('' when cloud sync never started), so my-focus
@@ -156,8 +162,8 @@ export class AutoRefreshWorker {
     if (this.busy) return 'running';
     const previous = this.replaceableStatus();
     if (this.otherWorkerIsRunning(previous)) return 'running';
-    // Backing off after failed runs: wait for the time the last failure set.
-    if (previous?.state === 'failed' && previous.failures && this.now() < Date.parse(previous.nextAt)) return 'backing-off';
+    // Backing off after failed runs, or ok runs that left groups without a review: wait for the time the last one set.
+    if (previous?.failures && this.now() < Date.parse(previous.nextAt)) return 'backing-off';
     const needs = this.readNeeds();
     if (!needs.needed) {
       // A run this worker never finished was cut off by a restart.
@@ -209,7 +215,8 @@ export class AutoRefreshWorker {
       try { outcome = await this.runJob({ needs, reason }); }
       catch (error) { outcome = { state: 'failed', agent: null, result: null, error: String(error?.message ?? error).slice(0, 500) }; }
       const finishedAt = this.iso();
-      const failures = outcome.state === 'failed' ? previousFailures + 1 : 0;
+      const leftReviewsDue = outcome.state === 'ok' && outcome.groupsLeftWithoutReview > 0;
+      const failures = outcome.state === 'failed' || leftReviewsDue ? previousFailures + 1 : 0;
       const wait = failures ? this.failureWaitMs(failures) : this.checkMs;
       this.write({
         state: outcome.state, reason, agent: outcome.agent ?? null, startedAt, finishedAt, needs,

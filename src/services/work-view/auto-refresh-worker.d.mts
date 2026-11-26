@@ -3,7 +3,11 @@ import type { LabelRunResult } from './work-state-labels.mjs';
 
 export type RefreshState = 'idle' | 'running' | 'ok' | 'failed' | 'waiting-for-agent';
 export interface RefreshStepTiming { step: string; agent: string; startedAt: string; finishedAt: string; groups?: number }
-export interface RefreshJobOutcome { state: 'ok' | 'failed' | 'waiting-for-agent'; agent: string | null; result: string | null; error: string | null; steps?: RefreshStepTiming[] }
+export interface RefreshJobOutcome {
+  state: 'ok' | 'failed' | 'waiting-for-agent'; agent: string | null; result: string | null; error: string | null; steps?: RefreshStepTiming[];
+  /** Due groups an ok run left without a review (refresh-task.ts). They are still due, so the next scheduled check waits as after a failed run. */
+  groupsLeftWithoutReview?: number;
+}
 export interface RefreshStatus {
   state: RefreshState;
   reason?: string;
@@ -17,7 +21,8 @@ export interface RefreshStatus {
   result?: string | null;
   error?: string | null;
   steps?: RefreshStepTiming[];
-  /** Failed runs in a row; the next scheduled check waits longer for each. Absent after a run that works. */
+  /** Runs in a row that failed or left groups without a review; the next scheduled check waits longer for each.
+   * Absent after a run that finishes everything due. */
   failures?: number;
 }
 
