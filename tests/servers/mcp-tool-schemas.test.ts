@@ -37,6 +37,12 @@ async function withServer(
   app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
   app.post('/api/work-state/entries', (_req, res) => res.json({ entries: [] }));
   app.get('/api/work-state', (_req, res) => res.json({ entries: [] }));
+  const deckUrl = 'http://localhost/?view=review-stack';
+  app.get('/api/work-view/review-stack', (_req, res) => res.json({ itemCount: 1, deckUrl }));
+  app.post('/api/work-view/review-stack/import', (req, res) => {
+    if (!req.get('Idempotency-Key')) { res.status(400).end(); return; }
+    res.json({ added: 1, existing: 0, firstId: 'weekly-test', deckUrl });
+  });
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.once('listening', resolve));
   const { port } = server.address() as { port: number };
@@ -129,6 +135,27 @@ describe('work_state tools', () => {
       const read = workerRequests.find(request => request.path === '/api/work-state');
       expect(write?.body.cwd).toBe(cwd);
       expect(read?.query.cwd).toBe(cwd);
+    });
+  }, 30_000);
+});
+
+describe('Review Stack tools', () => {
+  it('lists and calls the two worker tools through stdio, returning the current deck link and import receipt', async () => {
+    await withServer('worker', async (client, requests) => {
+      const names = (await client.listTools()).tools.map(tool => tool.name);
+      expect(names).toContain('get_review_stack');
+      expect(names).toContain('import_review_cards');
+      const cards = [{ key: 'test-art', title: 'Review The Artwork', focus: 'Design', what: 'A drawing', context: 'Homepage artwork', excerpt: 'Draft' }];
+      const result = await client.callTool({ name: 'import_review_cards', arguments: { cards } });
+      expect(result.isError).toBeFalsy();
+      const deckUrl = 'http://localhost/?view=review-stack';
+      expect(result.structuredContent).toEqual({ added: 1, existing: 0, firstId: 'weekly-test', deckUrl });
+      expect(result.content).toEqual([{ type: 'text', text: 'Review Stack added 1 card. 0 already existed. The first card ID is weekly-test. Open My Work at ' + deckUrl }]);
+      expect(requests.find(call => call.path === '/api/work-view/review-stack/import')?.body).toEqual({ cards });
+      const opened = await client.callTool({ name: 'get_review_stack', arguments: {} });
+      expect(opened.structuredContent).toEqual({ deckUrl, itemCount: 1 });
+      expect(JSON.stringify(opened.content)).toContain(deckUrl);
+      expect(requests.find(call => call.path === '/api/work-view/review-stack')?.query.summary).toBe('1');
     });
   }, 30_000);
 });

@@ -41,7 +41,7 @@ describe('Messages from Claude-Mem', () => {
     const next = nextClaudeMemMessage(startup, settings, dataDir, env)!;
     expect(next.id).toBe(id);
     expect(formatClaudeMemMessage(next)).toContain('Messages from Claude-Mem · 2026-11-25');
-    expect(formatClaudeMemMessage(next)).toContain('30 days of Cloud Sync and the remote Work Viewer free. No credit card required. https://cmem.ai/sync');
+    expect(formatClaudeMemMessage(next)).toContain('30 days of Cloud Sync and the remote Work Viewer free. No credit card required. https://cmem.ai/sync?utm_source=holiday_startup&utm_campaign=holiday_cloud_sync');
     expect(formatClaudeMemMessage(next)).toContain('claude-mem messages acknowledge ' + id);
   });
 

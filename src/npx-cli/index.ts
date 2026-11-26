@@ -79,6 +79,9 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config
   ${styleText('cyan', 'npx claude-mem hermes install --mcp-only --project-cwd <absolute-directory>')}   Connect Hermes MCP without selecting a memory provider
   ${styleText('cyan', 'npx claude-mem hermes uninstall')}   Remove the owned Hermes integration; keep other settings and memories
+  ${styleText('cyan', 'npx claude-mem imessage setup')}       Connect a Photon iMessage line for the group chat observer
+  ${styleText('cyan', 'npx claude-mem imessage observe')}     Turn every group chat the line is in into Claude-Mem observations (one project per chat)
+  ${styleText('cyan', 'npx claude-mem imessage mac chats')}   List the chats on this Mac; the Claude-Mem Messages app picks which ones to observe
   ${styleText('cyan', 'npx claude-mem aider install|status|uninstall|sync')}   Manage Aider file-based context
   ${styleText('cyan', 'npx claude-mem gemini install|status|uninstall')}   Manage Gemini CLI capture hooks
   ${styleText('cyan', 'npx claude-mem devin install|status|uninstall')}   Manage Devin CLI / Devin Desktop hooks + MCP
@@ -179,7 +182,7 @@ const HELP_AWARE_COMMANDS = new Set([
   'start', 'stop', 'restart', 'status', 'doctor', 'mcp', 'hook',
   'adopt', 'cleanup',
   'memory', 'import', 'telemetry', 'project', 'backup', 'restore', 'server', 'worker', 'transcript',
-  'gemini', 'kimi', 'hermes', 'aider', 'devin', 'antigravity-cli', 'pi', 't3code', 't3-code', 't3', 'grok',
+  'gemini', 'kimi', 'hermes', 'imessage', 'aider', 'devin', 'antigravity-cli', 'pi', 't3code', 't3-code', 't3', 'grok',
 ]);
 
 async function main(): Promise<void> {
@@ -340,6 +343,11 @@ async function main(): Promise<void> {
     case 'hermes': {
       const { runHermesCommand } = await import('./commands/hermes.js');
       process.exitCode = await runHermesCommand(args[1]?.toLowerCase(), args.slice(2));
+      break;
+    }
+    case 'imessage': {
+      const { runImessageCommand } = await import('./commands/imessage.js');
+      process.exitCode = await runImessageCommand(args[1]?.toLowerCase(), args.slice(2));
       break;
     }
     case 'aider': {

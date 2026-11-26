@@ -107,6 +107,8 @@ export interface WorkDataSource {
   loadRequestDetail?(requestId: string, expectedFingerprint?: string, options?: { signal?: AbortSignal }): Promise<Request>
   /** Streams new models and connection changes until the returned function is called. */
   subscribeToLiveUpdates(onWorkModel: (model: WorkModel) => void, onConnectionChange: (status: ConnectionStatus) => void): () => void
+  /** A hint from this source's existing event stream. Read the private deck through its authenticated endpoint. */
+  subscribeToReviewStackChanges?(listener: () => void): () => void
   /**
    * Marks one version of a request checked, or undoes that. `expectedFingerprint` is the version on screen: the
    * worker refuses a check for any other version. Rejects when the save fails for a reason it can't name.

@@ -1,0 +1,35 @@
+.review-stack { width: min(100%, 42rem); margin-inline: auto; }
+.stack-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .65rem; }
+.stack-modes { display: inline-flex; padding: .18rem; border: 1px solid var(--control-edge); border-radius: 2rem; background: var(--muted); }
+.stack-modes button { min-height: 2.65rem; padding: .4rem .95rem; border-radius: 2rem; font-size: .875rem; }
+.stack-modes button[aria-pressed="true"] { background: var(--card); color: var(--foreground); box-shadow: 0 1px 4px color-mix(in srgb, var(--foreground) 14%, transparent); font-weight: 650; }
+.stack-select { width: min(100%, 20rem); min-height: 2.75rem; border-radius: .65rem; padding-inline: .65rem; font-size: .875rem; color: var(--foreground); background: var(--card); border: 1px solid var(--control-edge); }
+.stack-guide, .stack-hold { border-radius: .75rem; background: var(--accent); padding: .7rem .9rem; color: var(--accent-foreground); font-size: .875rem; }
+.stack-progress { display: block; width: 100%; height: .35rem; accent-color: var(--primary); }
+.stack-card { position: relative; touch-action: pan-y pinch-zoom; overflow-wrap: anywhere; padding: clamp(.8rem, 3vw, 1.3rem); border: 1px solid var(--control-edge); border-radius: 1.1rem; background: var(--card); box-shadow: 0 4px 0 -1px var(--card), 0 5px 0 var(--control-edge), 0 8px 18px -13px var(--foreground); }
+.stack-card:focus-visible, .stack-modes button:focus-visible, .stack-select:focus-visible, .stack-preview:focus-visible { outline: 3px solid var(--ring); outline-offset: 3px; }
+.stack-preview { display: grid; place-items: center; overflow: hidden; position: relative; width: 100%; min-height: 6rem; max-height: min(46svh, 26rem); border-radius: .7rem; background: var(--muted); }
+.stack-preview img { display: block; width: 100%; max-height: min(46svh, 26rem); object-fit: contain; }
+.stack-expand { position: absolute; right: .5rem; bottom: .5rem; width: 1.8rem; height: 1.8rem; padding: .34rem; border-radius: .4rem; background: var(--card); color: var(--foreground); }
+.stack-excerpt { margin-block: .45rem; max-height: 15rem; overflow-y: auto; white-space: pre-wrap; border-left: 3px solid var(--primary); background: var(--muted); padding: .8rem 1rem; border-radius: 0 .5rem .5rem 0; font-size: .9rem; }
+.stack-source { display: inline-flex; align-items: center; gap: .25rem; min-height: 2.75rem; color: var(--accent-foreground); text-decoration: underline; text-underline-offset: .2em; font-size: .875rem; }
+.stack-copy { display: grid; gap: .55rem; padding-block: .6rem .9rem; }
+.stack-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; padding-top: .7rem; border-top: 1px solid var(--border); }
+.stack-actions button { min-width: 0; }
+.stack-empty { display: grid; justify-items: center; gap: .85rem; text-align: center; padding: 2.4rem 1rem; border: 1px solid var(--control-edge); border-radius: 1rem; background: var(--card); }
+.stack-empty p { max-width: 31rem; color: var(--muted-foreground); }
+.stack-feedback { position: relative; font-size: .875rem; color: var(--muted-foreground); }
+.stack-feedback:empty { display: none; }
+.stack-hold i { display: block; height: 3px; border-radius: 2px; background: var(--primary); transform-origin: left; animation: stack-hold 3s linear forwards; }
+@keyframes stack-hold { from { transform: scaleX(0) } to { transform: scaleX(1) } }
+.stack-confetti { position: absolute; top: 2px; right: 10%; height: 0; width: 40%; pointer-events: none; }
+.stack-confetti i { position: absolute; width: 6px; height: 10px; border-radius: 1px; left: 50%; background: var(--primary); animation: stack-celebrate .85s ease-out both; }
+.stack-confetti i:nth-child(3n + 1) { background: var(--accent-foreground); }
+.stack-confetti i:nth-child(even) { height: 6px; border-radius: 50%; }
+.stack-confetti i:nth-child(1) { --throw: -70px } .stack-confetti i:nth-child(2) { --throw: -58px } .stack-confetti i:nth-child(3) { --throw: -42px }
+.stack-confetti i:nth-child(4) { --throw: -31px } .stack-confetti i:nth-child(5) { --throw: -22px } .stack-confetti i:nth-child(6) { --throw: -10px }
+.stack-confetti i:nth-child(7) { --throw: 9px } .stack-confetti i:nth-child(8) { --throw: 18px } .stack-confetti i:nth-child(9) { --throw: 30px }
+.stack-confetti i:nth-child(10) { --throw: 45px } .stack-confetti i:nth-child(11) { --throw: 59px } .stack-confetti i:nth-child(12) { --throw: 70px }
+@keyframes stack-celebrate { 0% { opacity: 0; transform: translateY(0) } 20% { opacity: 1 } 60% { transform: translate(var(--throw), -18px) rotate(90deg) } 100% { opacity: 0; transform: translate(var(--throw), 8px) rotate(170deg) } }
+@media (min-width: 38rem) { .stack-actions { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (prefers-reduced-motion: reduce) { .stack-confetti, .stack-hold i { display: none; } .stack-card { transform: none !important; } }

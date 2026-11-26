@@ -34,7 +34,7 @@ export function TimelineGift({ onDismiss }: { onDismiss: () => void }) {
       <div>
         <h3 id="timeline-gift-title"><span aria-hidden="true">🎁 </span>{t('A gift for Claude-Mem users')}</h3>
         <p>{t('Check Claude’s latest fix from your phone. Get 30 free days of Cloud Sync and the remote Work Viewer. No credit card required.')}</p>
-        <a href="https://cmem.ai/sync" target="_blank" rel="noopener noreferrer">cmem.ai/sync</a>
+        <a href="https://cmem.ai/sync?utm_source=timeline_gift&utm_campaign=holiday_cloud_sync" target="_blank" rel="noopener noreferrer">cmem.ai/sync</a>
       </div>
       <button type="button" className="timeline-gift-dismiss" onClick={onDismiss} aria-label={t('Dismiss the Cloud Sync offer')}>
         <XIcon size={18} />
