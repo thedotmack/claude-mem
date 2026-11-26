@@ -573,7 +573,7 @@ const tools: McpToolDefinition[] = [
       properties: {
         text: { type: 'string', description: 'Durable memory text.' },
         title: { type: 'string', description: 'Concise searchable title.' },
-        project: { type: 'string', description: 'Project receiving the note; defaults to the active checkout.' },
+        project: { type: 'string', description: 'Project name (e.g. repository folder name or org/repo slug), not a filesystem path; defaults to the active checkout.' },
         metadata: { type: 'object', additionalProperties: true, description: 'Optional provenance or source metadata.' },
       },
       required: ['text'],
