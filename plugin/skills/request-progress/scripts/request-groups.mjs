@@ -1056,8 +1056,6 @@ var init_SettingsDefaultsManager = __esm({
         CLAUDE_MEM_SKIP_TOOLS: "ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion",
         CLAUDE_MEM_SKIP_BASH_PATTERNS: "",
         // Regex matched against a shell command (Bash; PowerShell; Codex exec_command); when it matches, the observation is skipped. Empty = capture every command. Use alternation for several patterns, e.g. ^(ls|cat|pwd)\b
-        CLAUDE_MEM_SKIP_BASH_COMPOUND: "false",
-        // Opt in to matching every segment of a simple compound shell command.
         CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: "false",
         // #2736 — default off preserves current behavior; set 'true' to skip every subagent observation (recommended for heavy Dynamic Workflows users)
         CLAUDE_MEM_SKIP_AGENT_TYPES: "",
