@@ -233,7 +233,7 @@ describe('Work View hosted offer telemetry', () => {
   it('sends nothing without a live installer session, and never throws', async () => {
     const sent: SetupEvent[] = []
     await reportHostedPlansViewed(undefined, async () => null, async event => { sent.push(event) })
-    assert.deepEqual(sent, [])
+    assert.equal(sent.length, 0)
     await reportHostedPlansViewed(undefined, async () => { throw new Error('offline') }, async event => { sent.push(event) })
     await reportHostedPlansViewed('cloud_sync_annual', async () => ({ setup_flow_id: flow, already_pro: true }), async () => { throw new Error('refused') })
     await reportHostedPlansViewed('cloud_sync_annual', async () => ({ setup_flow_id: flow, already_pro: true }), async event => { sent.push(event) })
