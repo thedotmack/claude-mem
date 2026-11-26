@@ -68,9 +68,27 @@ function compress(): Promise<{ text: string; truncated: boolean } | null> {
   return provider.compressField('x'.repeat(20_000), 6_400, makeSession(), 'haiku', '/mock/claude', new AbortController().signal);
 }
 
-function sentEnv(call = 0): Record<string, string | undefined> {
-  const { options } = sdkQuery.mock.calls[call][0] as { options: { env: Record<string, string | undefined> } };
-  return options.env;
+type SpawnFactory = (options: { command: string; args: string[]; env: Record<string, string | undefined>; signal?: AbortSignal }) =>
+  NodeJS.EventEmitter & { stdout: NodeJS.ReadableStream; exitCode: number | null };
+
+/**
+ * The cap the Claude Code child would really see: run the spawn factory the
+ * SDK was handed, with the SDK env, on a child that prints its env. This goes
+ * through spawnSdkProcess's own sanitizeEnv, which strips CLAUDE_CODE_*.
+ */
+async function childCap(call = 0): Promise<string> {
+  const { options } = sdkQuery.mock.calls[call][0] as {
+    options: { env: Record<string, string | undefined>; spawnClaudeCodeProcess: SpawnFactory };
+  };
+  const child = options.spawnClaudeCodeProcess({
+    command: process.execPath,
+    args: ['--eval', "process.stdout.write(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS ?? '<unset>')"],
+    env: options.env,
+  });
+  let out = '';
+  child.stdout.on('data', (chunk: Buffer) => { out += chunk.toString(); });
+  await new Promise(resolve => child.once('exit', resolve));
+  return out;
 }
 
 beforeEach(() => {
@@ -93,12 +111,12 @@ describe('Claude condense reply cap (#6503)', () => {
     settings.CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS = '3200';
     await compress();
     expect(sdkQuery).toHaveBeenCalledTimes(1);
-    expect(sentEnv().CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('3200');
+    expect(await childCap()).toBe('3200');
   });
 
   it('uses the default cap when the setting is unset', async () => {
     await compress();
-    expect(sentEnv().CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('4096');
+    expect(await childCap()).toBe('4096');
   });
 
   it('reports a whole reply as not truncated', async () => {
@@ -139,7 +157,8 @@ describe('Claude condense reply cap (#6503)', () => {
       summaryText: 'summary',
     }, 'haiku');
     expect(sdkQuery).toHaveBeenCalledTimes(1);
-    expect(sentEnv().CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBeUndefined();
+    // The host's 99999 is stripped and nothing replaces it.
+    expect(await childCap()).toBe('<unset>');
   });
 
   it('fails the Telegram wrap-up rather than sending the CLI cap notice', async () => {

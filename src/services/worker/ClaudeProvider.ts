@@ -1158,18 +1158,19 @@ export class ClaudeProvider {
       /**
        * Hard output-token cap for this call only (#6503). The Agent SDK
        * Options carry no per-request max_tokens, so the cap travels as the
-       * Claude Code child's CLAUDE_CODE_MAX_OUTPUT_TOKENS. Set after
-       * sanitizeEnv, which strips every host CLAUDE_CODE_* variable.
+       * Claude Code child's CLAUDE_CODE_MAX_OUTPUT_TOKENS. The spawn factory
+       * sets it after its own sanitizeEnv, which strips every CLAUDE_CODE_*
+       * variable; putting it in the SDK env would be stripped there.
        */
       maxOutputTokens?: number;
     },
     modelId: string,
     claudePath: string,
   ): Promise<StandalonePromptReply | null> {
-    const sanitizedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth(true, { standIn: context.standIn }));
-    const isolatedEnv = context.maxOutputTokens === undefined
-      ? sanitizedEnv
-      : { ...sanitizedEnv, CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(context.maxOutputTokens) };
+    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth(true, { standIn: context.standIn }));
+    const childEnvOverrides: Record<string, string> = context.maxOutputTokens === undefined
+      ? {}
+      : { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(context.maxOutputTokens) };
     const controller = new AbortController();
     const abort = () => controller.abort();
     const signals = context.signals ?? [];
@@ -1202,7 +1203,10 @@ export class ClaudeProvider {
             // Register the child so the shutdown cascade reaches it. A
             // standalone record takes no slot and stops no other SDK child:
             // the two field compressions of one observation run at once.
-            spawnClaudeCodeProcess: createStandaloneSdkSpawnFactory(standaloneObserverRegistrySessionId(context.sessionDbId)),
+            spawnClaudeCodeProcess: createStandaloneSdkSpawnFactory(
+              standaloneObserverRegistrySessionId(context.sessionDbId),
+              childEnvOverrides,
+            ),
           }),
           maxTurns: 1,
         },

@@ -956,11 +956,14 @@ export function spawnSdkProcess(
   sessionDbId: number,
   options: SpawnSdkOptions,
   recordType: 'sdk' | typeof STANDALONE_SDK_PROCESS_TYPE = 'sdk',
+  envOverrides: Readonly<Record<string, string>> = {},
 ): { process: SpawnedSdkProcess; pid: number; pgid: number } | null {
   const registry = getProcessRegistry();
 
   const useCmdWrapper = process.platform === 'win32' && options.command.endsWith('.cmd');
-  const env = sanitizeEnv(options.env ?? process.env);
+  // Overrides are claude-mem's own per-call settings for the child (#6503);
+  // applied after sanitizeEnv, which strips every CLAUDE_CODE_* variable.
+  const env = { ...sanitizeEnv(options.env ?? process.env), ...envOverrides };
   const filteredArgs = normalizeSpawnSdkArgs(options.args, options.extraArgs);
   const cwd = normalizeSpawnSdkCwd(sessionDbId);
   try {
@@ -1162,9 +1165,12 @@ export function createSdkSpawnFactory(sessionDbId: number, slotReservation?: Slo
  * before it was registered: compression runs inside a generation that already
  * holds a slot, and the wrap-up is one bounded turn after a stored summary.
  */
-export function createStandaloneSdkSpawnFactory(registrySessionId: number) {
+export function createStandaloneSdkSpawnFactory(
+  registrySessionId: number,
+  envOverrides: Readonly<Record<string, string>> = {},
+) {
   return (spawnOptions: SpawnSdkOptions): SpawnedSdkProcess => {
-    const result = spawnSdkProcess(registrySessionId, spawnOptions, STANDALONE_SDK_PROCESS_TYPE);
+    const result = spawnSdkProcess(registrySessionId, spawnOptions, STANDALONE_SDK_PROCESS_TYPE, envOverrides);
     if (!result) {
       throw new Error(`Failed to spawn standalone SDK subprocess for registry session ${registrySessionId}`);
     }
