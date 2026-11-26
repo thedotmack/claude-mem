@@ -55,11 +55,16 @@ final class AppModelTests: XCTestCase {
         model.handle(.reconnecting)
         model.handle(.status(observing: 0, sent: 1, skipped: 0))
         XCTAssertEqual(model.listener, .starting)
+        model.handle(.error(reason: "authorization", message: "Fixture authorization failed"))
+        model.handle(.started(observing: 0))
+        XCTAssertEqual(model.listener, .failed("Fixture authorization failed"))
+        XCTAssertFalse(defaults.bool(forKey: "photonWasListening"))
     }
 
     @MainActor
     func testPhotonConfirmationAfterStopOrSourceSwitchCannotResumeOnNextLaunch() async throws {
-        for switchSource in [false, true] {
+        let choices: [[MessageSource]] = [[], [.mac], [.mac, .photon]]
+        for requested in choices {
             let suite = "ClaudeMemMessagesTests-" + UUID().uuidString
             let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
             defer { defaults.removePersistentDomain(forName: suite) }
@@ -83,16 +88,57 @@ final class AppModelTests: XCTestCase {
             }
             XCTAssertTrue(model.log.contains { $0.text == "fixture ready" })
             XCTAssertEqual(model.listener, .starting)
-            if switchSource { model.selectSource(.mac) } else { model.stopListening() }
+            if requested.isEmpty {
+                model.stopListening()
+            } else {
+                for source in requested {
+                    model.selectSource(source)
+                    XCTAssertEqual(model.selectedSource, source)
+                }
+            }
             model.handle(.started(observing: 0))
             model.handle(.status(observing: 1, sent: 99, skipped: 0))
             for _ in 0..<100 where model.listener != .stopped {
                 try await Task.sleep(for: .milliseconds(20))
             }
             XCTAssertEqual(model.listener, .stopped)
-            XCTAssertEqual(model.source, switchSource ? .mac : .photon)
+            XCTAssertEqual(model.source, requested.last ?? .photon)
             XCTAssertEqual(model.sent, 0)
             XCTAssertFalse(defaults.bool(forKey: "photonWasListening"))
+        }
+    }
+
+    @MainActor
+    func testOnlyAHealthyPhotonListenerResumesAfterQuitting() async throws {
+        for quitWhileHealthy in [false, true] {
+            let suite = "ClaudeMemMessagesTests-" + UUID().uuidString
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let marker = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: marker) }
+            defaults.set("photon", forKey: "messageSource")
+            let model = AppModel(defaults: defaults)
+            model.workerReachable = true
+            model.photonConfigured = true
+            let program = #"""
+            echo '{"type":"started"}'
+            while [ ! -f "$1" ]; do sleep 0.02; done
+            exit 23
+            """#
+            model.launch = CommandLaunch(executable: "/bin/sh", prefix: ["-c", program, "fixture", marker.path])
+            defer { model.shutdown() }
+            model.startListening()
+            for _ in 0..<100 where model.listener == .starting { try await Task.sleep(for: .milliseconds(20)) }
+            XCTAssertTrue(defaults.bool(forKey: "photonWasListening"))
+            if quitWhileHealthy {
+                model.shutdown()
+            }
+            try Data().write(to: marker)
+            if !quitWhileHealthy {
+                for _ in 0..<100 where model.listener == .listening(observing: 0) { try await Task.sleep(for: .milliseconds(20)) }
+                if case .failed = model.listener {} else { XCTFail("Expected a failed Photon listener") }
+            }
+            XCTAssertEqual(defaults.bool(forKey: "photonWasListening"), quitWhileHealthy)
         }
     }
 

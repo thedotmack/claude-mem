@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { SHARED_WORK_MAX_VALUE_BYTES } from './shared-records.mjs';
+import { hasVerifiedReviewCardDisclosure, SHARED_WORK_MAX_VALUE_BYTES } from './shared-records.mjs';
 import {
   REVIEW_STACK_IMAGE_BYTES, REVIEW_STACK_IMPORT_LIMIT, REVIEW_STACK_VERDICTS, reviewStackFocusKey,
   type ReviewStackAction, type ReviewStackImportCard,
@@ -74,7 +74,7 @@ export function parseImport(input: unknown): ReviewStackImportCard[] {
   for (const card of result.data.cards) if (card.imageData) imageParts(card.imageData);
   return result.data.cards;
 }
-export const storedCard = z.strictObject({
+const cardFields = z.strictObject({
   // Word counts guide authored copy. A recipient's redaction marker can replace
   // one word with two without changing the identity of a previously valid card.
   ...metadata, focus: focus.or(redactedCopy()), title: metadata.title.or(redactedCopy()),
@@ -82,8 +82,8 @@ export const storedCard = z.strictObject({
   focusId: focusId.optional(), contentId: digest, createdAt: time, excerptParts: safeInt.max(MAX_EXCERPT_PARTS),
   imageParts: safeInt.max(Math.ceil(4 * Math.ceil(REVIEW_STACK_IMAGE_BYTES / 3) / IMAGE_CHUNK)),
   imageType: z.enum(imageTypes).nullable(), imageHash: digest.nullable(),
-}).refine(c => (c.imageType === null) === (c.imageParts === 0) && (c.imageHash === null) === (c.imageParts === 0)
-  && Boolean(c.source || c.preview || c.excerptParts || c.imageParts));
+}).refine(c => (c.imageType === null) === (c.imageParts === 0) && (c.imageHash === null) === (c.imageParts === 0));
+export const storedCard = cardFields.refine(c => Boolean(c.source || c.preview || c.excerptParts || c.imageParts));
 export type StoredCard = z.infer<typeof storedCard>;
 function redactedCopy() {
   return text(SHARED_WORK_MAX_VALUE_BYTES).refine(s => /<redacted type='[^']+'\/>/u.test(s));
@@ -124,8 +124,9 @@ export function isReviewStackValue(kind: string, key: string, value: unknown, de
     case 'stack-card': {
       if (!cardIdPattern.test(key)) return false;
       if (deleted) return true;
-      const data = storedCard.safeParse(value);
-      return data.success && cardId(data.data.key) === key;
+      const localDisclosure = hasVerifiedReviewCardDisclosure(value, key);
+      const data = (localDisclosure ? cardFields : storedCard).safeParse(value);
+      return data.success && (cardId(data.data.key) === key || (localDisclosure && data.data.key === key));
     }
     case 'stack-part': {
       const match = partKey.exec(key);

@@ -11,6 +11,7 @@ export function sharedRecordKey(kind: string, key: string): string;
 export function sharedIdentity(kind: string, key: string): string;
 export function sharedWriter(value: string): string;
 export function sharedValueHash(kind: string, key: string, value: unknown, deleted?: boolean): string;
+export function hasVerifiedReviewCardDisclosure(value: unknown, key: string): boolean;
 export interface SharedEntryFields {
   version: 1; record: 'entry'; batch: string; writer: string; kind: string; key: string;
   revision: string; base: string | null; deleted: boolean; payload: string; hash: string;

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { canonicalJson, compareCanonicalDecimals, incrementCanonicalDecimal, sha256Base64Url } from '../sync/CanonicalContent.js';
 import { SHARED_WORK_MAX_UPDATES, sharedIdentity, sharedWriter, sharedValueHash, sharedEntryRef,
   sharedRecordKey, createSharedEntry, createSharedBatch, parseSharedRow, isSharedWorkList, sharedWorkListSql } from './shared-records.mjs';
-import { assertSharedMetadataRedactionSafe, readSharedRedactionReceipts, redactSharedValue } from './shared-redaction.mjs';
+import { assertSharedMetadataRedactionSafe, readSharedRedactionReceipts, redactSharedValue, sharedReviewCardRepairClock } from './shared-redaction.mjs';
 import { isReviewStackImagePart } from './review-stack-schema.js';
 import { isReviewStackKind } from '../../shared/review-stack.js';
 import { logger } from '../../utils/logger.js';
@@ -149,6 +149,12 @@ function scanShared(db, { deviceId, validateValue, includeHistory = false, revie
     }
     try {
       const summaries = summariesFor(db, deviceId, validateValue);
+      const repairClock = sharedReviewCardRepairClock(db);
+      if ((summaries.repairClock ?? '') !== repairClock) {
+        summaries.rows.clear();
+        summaries.values.clear();
+        summaries.repairClock = repairClock;
+      }
       const context = { db, deviceId, validateValue, reviewStack, reread: id => byId.get(id) };
       const seen = new Map();
       const items = [];
@@ -357,7 +363,9 @@ export function workStateRowsRevision(db, { where = '1', syncRev = true } = {}) 
   const statement = db.prepare(`SELECT COUNT(*) AS count, MAX(id) AS id${revisionSums} FROM work_state_entries WHERE ${where}`);
   try {
     const row = statement.get();
-    return `${row.count}:${row.id ?? 0}:${row.high ?? 0}:${row.low ?? 0}`;
+    const stamp = `${row.count}:${row.id ?? 0}:${row.high ?? 0}:${row.low ?? 0}`;
+    const repairClock = sharedReviewCardRepairClock(db);
+    return repairClock ? stamp + ':' + repairClock : stamp;
   } finally { statement.finalize(); }
 }
 

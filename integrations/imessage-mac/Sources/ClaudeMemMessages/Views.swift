@@ -7,7 +7,7 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Message source", selection: Binding(get: { model.source }, set: model.selectSource)) {
+            Picker("Message source", selection: Binding(get: { model.selectedSource }, set: model.selectSource)) {
                 ForEach(MessageSource.allCases, id: \.self) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)

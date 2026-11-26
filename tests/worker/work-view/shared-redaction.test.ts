@@ -8,10 +8,10 @@ import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
 import { _resetRedactionConfigCache, redactJsonStrings } from '../../../src/utils/redaction.js';
 import { SyncApply } from '../../../src/services/sync/SyncApply.js';
-import { buildContentOperation, canonicalJson } from '../../../src/services/sync/CanonicalContent.js';
+import { buildContentOperation, canonicalJson, sha256Base64Url } from '../../../src/services/sync/CanonicalContent.js';
 import { decodeChanges } from '../../../src/services/sync/SyncClient.js';
-import { publishSharedRecords, readSharedRecords } from '../../../src/services/work-view/shared-record-store.mjs';
-import { createSharedBatch, createSharedEntry, sharedRecordKey, sharedValueHash } from '../../../src/services/work-view/shared-records.mjs';
+import { createSharedRecordReader, publishSharedRecords, readSharedRecords } from '../../../src/services/work-view/shared-record-store.mjs';
+import { createSharedBatch, createSharedEntry, sharedEntryRef, sharedRecordKey, sharedValueHash } from '../../../src/services/work-view/shared-records.mjs';
 import { isSharedProjectionValue } from '../../../src/services/work-view/shared-projection.mjs';
 import { foldCloudBatch } from '../../../src/services/work-view/cloud-renderer.js';
 import { prepareReviewStackWrite, renderReviewStack, reviewStackPage, ReviewStackError } from '../../../src/services/work-view/review-stack.js';
@@ -161,6 +161,108 @@ test('a stricter receiving device keeps two masked scopes distinct and undo leav
   const restored = renderReviewStack(read(b).records.values(), {redactText:redactSharedValue});
   expect(restored.reviews.map(review => review.cardId)).toEqual([second.id]);
   expect(restored.groups).toMatchObject([{id:nextGroupId,count:1,focusId:second.focusId}]);
+});
+
+test('receiver redaction preserves a verified link-only card and its unaffected batch sibling', () => {
+  const a = fixture('author'), b = fixture('receiver');
+  policy(false);
+  const cards = ['PRIVATE_KEY','unaffected'].map((key, i) => ({
+    key, focus:i ? 'Design' : 'PRIVATE_FOCUS', title:'Review the artwork',
+    what:'The first draft shows original cover artwork for our magazine.',
+    context:'We review the cover illustrations together ahead of final publication.',
+    source:i ? 'https://example.org/safe' : 'https://example.org/PRIVATE_URL',
+    ...(i ? {} : {preview:'https://preview.example.org/PRIVATE_URL'}),
+  }));
+  const {updates} = prepareReviewStackWrite([], 'import', {cards}, randomUUID(), 5);
+  publishSharedRecords(a.db, {deviceId:a.deviceId,project:'Review',updates,validateValue:isSharedProjectionValue});
+  const plain = renderReviewStack(read(a).records.values());
+  const protectedCard = plain.cards.find(c => c.key === 'PRIVATE_KEY')!;
+  policy(true, ['PRIVATE_(KEY|URL|FOCUS)']);
+  expect(apply(b, wires(a)).quarantined).toBe(0);
+  const state = read(b);
+  expect(state.diagnostics).toMatchObject({invalid:0,pending:0});
+  const safe = renderReviewStack(state.records.values());
+  expect(safe.cards).toHaveLength(2);
+  const masked = safe.cards.find(c => c.id === protectedCard.id)!;
+  expect(masked).toMatchObject({key:protectedCard.id,focusId:protectedCard.focusId});
+  expect(masked.source).toBeUndefined();
+  expect(masked.preview).toBeUndefined();
+  expect(safe.cards.find(c => c.key === 'unaffected')?.source).toBe(cards[1].source);
+  expect(serializedDatabase(b)).not.toMatch(/PRIVATE_(KEY|URL|FOCUS)/);
+  policy(false);
+  expect(renderReviewStack(read(b).records.values())).toEqual(safe);
+  const safeHead = state.records.get(sharedRecordKey('stack-card', protectedCard.id))!;
+  expect(safeHead.hash).toBe(read(a).records.get(sharedRecordKey('stack-card',protectedCard.id))!.hash);
+  expect(safeHead.valueHash).not.toBe(safeHead.hash);
+  // A network sender cannot manufacture receiver-only evidence by copying safe fields.
+  expect(isSharedProjectionValue('stack-card', protectedCard.id, JSON.parse(JSON.stringify(safeHead.value)))).toBe(false);
+});
+
+test('a legacy card receipt recovers on authenticated same-revision replay without restoring any protected value', () => {
+  const a = fixture('author'), b = fixture('receiver');
+  policy(false);
+  const cards = ['PRIVATE_KEY','unaffected'].map(key => ({
+    key, focus:'Art', title:'Review the artwork',
+    what:'The first draft shows original cover artwork for our magazine.',
+    context:'We review the cover illustrations together ahead of final publication.',
+    source:'https://example.org/PRIVATE_URL', excerpt:'Original',
+  }));
+  const {updates} = prepareReviewStackWrite([], 'import', {cards}, randomUUID(), 5);
+  publishSharedRecords(a.db,{deviceId:a.deviceId,project:'Review',updates,validateValue:isSharedProjectionValue});
+  const operations = wires(a);
+  policy(true, ['PRIVATE_(KEY|URL)']);
+  expect(apply(b, operations).quarantined).toBe(0);
+  for (const row of rows(a)) {
+    const fields = JSON.parse(row.fields);
+    if (fields.kind !== 'stack-card') continue;
+    // Recreate the exact old generic receipt and its attested scrubbed fields.
+    const legacyFields = {...fields, payload:canonicalJson(redactSharedValue(JSON.parse(fields.payload)))};
+    const stored = canonicalJson(legacyFields);
+    const target = b.db.query('SELECT id FROM work_state_entries WHERE origin_device_id=? AND origin_local_id=?')
+      .get(a.deviceId,String(row.id)) as {id:number};
+    b.db.query('UPDATE work_state_entries SET fields=? WHERE id=?').run(stored,target.id);
+    b.db.query('UPDATE local_shared_work_redactions SET stored_fields_hash=?,original_ref_json=? WHERE row_id=?')
+      .run(sha256Base64Url(stored),canonicalJson(sharedEntryRef(fields)),target.id);
+  }
+  const reader = createSharedRecordReader(b.db,{deviceId:b.deviceId,validateValue:isSharedProjectionValue});
+  expect(reader().diagnostics.invalid).toBe(1);
+  policy(false);
+  const recovered = apply(b,operations,operations.length + 1);
+  expect(recovered.quarantined).toBe(0);
+  expect(recovered.applied).toBe(2);
+  const reopened = reader(); // unchanged entity revisions must still invalidate the previously cached rejection
+  expect(reopened.diagnostics).toMatchObject({invalid:0,pending:0});
+  const deck = renderReviewStack(reopened.records.values());
+  expect(deck.cards).toHaveLength(2);
+  expect(deck.cards.filter(c => c.key === c.id)).toHaveLength(1);
+  expect(deck.cards.every(c => c.source === undefined)).toBe(true);
+  expect(serializedDatabase(b)).not.toMatch(/PRIVATE_(KEY|URL)/);
+  expect(apply(b,operations,2 * operations.length + 1).applied).toBe(0);
+});
+
+test.each(['wrong-key','opaque-key','invalid-url'])('rejects the original %s before recipient redaction can mask the defect', flaw => {
+  const a = fixture('author'), b = fixture('receiver');
+  policy(false);
+  const cards = ['original','sibling'].map(key => ({
+    key,focus:'Art',title:'Review the artwork',source:'https://example.org/original',
+    what:'The first draft shows original cover artwork for our magazine.',
+    context:'We review the cover illustrations together ahead of final publication.',
+  }));
+  const prepared = prepareReviewStackWrite([], 'import', {cards}, randomUUID(), 10);
+  const id = randomUUID(), author = a.deviceId;
+  const entries = prepared.updates.map(({kind,key,value}, i) => {
+    const bad = flaw === 'invalid-url' ? {source:'javascript:PRIVATE_TOKEN'} : {key:flaw === 'opaque-key' ? key : 'PRIVATE_TOKEN'};
+    return createSharedEntry({kind,key,value:i === 0 ? {...value as object,...bad} : value,writer:author,batchId:id,revision:'1'});
+  });
+  const insert = a.db.query('INSERT INTO work_state_entries(project,list_name,fields,created_at,created_at_epoch) VALUES(?,?,?,?,?)');
+  for (const row of createSharedBatch(entries,{batchId:id,writer:author})) insert.run('Review',row.listName,canonicalJson(row.fields),'2026-11-01T00:00:00Z',1793491200000);
+  const cloud = foldCloudBatch(rows(a).map(row => ({...row,origin_device_id:author,origin_local_id:String(row.id)})));
+  expect(cloud.invalid).toBe(1);
+  expect(cloud.members).toEqual([]);
+  policy(true,['PRIVATE_TOKEN']);
+  expect(apply(b, wires(a)).quarantined).toBe(1);
+  expect(renderReviewStack(read(b).records.values()).cards).toEqual([]);
+  expect(serializedDatabase(b)).not.toContain('PRIVATE_TOKEN');
 });
 
 test('origin redaction precedes payload and manifest hashes', () => {
