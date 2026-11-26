@@ -300,9 +300,8 @@ export const localSetupSource: SetupSource = {
     // The device code of the pairing the open checkout waits on. The setup state only says one waits (any localhost
     // page can read it), so the code comes from the guarded route; only the newest read counts.
     let deviceCodeRevision = 0
-    const DEVICE_CODE_READ_TRIES = 5
     const DEVICE_CODE_RETRY_MS = 2_000
-    const readDeviceCode = async (attempt = 1, revision = ++deviceCodeRevision) => {
+    const readDeviceCode = async (revision = ++deviceCodeRevision) => {
       try {
         const { userCode, expiresAt } = await workerJson<{ userCode: string; expiresAt: string | null }>('/api/setup/checkout/device-code')
         if (closed || revision !== deviceCodeRevision || data.checkout?.state !== 'waiting') return
@@ -314,10 +313,11 @@ export const localSetupSource: SetupSource = {
           publish({ checkout: { ...data.checkout, userCode: null, expiresAt: null } })
           return
         }
-        // Frames only come on state changes, so a page still without a code tries a
-        // few more times while the checkout waits; a newer read or a new frame cancels these tries.
-        if (data.checkout.userCode || attempt >= DEVICE_CODE_READ_TRIES) return
-        setTimeout(() => { void readDeviceCode(attempt + 1, revision) }, DEVICE_CODE_RETRY_MS)
+        // Frames only come on state changes, so a page still without a code asks again after each failed read. The
+        // tries have no count cap: an answer (a code or a 404), a newer read or frame, the checkout no longer
+        // waiting, or the page closing ends them (the checks above), and each try is one read of the local worker.
+        if (data.checkout.userCode) return
+        setTimeout(() => { void readDeviceCode(revision) }, DEVICE_CODE_RETRY_MS)
       }
     }
     const applyState = (state: WorkerSetupState) => {
