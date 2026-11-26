@@ -52,7 +52,7 @@ describe('the API agent talks to the selected provider', () => {
     const { calls } = fakeFetch([{ body: { choices: [{ message: { content: 'ok' } }] } }]);
     const opencode: ApiTarget = {
       provider: 'openai-compatible',
-      url: 'https://opencode.ai/zen/go/v1/chat/completions',
+      url: 'https://opencode.ai/inference/go/openai/v1/chat/completions',
       apiKey: 'sk-go-test',
       model: 'deepseek-v4.1-flash',
       sessionHeader: 'x-opencode-session',
@@ -80,7 +80,7 @@ describe('the API agent talks to the selected provider', () => {
     const { calls } = fakeFetch([{ body: { choices: [{ message: { content: 'ok' } }] } }]);
     const opencode: ApiTarget = {
       provider: 'openai-compatible',
-      url: 'https://opencode.ai/zen/go/v1/chat/completions',
+      url: 'https://opencode.ai/inference/go/openai/v1/chat/completions',
       apiKey: 'sk-go-test',
       model: 'deepseek-v4.1-flash',
       sessionHeader: 'x-opencode-session',
@@ -106,6 +106,22 @@ describe('the API agent talks to the selected provider', () => {
     await expect(askApiTarget(target(), 'the question')).rejects.toThrow(/finish reason: length/);
     expect(calls.length).toBe(1);
     expect(calls[0].body.max_tokens).toBe(16_000);
+  });
+
+  it('a cut-off answer keeps its raw text on the error and says why raising the limit is not the fix', async () => {
+    // #6432: the output that runs to the cap is degenerate (repetition, malformed JSON), at any limit —
+    // the same failure at 16k, 32k and 100k. The error must not read as "the answer was too big", and
+    // the raw text must ride on the error so the caller can keep it in failed-answers/ for diagnosis.
+    const partial = '{"groups": [{"title": "Cards", "conversations": [   ';
+    const { calls } = fakeFetch([{ body: { choices: [{ finish_reason: 'length', message: { content: partial } }] } }]);
+    const error = await askApiTarget(target(), 'the question').then(() => null, (caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/finish reason: length/);
+    expect((error as Error).message).toMatch(/degenerated/);
+    expect((error as Error).message).toMatch(/a larger limit will not help/);
+    expect((error as Error).message).toMatch(/raise CLAUDE_MEM_WORK_VIEW_MAX_OUTPUT_TOKENS/);
+    expect((error as { rawAnswer?: unknown }).rawAnswer).toBe(partial);
+    expect(calls.length).toBe(1);
   });
 
   it('turns off Bun\'s fetch idle timeout, so a long silent answer runs to the request deadline', async () => {
@@ -256,7 +272,7 @@ describe('the API target follows the selected provider', () => {
   it('carries the preset\'s OpenCode Go session header and reasoning body into the target', async () => {
     await withSettings({ CLAUDE_MEM_PROVIDER: 'openai-compatible', CLAUDE_MEM_OPENAI_COMPAT_PRESET: 'opencode-go', CLAUDE_MEM_OPENAI_COMPAT_API_KEY: 'sk-test', CLAUDE_MEM_OPENAI_COMPAT_MODEL: 'deepseek-v4.1-flash', CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT: 'xhigh' }, path => {
       const target = resolveApiTarget(path).target;
-      expect(target?.url).toBe('https://opencode.ai/zen/go/v1/chat/completions');
+      expect(target?.url).toBe('https://opencode.ai/inference/go/openai/v1/chat/completions');
       expect(target?.sessionHeader).toBe('x-opencode-session');
       expect(target?.reasoningOff).toBe('effort-none');
       expect(target?.reasoningEffort).toBe('xhigh');

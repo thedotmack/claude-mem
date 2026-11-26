@@ -60,8 +60,9 @@ describe('openai-compatible presets', () => {
   });
 
   it('marks local presets as not needing a key', () => {
-    for (const id of ['ollama', 'lmstudio', 'vllm']) {
+    for (const id of ['ollama', 'lmstudio', 'rapidmlx', 'vllm']) {
       expect(resolveOpenAICompatPreset(id).requiresApiKey).toBe(false);
+      expect(resolveOpenAICompatPreset(id).defaultModel).toBe('');
     }
   });
 
@@ -103,8 +104,8 @@ describe('resolveOpenAICompatConfig', () => {
     ['minimax-cn', 'https://api.minimaxi.com/v1', 'MiniMax-M3'],
     ['modelgo', 'https://api.modelgo.ai/v1', ''],
     ['obscurify-ai', 'https://obscurify.ai/v1', 'deepseek/deepseek-v4-flash'],
-    ['opencode-go', 'https://opencode.ai/zen/go/v1', 'kimi-k3'],
-    ['opencode-zen', 'https://opencode.ai/zen/v1', ''],
+    ['opencode-go', 'https://opencode.ai/inference/go/openai/v1', 'kimi-k3'],
+    ['opencode-zen', 'https://opencode.ai/inference/openai/v1', ''],
     ['opper', 'https://api.opper.ai/v3/compat', 'gpt-5.4-mini'],
     ['orcarouter', 'https://api.orcarouter.ai/v1', 'openai/gpt-4o-mini'],
     ['popnow', 'https://api.popnow.ai/v1', 'deepseek/v4-flash/chat'],
@@ -114,6 +115,7 @@ describe('resolveOpenAICompatConfig', () => {
     ['uberllm', 'https://api.uberllm.dev/v1', 'deepseek/deepseek-v4.1-flash'],
     ['worldrouter', 'https://inference-api.worldrouter.ai/v1', 'deepseek-v4-flash'],
     ['aigrow', 'https://aigrow.gg/v1', 'claude-haiku-5.5'],
+    ['straitly', 'https://api.straitly.ai/v1', 'deepseek/deepseek-v4-1-flash-1017'],
   ])('resolves %s with its hosted endpoint and default model', (id, baseUrl, defaultModel) => {
     process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = id;
     process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'fixture-preset-key';
@@ -346,14 +348,14 @@ describe('isOpenAICompatAvailable', () => {
     expect(isOpenAICompatAvailable()).toBe(false);
   });
 
-  it('is available for a local preset with no key, once a model is set', () => {
-    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'ollama';
+  it.each(['ollama', 'lmstudio', 'rapidmlx', 'vllm'])('is available for local preset %s with no key, once a model is set', (id) => {
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = id;
     process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'qwen3:8b';
     expect(isOpenAICompatAvailable()).toBe(true);
   });
 
-  it('is unavailable for a local preset with no model — a model is not guessable', () => {
-    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'ollama';
+  it.each(['ollama', 'lmstudio', 'rapidmlx', 'vllm'])('is unavailable for local preset %s with no model — a model is not guessable', (id) => {
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = id;
     expect(isOpenAICompatAvailable()).toBe(false);
   });
 

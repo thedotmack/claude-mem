@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, linkSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -126,3 +126,76 @@ describe('writeTrimmedMarketplaceManifest', () => {
     expect(() => writeTrimmedMarketplaceManifest(marketplaceDir)).not.toThrow();
   });
 });
+
+describe('marketplace writes replace the file instead of rewriting it in place', () => {
+  // A crash, a killed install or a concurrent reader must never see a half-written
+  // manifest. The shared atomic helper writes a temp file and renames it over the
+  // destination, so the destination becomes a new file; a plain writeFileSync keeps
+  // the same inode and half-updates every other link to it. The witness file below
+  // is that other link, so it shows the difference the crash-safety promise rests on.
+  let workDir: string;
+  let marketplaceDir: string;
+  let packageRoot: string;
+
+  beforeEach(() => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'cmem-atomic-'));
+    marketplaceDir = path.join(workDir, 'marketplace');
+    packageRoot = path.join(workDir, 'pkg');
+    mkdirSync(path.join(marketplaceDir, '.claude-plugin'), { recursive: true });
+    mkdirSync(path.join(marketplaceDir, 'plugin'), { recursive: true });
+    mkdirSync(packageRoot, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  /** Hard-link a witness onto `destination`, or report that this filesystem has no links. */
+  function linkWitness(destination: string, contents: string): string | null {
+    const witness = path.join(workDir, 'witness.json');
+    writeFileSync(witness, contents);
+    try {
+      linkSync(witness, destination);
+    } catch {
+      return null;
+    }
+    return witness;
+  }
+
+  it('replaces the marketplace manifest instead of rewriting the linked file', () => {
+    const original = JSON.stringify({
+      name: 'thedotmack',
+      plugins: [{ name: 'claude-mem', source: './plugin' }, { name: 'cmem-pro', source: './cowork' }],
+    });
+    const manifestPath = path.join(marketplaceDir, '.claude-plugin', 'marketplace.json');
+    const witness = linkWitness(manifestPath, original);
+    if (witness === null) return; // A filesystem without hard links cannot show the difference.
+
+    writeTrimmedMarketplaceManifest(marketplaceDir);
+
+    expect(pluginNamesOf(manifestPath)).toEqual(['claude-mem']);
+    expect(readFileSync(witness, 'utf-8')).toBe(original);
+  });
+
+  it('replaces the marketplace package.json instead of rewriting the linked file', () => {
+    const original = '{\n  "name": "stale-marketplace"\n}\n';
+    writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
+      name: 'claude-mem',
+      dependencies: { 'better-auth': '^1.6.16' },
+      devDependencies: { esbuild: '^0.28.0' },
+    }));
+    const destination = path.join(marketplaceDir, 'package.json');
+    const witness = linkWitness(destination, original);
+    if (witness === null) return;
+
+    writeTrimmedMarketplacePackageJson(packageRoot, marketplaceDir);
+
+    expect(JSON.parse(readFileSync(destination, 'utf-8')).devDependencies).toBeUndefined();
+    expect(readFileSync(witness, 'utf-8')).toBe(original);
+  });
+});
+
+/** The plugin names a marketplace manifest currently lists. */
+function pluginNamesOf(manifestPath: string): string[] {
+  return JSON.parse(readFileSync(manifestPath, 'utf-8')).plugins.map((plugin: { name: string }) => plugin.name);
+}

@@ -1,5 +1,6 @@
-import { ArrowLeftIcon, ExternalLinkIcon, InfoIcon } from 'lucide-react'
-import type { ComponentProps, ReactNode } from 'react'
+import { ArrowLeftIcon, CopyIcon, ExternalLinkIcon, InfoIcon } from 'lucide-react'
+import { useState, type ComponentProps, type ReactNode } from 'react'
+import { SaveButton } from '@/components/save-button'
 import { Alert, AlertAction, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/components/ui/collapsible'
@@ -171,4 +172,51 @@ export function SetupError({ title, check, failure, detail = failure?.detail, ac
 export function CutNotice({ id, max }: { id: string; max: number }) {
   const { t } = useI18n()
   return <p id={id} className="setup-hint" role="status"><InfoIcon aria-hidden="true" />{interpolate(t('Only the first {count} characters are kept.'), { count: max.toLocaleString('en-US') })}</p>
+}
+
+/**
+ * Text to copy with its copy button (Finish Setup's MCP URL, Checkout's device code), and a status line under them that
+ * says how the copy went. The button says what happens, a copy: Copying…, Copied, Not copied; nothing says Saving or
+ * Saved (nothing is saved). The copy resolves false when it failed, so the button shows no check and the status line
+ * says what to do. The caller words each part, so the catalog test sees every literal; `children` sit between the row
+ * and the status line.
+ */
+export function CopyText({ text, label, buttonLabel, copiedStatus, notCopiedStatus, className, valueClassName, statusClassName, children }: {
+  text: string
+  /** The button's words ("Copy URL"). */
+  label: string
+  /** What a screen reader hears for the button, when its words alone do not say what is copied. */
+  buttonLabel?: string
+  copiedStatus: string
+  /** What to do when the clipboard refused ("Select and copy the URL above."). */
+  notCopiedStatus: string
+  /** The row that holds the text and its button. */
+  className: string
+  valueClassName?: string
+  statusClassName: string
+  children?: ReactNode
+}) {
+  const { t } = useI18n()
+  const [copied, setCopied] = useState<boolean | null>(null)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      return true
+    } catch {
+      setCopied(false)
+      return false
+    }
+  }
+  return (
+    <>
+      <div className={className}>
+        <code className={valueClassName}>{text}</code>
+        <SaveButton type="button" className="secondary" onClick={copy} aria-label={buttonLabel}
+          icon={<CopyIcon aria-hidden="true" />} savingLabel={t('Copying…')} savedLabel={t('Copied')} notSavedLabel={t('Not copied')}>{label}</SaveButton>
+      </div>
+      {children}
+      <p className={statusClassName} role="status" aria-live="polite">{copied === null ? '' : copied ? copiedStatus : notCopiedStatus}</p>
+    </>
+  )
 }
