@@ -1,1 +1,0 @@
-var e={en:`English`,"zh-CN":`简体中文`,ko:`한국어`,tr:`Türkçe`,fr:`Français`,"pt-BR":`Português (Brasil)`},t=Object.keys(e),n=[`claude`,`mem`,`ui`,`language`].join(`-`);function r(e){return t.find(t=>t===e)??`en`}function i(e,t){return e.replace(/\{(\w+)\}/g,(e,n)=>Object.prototype.hasOwnProperty.call(t,n)?String(t[n]):e)}export{r as a,i,t as n,e as r,n as t};
