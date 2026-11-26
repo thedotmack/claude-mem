@@ -92,6 +92,10 @@ export interface SetupV2Options {
 
 const RESUBSCRIBE_DELAY_MS = 10_000;
 
+// The prompt hook's model read is best-effort. Bound it to the worker handoff
+// deadline so a beta `session.get()` that never settles cannot hold a prompt.
+const OBSERVER_MODEL_READ_TIMEOUT_MS = 250;
+
 // Bounds the per-session reply cache on a long-lived server, as core.ts
 // bounds its session maps.
 const MAX_TRACKED_SESSIONS = 1000;
@@ -128,6 +132,15 @@ export interface OpenCodePluginContextV2 extends CoreContext {
       callback: (event: E) => Promise<void> | void,
     ) => Promise<V2Registration>;
     context?: (input: { sessionID: string }) => Promise<readonly unknown[]>;
+    /**
+     * V2 exposes the session's selected model here, rather than on a
+     * chat-message input. Only `id` is endpoint-ready; `providerID/id` is a
+     * display key, not an inference endpoint model name, so it must never be
+     * forwarded as one. The read is best-effort (see the `prompt` hook).
+     */
+    get?: (input: { sessionID: string }) => Promise<{
+      model?: { providerID?: string; id?: string };
+    } | undefined>;
   };
   event?: {
     subscribe?: (options?: { signal?: AbortSignal }) => AsyncIterable<V2BusEvent>;
@@ -164,6 +177,41 @@ function waitUnlessAborted(milliseconds: number, signal: AbortSignal): Promise<v
     (timer as { unref?: () => void }).unref?.();
     signal.addEventListener("abort", done, { once: true });
   });
+}
+
+/**
+ * Best-effort, time-bounded read of the prompt's own selected model. A missing
+ * `get`, a failed read, or one that never settles all degrade to `undefined`
+ * (the worker's global model fallback) without rejecting or stalling the prompt.
+ */
+async function readObserverModel(
+  sessionDomain: OpenCodePluginContextV2["session"],
+  sessionID: string,
+): Promise<string | undefined> {
+  const get = sessionDomain?.get;
+  if (!get) return undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // Resolve instead of reject on timeout: the race stays settled even if the
+  // real read finishes later, so no rejection goes unhandled.
+  const deadline = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), OBSERVER_MODEL_READ_TIMEOUT_MS);
+    // A pending read must not keep the host process alive.
+    (timer as { unref?: () => void }).unref?.();
+  });
+  try {
+    const session = await Promise.race([
+      // Member call preserves the host's `this` binding.
+      get.call(sessionDomain, { sessionID }),
+      deadline,
+    ]);
+    const modelID = session?.model?.id;
+    return typeof modelID === "string" && modelID.trim() ? modelID : undefined;
+  } catch {
+    // Model capture is best-effort; never reject a prompt for it.
+    return undefined;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 /**
@@ -321,7 +369,14 @@ export async function setupV2(
         const promptText = event?.prompt?.text?.trim();
         if (!event?.sessionID || !promptText) return;
         trackSession(event.sessionID);
-        await core.captureUserPrompt(event.sessionID, promptText);
+        // Read the selected model from this prompt's own session, before the
+        // session-init POST runs. The V2 API is beta: a missing `get`, a failed
+        // read, or one that never settles must not fail or delay the prompt.
+        // Forward `model.id` only as a non-empty string and let core omit the
+        // key (the worker's global fallback applies). Never send
+        // `providerID/model.id`.
+        const observerModel = await readObserverModel(sessionDomain, event.sessionID);
+        await core.captureUserPrompt(event.sessionID, promptText, observerModel);
       }),
     );
 

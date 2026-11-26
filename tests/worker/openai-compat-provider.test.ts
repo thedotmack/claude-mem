@@ -17,7 +17,7 @@ import { SettingsRoutes } from '../../src/services/worker/http/routes/SettingsRo
 import { SessionRoutes } from '../../src/services/worker/http/routes/SessionRoutes.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { logger } from '../../src/utils/logger.js';
-import type { ConversationMessage } from '../../src/services/worker-types.js';
+import type { ActiveSession, ConversationMessage } from '../../src/services/worker-types.js';
 
 /**
  * As in provider-dispatch.test.ts: SettingsDefaultsManager applies process.env
@@ -31,6 +31,7 @@ const ENV_KEYS = [
   'CLAUDE_MEM_OPENAI_COMPAT_API_KEYS',
   'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL',
   'CLAUDE_MEM_OPENAI_COMPAT_MODEL',
+  'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION',
   'CLAUDE_MEM_OPENROUTER_API_KEY',
   'CLAUDE_MEM_GEMINI_API_KEY',
 ] as const;
@@ -233,6 +234,83 @@ describe('resolveOpenAICompatConfig', () => {
   });
 });
 
+/**
+ * Task 5: the observer model is resolved from the live session, not just from
+ * the global setting. Task 4 parked the endpoint-ready id on the session;
+ * provider resolution must apply it last (session > setting > preset).
+ */
+describe('observer model resolution from the current session', () => {
+  let savedEnv: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    savedEnv = {};
+    for (const key of ENV_KEYS) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+  });
+
+  const resolvedModel = (session: ActiveSession) =>
+    (new OpenAICompatProvider({} as never, {} as never) as unknown as {
+      configForSession(s: ActiveSession): { model: string };
+    }).configForSession(session);
+
+  it('observer-model-wins: with the opt-in on, the session id beats CLAUDE_MEM_OPENAI_COMPAT_MODEL', () => {
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'nvidia-nim';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'fixture-key';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'configured-model';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION = 'true';
+
+    expect(resolvedModel({ observerModel: 'session-model' } as ActiveSession).model).toBe('session-model');
+  });
+
+  it('observer-model-fallback: with the opt-in on, the setting applies when the session has no id, then the preset', () => {
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'nvidia-nim';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'fixture-key';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'configured-model';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION = 'true';
+    expect(resolvedModel({} as ActiveSession).model).toBe('configured-model');
+
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = '';
+    expect(resolvedModel({} as ActiveSession).model).toBe(resolveOpenAICompatPreset('nvidia-nim').defaultModel);
+  });
+
+  it('session-model-opt-in-off: with the opt-in off, the global model wins even when the session has an id', () => {
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'nvidia-nim';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'fixture-key';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'configured-model';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION = 'false';
+
+    expect(resolvedModel({ observerModel: 'session-model' } as ActiveSession).model).toBe('configured-model');
+  });
+
+  it('session-model-opt-in-on: the session id wins only when the exact gate value is true', () => {
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'nvidia-nim';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'fixture-key';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'configured-model';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION = 'true';
+
+    expect(resolvedModel({ observerModel: 'session-model' } as ActiveSession).model).toBe('session-model');
+  });
+
+  it('blank-session-model-fallback: a whitespace-only session id keeps the configured model', () => {
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'nvidia-nim';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'fixture-key';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'configured-model';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION = 'true';
+
+    expect(resolvedModel({ observerModel: '   ' } as ActiveSession).model).toBe('configured-model');
+    expect(resolvedModel({ observerModel: '\t\n' } as ActiveSession).model).toBe('configured-model');
+  });
+});
+
 describe('isOpenAICompatAvailable', () => {
   let savedEnv: Record<string, string | undefined>;
 
@@ -306,6 +384,51 @@ describe('isOpenAICompatAvailable', () => {
     process.env.CLAUDE_MEM_OPENROUTER_API_KEY = '';
     process.env.CLAUDE_MEM_GEMINI_API_KEY = '';
     expect(getSelectedProvider()).toBe('claude');
+  });
+
+  /**
+   * A `custom` endpoint has no default model, so a host-selected observer id is
+   * the only model available. Dispatch must not fall through to Claude when the
+   * operator opted into that id — but must stay strictly global-only otherwise.
+   */
+  const pinBareCustomEndpoint = (gate: string) => {
+    process.env.CLAUDE_MEM_PROVIDER = 'openai-compatible';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'custom';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL = 'https://custom.example.com/v1';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'fixture-key';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEYS = '';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = '';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION = gate;
+    process.env.CLAUDE_MEM_OPENROUTER_API_KEY = '';
+    process.env.CLAUDE_MEM_GEMINI_API_KEY = '';
+  };
+
+  it('a session model satisfies a bare custom endpoint when the opt-in is on', () => {
+    pinBareCustomEndpoint('true');
+    expect(isOpenAICompatAvailable(undefined, 'session-model')).toBe(true);
+    expect(getSelectedProvider(undefined, 'session-model')).toBe('openai-compatible');
+  });
+
+  it('stays unavailable and dispatches to claude without an id, even with the opt-in on', () => {
+    pinBareCustomEndpoint('true');
+    expect(isOpenAICompatAvailable()).toBe(false);
+    expect(isOpenAICompatAvailable(undefined, '   ')).toBe(false);
+    expect(getSelectedProvider()).toBe('claude');
+  });
+
+  it('ignores a session model and dispatches to claude when the opt-in is off', () => {
+    pinBareCustomEndpoint('false');
+    expect(isOpenAICompatAvailable(undefined, 'session-model')).toBe(false);
+    expect(getSelectedProvider(undefined, 'session-model')).toBe('claude');
+  });
+
+  it('still needs the endpoint and a key when a session model is present', () => {
+    pinBareCustomEndpoint('true');
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL = '';
+    expect(isOpenAICompatAvailable(undefined, 'session-model')).toBe(false);
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL = 'https://custom.example.com/v1';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = '';
+    expect(isOpenAICompatAvailable(undefined, 'session-model')).toBe(false);
   });
 });
 

@@ -535,6 +535,27 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     return resolveOpenAICompatConfig(paths.settings());
   }
 
+  /**
+   * The host's endpoint-ready observer model (Task 4) wins over the global
+   * setting/preset for this session's observer, but only when the operator has
+   * opted in with CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION='true'. With the
+   * gate off (the default) the original resolution stands: global setting, then
+   * preset. This is a worker-side decision — the plugin keeps transporting the
+   * observerModel field either way. Applied last and only to the model field;
+   * every other config field stays as the global config resolved it. The second
+   * parameter is reserved for #6485.
+   */
+  protected override configForSession(session: ActiveSession, host?: { cwd?: string }): OpenAICompatConfig {
+    void host;
+    const config = this.getConfig();
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    if (settings.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION !== 'true') return config;
+    // Defense in depth: the init schema already rejects a blank id, but any
+    // other writer must not replace a valid configured model with whitespace.
+    const sessionModel = session.observerModel?.trim();
+    return { ...config, model: sessionModel || config.model };
+  }
+
   /** Extend this turn with already-queued events; normal confirm/reset covers every claim. */
   protected override observationTurnPrompt(session: ActiveSession, first: PendingMessageWithId, prompt: ObservationPromptParts): string {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
@@ -863,10 +884,24 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
  * a local server that does not need one. Availability is deliberately strict:
  * dispatch falls through to Claude when it is false, and a half-configured
  * endpoint should fall through rather than fail every observation.
+ *
+ * A session-selected model can supply the missing model only when the operator
+ * opted in with CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION='true'. Without the
+ * gate or without an id, the strict global-only rule stands. The endpoint and
+ * key requirements are never relaxed by a session id.
  */
-export function isOpenAICompatAvailable(settingsPath: string = paths.settings()): boolean {
+export function isOpenAICompatAvailable(
+  settingsPath: string = paths.settings(),
+  sessionModel?: string,
+): boolean {
   const config = resolveOpenAICompatConfig(settingsPath);
-  if (!config.apiUrl || !config.model) return false;
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  const fromSession = settings.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION === 'true'
+    && typeof sessionModel === 'string'
+    ? sessionModel.trim()
+    : '';
+  const model = fromSession || config.model;
+  if (!config.apiUrl || !model) return false;
   if (!config.requiresApiKey) return true;
   return config.apiKeys.length > 0;
 }

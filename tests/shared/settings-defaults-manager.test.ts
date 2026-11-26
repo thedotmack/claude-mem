@@ -1423,6 +1423,12 @@ describe('embedding model default', () => {
   });
 });
 
+describe('per-session observer model opt-in default', () => {
+  it('is off by default so the global model and preset keep their previous behavior', () => {
+    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION).toBe('false');
+  });
+});
+
 describe('transcript-watch config path follows the data dir', () => {
   const keys = ['CLAUDE_MEM_DATA_DIR', 'CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH'] as const;
   let saved: Record<string, string | undefined>;

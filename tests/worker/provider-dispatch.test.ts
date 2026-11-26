@@ -62,6 +62,12 @@ const ENV_KEYS = [
   'CODEX_HOME',
   'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
   'CLAUDE_MEM_QUOTA_FALLBACK_MODEL',
+  'CLAUDE_MEM_OPENAI_COMPAT_PRESET',
+  'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL',
+  'CLAUDE_MEM_OPENAI_COMPAT_MODEL',
+  'CLAUDE_MEM_OPENAI_COMPAT_API_KEY',
+  'CLAUDE_MEM_OPENAI_COMPAT_API_KEYS',
+  'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION',
 ] as const;
 
 describe('provider-dispatch', () => {
@@ -176,6 +182,40 @@ describe('provider-dispatch', () => {
       process.env.CLAUDE_MEM_GEMINI_API_KEY = '';
       process.env.CLAUDE_MEM_OPENROUTER_API_KEY = '';
       expect(getSelectedProvider()).toBe('claude');
+    });
+  });
+
+  describe('a session-selected model in provider dispatch', () => {
+    // A bare `custom` endpoint has no default model: only the opted-in session
+    // id can make it a primary. Without one, dispatch must keep falling through
+    // to Claude exactly as before.
+    const pinBareCustomEndpoint = (gate: string) => {
+      resetQuotaCooldownsForTesting();
+      process.env.CLAUDE_MEM_PROVIDER = 'openai-compatible';
+      process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'custom';
+      process.env.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL = 'https://custom.example.com/v1';
+      process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'fixture-key';
+      process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEYS = '';
+      process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = '';
+      process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION = gate;
+      process.env.CLAUDE_MEM_OPENROUTER_API_KEY = '';
+      process.env.CLAUDE_MEM_GEMINI_API_KEY = '';
+    };
+
+    it('selects openai-compatible when a session model is threaded and the opt-in is on', () => {
+      pinBareCustomEndpoint('true');
+      expect(getSelectedProvider(undefined, 'session-model')).toBe('openai-compatible');
+      expect(selectProviderForGenerator(undefined, 'session-model').provider).toBe('openai-compatible');
+    });
+
+    it('keeps the strict claude fall-through with no id or with the opt-in off', () => {
+      pinBareCustomEndpoint('true');
+      expect(getSelectedProvider()).toBe('claude');
+      expect(selectProviderForGenerator().provider).toBe('claude');
+
+      pinBareCustomEndpoint('false');
+      expect(getSelectedProvider(undefined, 'session-model')).toBe('claude');
+      expect(selectProviderForGenerator(undefined, 'session-model').provider).toBe('claude');
     });
   });
 
