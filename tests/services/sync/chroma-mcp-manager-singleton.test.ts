@@ -2525,6 +2525,165 @@ describe('chroma-mcp is started at low priority via nice', () => {
   });
 });
 
+describe('chroma-mcp resolve is frozen with --exclude-newer (#3610)', () => {
+  const KEY = 'CLAUDE_MEM_CHROMA_EXCLUDE_NEWER';
+  const RELEASE_CUTOFF = '2026-11-25T00:00:00Z';
+
+  const savedUvExcludeNewer = process.env.UV_EXCLUDE_NEWER;
+
+  beforeEach(async () => {
+    await ChromaMcpManager.reset();
+    resetState();
+    // An exported UV_EXCLUDE_NEWER makes the launcher omit the flag.
+    delete process.env.UV_EXCLUDE_NEWER;
+  });
+
+  afterAll(() => {
+    if (savedUvExcludeNewer === undefined) delete process.env.UV_EXCLUDE_NEWER;
+    else process.env.UV_EXCLUDE_NEWER = savedUvExcludeNewer;
+  });
+
+  async function launches(): Promise<string[][]> {
+    await ChromaMcpManager.getInstance().callTool('chroma_list_collections', { limit: 1 });
+    return [prewarmSpawnCalls[0].args, transportInstances[0].opts.args];
+  }
+
+  function cutoffOf(args: string[]): string | null {
+    const at = args.indexOf('--exclude-newer');
+    if (at === -1) return null;
+    // A uvx option, so it must come before the tool spec.
+    expect(at).toBeLessThan(args.indexOf('--from'));
+    return args[at + 1];
+  }
+
+  function excludeNewerWarnings() {
+    return logEntries.filter(entry => entry.level === 'warn' && JSON.stringify([entry.message, entry.meta]).includes(KEY));
+  }
+
+  for (const [label, settings] of [
+    ['unset', {}],
+    ['the default sentinel', { [KEY]: 'default' }],
+  ] as const) {
+    it(`passes the release cutoff to prewarm and transport when ${label}`, async () => {
+      mockedSettings = { ...settings };
+      for (const args of await launches()) {
+        expect(args.filter(arg => arg === '--exclude-newer')).toHaveLength(1);
+        expect(cutoffOf(args)).toBe(RELEASE_CUTOFF);
+      }
+      expect(excludeNewerWarnings()).toHaveLength(0);
+    });
+  }
+
+  it('leaves the cutoff to a UV_EXCLUDE_NEWER the user already exported', async () => {
+    process.env.UV_EXCLUDE_NEWER = '2026-10-01T00:00:00Z';
+    mockedSettings = { [KEY]: 'default' };
+    for (const args of await launches()) {
+      expect(args).not.toContain('--exclude-newer');
+    }
+  });
+
+  it('drops the flag for mirrors without upload times when set to ""', async () => {
+    mockedSettings = { [KEY]: '' };
+    for (const args of await launches()) {
+      expect(args).not.toContain('--exclude-newer');
+      expect(args).toContain('--from');
+    }
+    expect(excludeNewerWarnings()).toHaveLength(0);
+  });
+
+  for (const [custom, passed] of [
+    ['2026-12-01', '2026-12-01'],
+    ['2026-12-01T08:30:00+08:00', '2026-12-01T08:30:00+08:00'],
+    ['2026-12-01T08:30:00.5Z', '2026-12-01T08:30:00.5Z'],
+    ['2026-12-01t08:30:00z', '2026-12-01T08:30:00Z'],
+    ['2026-12-01T08:30:00.123456789Z', '2026-12-01T08:30:00.123456789Z'],
+  ]) {
+    it(`uses a configured cutoff ${custom}`, async () => {
+      mockedSettings = { [KEY]: `  ${custom} ` };
+      for (const args of await launches()) {
+        expect(cutoffOf(args)).toBe(passed);
+      }
+      expect(excludeNewerWarnings()).toHaveLength(0);
+    });
+  }
+
+  for (const bad of ['--index-url=https://example.invalid', 'yesterday', '2026-02-30', '2026-11-25T24:00:00Z', '2026-11-25 00:00:00', '2026-11-25T00:00:00.1234567890Z', '9999-12-31', '0099-01-01', '2026-12-01T08:30:60Z', '   ', 20261125, [], {}, false, null]) {
+    it(`falls back to the release cutoff with a warning for ${JSON.stringify(bad)}`, async () => {
+      mockedSettings = { [KEY]: bad as unknown as string };
+      for (const args of await launches()) {
+        expect(cutoffOf(args)).toBe(RELEASE_CUTOFF);
+        expect(args).not.toContain(String(bad));
+      }
+      // One warning per launch-args build; prewarm reuses the transport's args.
+      expect(excludeNewerWarnings()).toHaveLength(1);
+    });
+  }
+
+  async function failedPrewarmMessage(): Promise<string> {
+    prewarmSpawnBehavior = 'failure';
+    const error = await ChromaMcpManager.getInstance()
+      .callTool('chroma_list_collections', { limit: 1 })
+      .then(() => null, (thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(ChromaUnavailableError);
+    return (error as ChromaUnavailableError).message;
+  }
+
+  it('says how to turn the cutoff off when an install with the cutoff exits non-zero', async () => {
+    mockedSettings = {};
+    const message = await failedPrewarmMessage();
+
+    expect(prewarmSpawnCalls[0].args).toContain('--exclude-newer');
+    expect(message).toContain('prewarm exited with code 1');
+    expect(message).toContain(`set ${KEY} to ""`);
+    // The same text is what `claude-mem doctor` and the health endpoint show.
+    expect(getDependencyStatus('uvx')?.message).toBe(message);
+    const warning = logEntries.find(entry => entry.message === 'chroma-mcp uvx prewarm failed');
+    expect(String(warning?.meta?.hint)).toContain(`set ${KEY} to ""`);
+  });
+
+  it('keeps the hint once the circuit breaker message replaces the failure in the uvx status', async () => {
+    mockedSettings = {};
+    prewarmSpawnBehavior = 'failure';
+    const mgr = ChromaMcpManager.getInstance();
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      // Skip the reconnect backoff so the breaker is what answers the sixth call.
+      (mgr as unknown as { lastConnectionFailureTimestamp: number }).lastConnectionFailureTimestamp = 0;
+      await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+        .rejects.toBeInstanceOf(ChromaUnavailableError);
+    }
+
+    expect(prewarmSpawnCalls.length).toBe(5);
+    const status = getDependencyStatus('uvx');
+    expect(status?.message).toContain('prewarm paused after 5 consecutive failures');
+    expect(status?.message).toContain(`set ${KEY} to ""`);
+  });
+
+  it('gives no cutoff hint when no cutoff was sent', async () => {
+    mockedSettings = { [KEY]: '' };
+    const message = await failedPrewarmMessage();
+
+    expect(prewarmSpawnCalls[0].args).not.toContain('--exclude-newer');
+    expect(message).toContain('prewarm exited with code 1');
+    expect(message).not.toContain(KEY);
+    expect(getDependencyStatus('uvx')?.message).not.toContain(KEY);
+    const warning = logEntries.find(entry => entry.message === 'chroma-mcp uvx prewarm failed');
+    expect(warning?.meta).not.toHaveProperty('hint');
+  });
+
+  it('gives no cutoff hint when the install timed out instead of exiting', async () => {
+    process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS = '5';
+    mockedSettings = {};
+    prewarmSpawnBehavior = 'timeout';
+    const error = await ChromaMcpManager.getInstance()
+      .callTool('chroma_list_collections', { limit: 1 })
+      .then(() => null, (thrown: unknown) => thrown);
+
+    expect(prewarmSpawnCalls[0].args).toContain('--exclude-newer');
+    expect((error as Error).message).toContain('prewarm timed out after 5ms');
+    expect((error as Error).message).not.toContain(KEY);
+  });
+});
+
 // Restore the real process.kill once the test module finishes evaluating any
 // late-arriving microtasks.
 process.on('exit', () => {

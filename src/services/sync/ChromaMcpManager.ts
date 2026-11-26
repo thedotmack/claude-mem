@@ -175,6 +175,30 @@ const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
 const CHROMADB_PINNED_VERSION: string | null =
   CHROMA_MCP_DEP_OVERRIDES.find(spec => spec.startsWith('chromadb=='))?.slice('chromadb=='.length) ?? null;
 
+// Freeze the rest of the resolve (#3610, #4788). Only chroma-mcp and chromadb
+// are exact pins, so uvx re-resolved on every start, and each transitive
+// release (grpcio, openai, langsmith, ...) built a new ~400 MB env in uv's
+// cache instead of reusing the last one. With --exclude-newer uv ignores
+// every file uploaded after this instant, so one cutoff resolves to one env.
+// Bump it deliberately, together with the pins above: it must not be earlier
+// than any pinned release. CLAUDE_MEM_CHROMA_EXCLUDE_NEWER overrides it, or
+// turns it off for indexes that publish no upload times (PEP 700), which uv
+// treats as unavailable under a cutoff.
+const CHROMA_MCP_EXCLUDE_NEWER = '2026-11-25T00:00:00Z';
+const CHROMA_EXCLUDE_NEWER_SETTING = 'CLAUDE_MEM_CHROMA_EXCLUDE_NEWER';
+// A YYYY-MM-DD date or an RFC 3339 timestamp, the forms uv accepts. RFC 3339
+// allows a lowercase t/z; the resolver uppercases them before they reach uv.
+// Leap seconds (:60) are not accepted.
+const EXCLUDE_NEWER_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})(?:T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d))?$/i;
+// Shown when an install that passed --exclude-newer exits non-zero. uv treats
+// a package with no upload time as unavailable under a cutoff, so a private
+// index or mirror that does not publish them fails here and vector search
+// stays off. uv's stderr wording is not matched: the hint is conditional, and
+// it is the one failure this flag can cause that the user can fix in settings.
+const CHROMA_EXCLUDE_NEWER_FAILURE_HINT =
+  `If your package index or mirror does not publish upload times, set ${CHROMA_EXCLUDE_NEWER_SETTING} to "" in ~/.claude-mem/settings.json and restart the worker.`;
+
 /** Chroma child health for /api/admin/doctor and `npx claude-mem doctor`. */
 export interface ChromaCrashState {
   /** Unexpected exits of the chroma-mcp child (uvx) in this worker's lifetime. */
@@ -304,6 +328,12 @@ export class ChromaMcpManager {
   private activePrewarmTracked: TrackedChild | null = null;
   /** Consecutive prewarm failures; trips the circuit breaker, reset on success. */
   private consecutivePrewarmFailures: number = 0;
+  /**
+   * The recovery hint of the latest failed prewarm, if it had one. The breaker
+   * messages below replace that failure's message in the uvx status within
+   * about a minute of retries, so they repeat it; reset on success.
+   */
+  private latestPrewarmFailureHint: string | null = null;
   /** When the breaker last opened; gates the half-open recovery probe. */
   private prewarmBreakerOpenedAt: number = 0;
   /** Monotonic prewarm-attempt counter, so the retry cap is observable in logs. */
@@ -776,7 +806,12 @@ export class ChromaMcpManager {
   private buildCommandArgs(localChromaDataDir: string | null = this.getLocalPersistentChromaDataDir()): string[] {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const pythonVersion = process.env.CLAUDE_MEM_PYTHON_VERSION || settings.CLAUDE_MEM_PYTHON_VERSION || '3.13';
-    const launcherPrefix = ChromaMcpManager.buildLauncherPrefix(pythonVersion);
+    // A UV_EXCLUDE_NEWER in the worker's environment reaches uvx and already
+    // freezes the resolve; an explicit flag would override the user's cutoff.
+    const excludeNewer = process.env.UV_EXCLUDE_NEWER?.trim()
+      ? null
+      : ChromaMcpManager.resolveExcludeNewer(settings[CHROMA_EXCLUDE_NEWER_SETTING]);
+    const launcherPrefix = ChromaMcpManager.buildLauncherPrefix(pythonVersion, excludeNewer);
 
     if (!localChromaDataDir) {
       const chromaHost = settings.CLAUDE_MEM_CHROMA_HOST || '127.0.0.1';
@@ -1129,14 +1164,48 @@ export class ChromaMcpManager {
     }
   }
 
-  private static buildLauncherPrefix(pythonVersion: string): string[] {
+  private static buildLauncherPrefix(pythonVersion: string, excludeNewer: string | null): string[] {
     const depOverrideFlags = CHROMA_MCP_DEP_OVERRIDES.flatMap(spec => ['--with', spec]);
     return [
       '--python', pythonVersion,
       ...depOverrideFlags,
+      ...(excludeNewer ? ['--exclude-newer', excludeNewer] : []),
       '--from', `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
       'chroma-mcp',
     ];
+  }
+
+  /**
+   * The --exclude-newer cutoff for the uvx launch, or null when the user set
+   * CLAUDE_MEM_CHROMA_EXCLUDE_NEWER to ''. 'default' (the shipped value) and
+   * an unset key give CHROMA_MCP_EXCLUDE_NEWER; so does an invalid value, with
+   * a warning. Only a real date reaches argv, so the setting cannot inject
+   * another uvx flag.
+   */
+  private static resolveExcludeNewer(raw: unknown): string | null {
+    if (raw === undefined) return CHROMA_MCP_EXCLUDE_NEWER;
+    // Only the exact '' turns the cutoff off; settings.json is hand-edited JSON,
+    // so whitespace, a stray [] or a number takes the warning path below.
+    if (raw === '') return null;
+    const text = typeof raw === 'string' ? raw.trim() : '';
+    if (text === 'default') return CHROMA_MCP_EXCLUDE_NEWER;
+    const match = EXCLUDE_NEWER_PATTERN.exec(text);
+    if (match) {
+      const [year, month, day] = match.slice(1, 4).map(Number);
+      const date = new Date(0);
+      date.setUTCFullYear(year, month - 1, day); // Date.UTC would read years 0-99 as 19xx
+      // Years outside 2000-2999 are typos here, and uv rejects the far end
+      // (9999-12-31) at argument parsing, which would stop chroma-mcp starting.
+      if (year >= 2000 && year <= 2999
+          && date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day) {
+        return text.toUpperCase();
+      }
+    }
+    logger.warn('CHROMA_MCP', `Invalid ${CHROMA_EXCLUDE_NEWER_SETTING}, using default`, {
+      value: raw,
+      default: CHROMA_MCP_EXCLUDE_NEWER,
+    });
+    return CHROMA_MCP_EXCLUDE_NEWER;
   }
 
   private static buildPrewarmCommandArgs(commandArgs: string[]): string[] {
@@ -1308,6 +1377,10 @@ export class ChromaMcpManager {
     await ChromaMcpManager.uvBuildsScratchSweep;
   }
 
+  private latestPrewarmFailureHintSuffix(): string {
+    return this.latestPrewarmFailureHint ? `. ${this.latestPrewarmFailureHint}` : '';
+  }
+
   private async prewarmChromaMcp(
     command: string,
     commandArgs: string[],
@@ -1321,7 +1394,7 @@ export class ChromaMcpManager {
       // failed, so stop spawning entirely until the worker restarts. This caps
       // the total wasted builds (and the scratch they can leak) on a host that
       // never recovers.
-      const message = `chroma-mcp prewarm disabled after ${this.consecutivePrewarmFailures} consecutive failures; restart required`;
+      const message = `chroma-mcp prewarm disabled after ${this.consecutivePrewarmFailures} consecutive failures; restart required${this.latestPrewarmFailureHintSuffix()}`;
       logger.warn('CHROMA_MCP', 'chroma-mcp prewarm circuit breaker latched, restart required', {
         consecutiveFailures: this.consecutivePrewarmFailures,
         prewarmAttempts: this.prewarmAttempts,
@@ -1335,7 +1408,7 @@ export class ChromaMcpManager {
       const msSinceOpen = Date.now() - this.prewarmBreakerOpenedAt;
       if (msSinceOpen < cooldownMs) {
         const retryInS = Math.ceil((cooldownMs - msSinceOpen) / 1000);
-        const message = `chroma-mcp prewarm paused after ${this.consecutivePrewarmFailures} consecutive failures; retrying in ${retryInS}s`;
+        const message = `chroma-mcp prewarm paused after ${this.consecutivePrewarmFailures} consecutive failures; retrying in ${retryInS}s${this.latestPrewarmFailureHintSuffix()}`;
         logger.warn('CHROMA_MCP', 'chroma-mcp prewarm circuit breaker open, skipping spawn', {
           consecutiveFailures: this.consecutivePrewarmFailures,
           prewarmAttempts: this.prewarmAttempts,
@@ -1380,6 +1453,9 @@ export class ChromaMcpManager {
     const stderrTail = ChromaMcpManager.captureOutputTail(child.stderr);
 
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    // True only when uvx itself exited with a failure code: not a timeout, a
+    // spawn error, a signal or a cancelled connection.
+    let prewarmExitedNonZero = false;
     const exitPromise = new Promise<void>((resolve, reject) => {
       child.once('error', (error) => {
         if (this.connectionGeneration !== connectionGeneration) {
@@ -1397,6 +1473,7 @@ export class ChromaMcpManager {
           resolve();
           return;
         }
+        prewarmExitedNonZero = code !== null;
         reject(new Error(`chroma-mcp prewarm exited with code ${code ?? 'null'}${signal ? ` signal ${signal}` : ''}`));
       });
     });
@@ -1411,6 +1488,7 @@ export class ChromaMcpManager {
       await Promise.race([exitPromise, timeoutPromise]);
       this.assertConnectionNotCancelled(connectionGeneration);
       this.consecutivePrewarmFailures = 0;
+      this.latestPrewarmFailureHint = null;
       logger.debug('CHROMA_MCP', 'chroma-mcp uvx prewarm completed');
       if (!this.sweptUvBuildsScratchAfterSuccess) {
         // A host that recovered (e.g. once UV_LINK_MODE=copy lets installs
@@ -1436,6 +1514,12 @@ export class ChromaMcpManager {
         this.prewarmBreakerOpenedAt = Date.now();
       }
       const errorMessage = error instanceof Error ? error.message : String(error);
+      // Read now: the timeout path reaches here with the child still running,
+      // and it may exit non-zero once it is killed below.
+      const excludeNewerHint = prewarmExitedNonZero && args.includes('--exclude-newer')
+        ? CHROMA_EXCLUDE_NEWER_FAILURE_HINT
+        : null;
+      this.latestPrewarmFailureHint = excludeNewerHint;
       const pid = child.pid;
       const stdout = stdoutTail();
       const stderr = stderrTail();
@@ -1447,6 +1531,7 @@ export class ChromaMcpManager {
         consecutiveFailures: this.consecutivePrewarmFailures,
         ...(pid ? { pid } : {}),
         error: errorMessage,
+        ...(excludeNewerHint ? { hint: excludeNewerHint } : {}),
         ...(stdout ? { stdoutTail: stdout } : {}),
         ...(stderr ? { stderrTail: stderr } : {})
       });
@@ -1472,7 +1557,7 @@ export class ChromaMcpManager {
       // our own scratch dir is no longer held open.
       ChromaMcpManager.startUvBuildsScratchSweep(env);
 
-      const unavailableMessage = `chroma-mcp prewarm failed: ${errorMessage}`;
+      const unavailableMessage = `chroma-mcp prewarm failed: ${errorMessage}${this.latestPrewarmFailureHintSuffix()}`;
       recordUvxVectorSearchUnavailable(unavailableMessage);
       throw new ChromaUnavailableError(unavailableMessage, error instanceof Error ? error : undefined);
     } finally {
