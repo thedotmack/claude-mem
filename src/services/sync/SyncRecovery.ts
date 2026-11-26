@@ -1,3 +1,4 @@
+import { syncablePromptSql } from '../prompt-import/transcript-origin.mjs';
 import type { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
 import { sha256Base64Url, stableDocumentId, type CanonicalWireOp, type ContentKind } from './CanonicalContent.js';
@@ -58,7 +59,7 @@ export class SyncRecovery {
       for (const [kind, table] of Object.entries(TABLES) as [ContentKind, string][]) {
         excludedCurrent[kind] = (this.db.prepare(`SELECT COUNT(*) AS n FROM ${table} t
           JOIN sync_launch_exclusions e ON e.kind = ? AND e.origin_local_id = CAST(t.id AS TEXT)
-          WHERE t.origin_device_id IS NULL AND (length(CAST(t.sync_rev AS TEXT)) < length(e.through_rev)
+          WHERE t.origin_device_id IS NULL ${kind === 'prompt' ? `AND ${syncablePromptSql('t.native_prompt_id')}` : ''} AND (length(CAST(t.sync_rev AS TEXT)) < length(e.through_rev)
           OR (length(CAST(t.sync_rev AS TEXT)) = length(e.through_rev) AND CAST(t.sync_rev AS TEXT) <= e.through_rev))`).get(kind) as { n: number }).n;
         ledgerEntries[kind] = (this.db.prepare('SELECT COUNT(*) AS n FROM sync_launch_exclusions WHERE kind = ?').get(kind) as { n: number }).n;
       }
@@ -88,6 +89,7 @@ export class SyncRecovery {
           JOIN sync_launch_exclusions e ON e.kind = ? AND e.origin_local_id = CAST(t.id AS TEXT)
           WHERE t.origin_device_id IS NULL AND ${project} = ? AND t.created_at_epoch >= ? AND t.created_at_epoch < ?
           AND (t.synced_at IS NULL OR t.synced_at >= 0) ${held}
+          ${kind === 'prompt' ? `AND ${syncablePromptSql('t.native_prompt_id')}` : ''}
           AND (length(CAST(t.sync_rev AS TEXT)) < length(e.through_rev)
           OR (length(CAST(t.sync_rev AS TEXT)) = length(e.through_rev) AND CAST(t.sync_rev AS TEXT) <= e.through_rev))
           ORDER BY t.id LIMIT ?`).all(kind, scope.project, Date.parse(scope.from), Date.parse(scope.to), scope.maxItems - items.length + 1) as { id: string }[];
@@ -262,6 +264,12 @@ export class SyncRecovery {
       this.db.prepare("UPDATE sync_recovery_items SET status = 'acknowledged', acknowledged_epoch = ?, updated_at_epoch = ? WHERE job_id = ? AND entity_id = ? AND status = 'queued'").run(this.epoch(), Date.now(), row.job_id, entityId);
       this.receipt(row, revision, hash, 'acknowledged'); this.completeIfFinished(row.job_id);
     }
+  }
+
+  recordLocalOnly(entityId: string): void {
+    if (!this.available) return;
+    this.db.prepare("UPDATE sync_recovery_items SET status = 'superseded', detail = 'local_transcript', updated_at_epoch = ? WHERE entity_id = ? AND status IN ('selected', 'queued')").run(Date.now(), entityId);
+    this.completeTerminalJobsForEntity(entityId);
   }
 
   recordDeletion(entityId: string): void {

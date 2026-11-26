@@ -197,7 +197,7 @@ export function previousStep(step: SetupStep, state: SetupFlowState, facts: Setu
  * and failed all wait for the person.
  */
 export const SCAN_PHASE_RUNNING: Record<SetupScanPhase, boolean> = {
-  idle: true, reading: true, checking: true, saving: true, 'awaiting-consent': false, uploading: true, done: false, failed: false,
+  idle: true, reading: true, checking: true, saving: true, organizing: true, 'awaiting-consent': false, uploading: true, done: false, failed: false,
 }
 
 /** The rule callers ask: whether the scan is running in `phase`. */

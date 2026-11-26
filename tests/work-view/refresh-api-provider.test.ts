@@ -151,6 +151,21 @@ describe('the My Work refresh on an API provider', () => {
     });
   });
 
+  it('runs setup on an explicitly selected own endpoint and requires a separate choice for cmem.ai', async () => {
+    await withApiProvider('openai-compatible', async dir => {
+      const task: AgentTask = { reason: 'setup-scan', cwd: dir, allowedAgents: ['api'],
+        claudeCode: { plugins: [], tools: [], allowedTools: [], readableFolders: [] }, run: ask => ask('fixture prompt', {}) };
+      const calls = fakeFetch([{}]).calls;
+      for (const baseUrl of ['http://localhost:1234/v1', 'https://cmem.ai/api/v1']) {
+        writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_PROVIDER: 'openai-compatible',
+          CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: baseUrl, CLAUDE_MEM_OPENAI_COMPAT_MODEL: 'fixture-model',
+          CLAUDE_MEM_OPENAI_COMPAT_API_KEY: 'fixture' }));
+        expect((await runAgentTask(task)).state).toBe(baseUrl.startsWith('http:') ? 'ok' : 'waiting-for-agent');
+      }
+      expect(calls.map(call => new URL(call.url).hostname)).toEqual(['localhost']);
+    });
+  });
+
   it('the task the worker builds carries the API agent once the owner opts in', async () => {
     await withApiProvider('openrouter', dir => {
       writeFileSync(join(dir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_WORK_VIEW_AGENT: 'api' }));

@@ -48,6 +48,7 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem update')}               Update while keeping your setup; asks only for missing configuration
   ${styleText('cyan', 'npx claude-mem uninstall')}            Remove plugin, configs and the hook launcher
   ${styleText('cyan', 'npx claude-mem version')}              Print version
+  ${styleText('cyan', 'claude-mem messages acknowledge <message-id>')}   Record a local acknowledgment for a dispatched message
 
 ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed plugin):
   ${styleText('cyan', 'npx claude-mem start')}                Start worker service
@@ -192,6 +193,11 @@ async function main(): Promise<void> {
   }
 
   switch (command) {
+    case 'messages': {
+      const { runMessagesCommand } = await import('../cli/messages-command.js');
+      process.exitCode = runMessagesCommand(args.slice(1));
+      break;
+    }
     case 'import': {
       const { runImportCommand } = await import('./commands/import-memory.js');
       await runImportCommand(args.slice(1));

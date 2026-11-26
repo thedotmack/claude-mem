@@ -15,7 +15,7 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { randomUUID } from 'crypto';
 import { buildCmemCorrelationHeader, CMEM_CORRELATION_HEADER } from './cmem-request-correlation.js';
-import { ClassifiedProviderError, isClassified, rateLimitUntilNextKey, type ProviderErrorClass } from './provider-errors.js';
+import { CmemAllowanceExhaustedError, ClassifiedProviderError, isClassified, rateLimitUntilNextKey, type ProviderErrorClass } from './provider-errors.js';
 import type { PaidSendBudget } from './paid-send-budget.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import {
@@ -274,7 +274,9 @@ export function classifyOpenRouterError(input: {
     // Preserve the gateway default only for an absent hint. An invalid hint
     // must use ordinary retry backoff rather than reintroducing a full minute.
     const gatewayRetryAfterMs = retryAfterHeader === null ? 60_000 : retryAfterMs;
-    return new ClassifiedProviderError(message, {
+    const ErrorClass = input.status === 402 && code === 'allowance_exhausted' && isCmemGatewayUrl(input.requestUrl)
+      ? CmemAllowanceExhaustedError : ClassifiedProviderError;
+    return new ErrorClass(message, {
       kind,
       cause: input.cause,
       code,
@@ -1193,7 +1195,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     // The gateway emits pro_inference_cap_exhausted on every spent request.
     // After the first refusal, further sends wait until the next day.
     if (isCmemGatewayUrl(apiUrl) && !cmemCapProbeAllowed()) {
-      throw new ClassifiedProviderError('cmem.ai inference allowance is still spent; the next probe is tomorrow', {
+      throw new CmemAllowanceExhaustedError('cmem.ai inference allowance is still spent; the next probe is tomorrow', {
         kind: 'quota_exhausted', code: 'allowance_exhausted', cause: new Error('cap probe withheld'),
       });
     }
@@ -1254,6 +1256,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         // Per OpenRouter spec, errors can come in 200 responses too.
         throw classifyOpenRouterError({
           status: exchange.status,
+          requestUrl: apiUrl,
           bodyText: JSON.stringify(responseData),
           headers: exchange.headers,
           cause: new Error(`OpenRouter API error: ${responseData.error.code} - ${responseData.error.message}`),
@@ -1270,7 +1273,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       ...(signal ? { maxRetries: 0 } : {}), ...retryPolicyForPool(poolSize),
     });
     } catch (error) {
-      if (isCmemGatewayUrl(apiUrl) && isClassified(error) && error.code === 'allowance_exhausted') noteCmemCapExhausted();
+      if (error instanceof CmemAllowanceExhaustedError) noteCmemCapExhausted();
       throw error;
     }
 

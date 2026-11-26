@@ -1,4 +1,7 @@
 export const viewerZh: Record<string, string> = {
+  'A gift for Claude-Mem users': '送给 Claude-Mem 用户的礼物',
+  'Check Claude’s latest fix from your phone. Get 30 free days of Cloud Sync and the remote Work Viewer. No credit card required.': '在手机上查看 Claude 最新的修复。免费试用 Cloud Sync 和远程工作查看器 30 天，无需信用卡。',
+  'Dismiss the Cloud Sync offer': '关闭 Cloud Sync 优惠',
   'Language': '语言',
   'Could not load sessions: {error}': '无法加载会话：{error}',
   'Unknown error': '未知错误',

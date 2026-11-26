@@ -86,6 +86,16 @@ export function readSharedRecords(db, options) {
   return readShared(db, options, !db.inTransaction);
 }
 
+/** Fold supplied canonical cloud rows without a SQLite connection or any device-local receipts. */
+export function foldPortableSharedRows(rows, validateValue) {
+  const context = {
+    deviceId: '', validateValue, reread: row => row, redactionReceipts: new Map(),
+    // Persist the verified source, even when a bad sibling makes the same identity/hash claims.
+    sourceId: summary => summary.source.id,
+  };
+  return foldSharedRows(rows.map(row => summarizeRow(context, row, row)), context, false, new Map());
+}
+
 /**
  * fillCacheFromOwnTransaction: the read runs in a transaction that cannot roll back rows it sees
  * (its own read transaction), so it may fill the row cache.
@@ -258,7 +268,8 @@ function foldSharedRows(items, context, includeHistory, values, previousValues =
     const sameRevision = entries.filter(entry => entry.revision === latest.revision);
     const recordOf = summary => {
       const entry = full(summary);
-      return { kind: entry.kind, key: entry.key, value: entry.value, deleted: entry.deleted,
+      return { ...(context.sourceId ? { sourceId: context.sourceId(summary) } : {}),
+        kind: entry.kind, key: entry.key, value: entry.value, deleted: entry.deleted,
         revision: entry.revision, writer: entry.writer, hash: entry.hash, batchId: entry.batch, base: entry.base,
         valueHash: sharedValueHash(entry.kind, entry.key, entry.value, entry.deleted) };
     };

@@ -30,3 +30,5 @@ export type SharedRecordReader = () => SharedRecordState;
 export function createSharedRecordReader(db: Database, options: { deviceId: string; validateValue?: SharedValueValidator; includeHistory?: boolean }): SharedRecordReader;
 /** count:highest id:summed sync_rev of the work_state_entries rows matching the SQL condition `where`. */
 export function workStateRowsRevision(db: Database, options?: { where?: string; syncRev?: boolean }): string;
+/** Validate a batch without a device-local SQLite reader. */
+export function foldPortableSharedRows(rows: SharedWorkRow[], validateValue: SharedValueValidator): SharedRecordState;

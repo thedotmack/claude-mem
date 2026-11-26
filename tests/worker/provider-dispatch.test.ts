@@ -30,6 +30,7 @@ import {
   tryAdmitQuotaProbe,
 } from '../../src/shared/quota-cooldown.js';
 import { isCmemGatewayUrl } from '../../src/shared/cmem-gateway.js';
+import { noteCmemCapExhausted } from '../../src/shared/cmem-cap-probe.js';
 import { setClaudeFallbackReadinessForTesting } from '../../src/shared/claude-fallback-readiness.js';
 import { paths } from '../../src/shared/paths.js';
 import { logger } from '../../src/utils/logger.js';
@@ -101,6 +102,34 @@ describe('provider-dispatch', () => {
     it('returns openrouter when selected, keyed, and no fallback is recorded', () => {
       pinOpenRouterEnv();
       expect(getSelectedProvider()).toBe('openrouter');
+    });
+
+    it('uses the signed-in Codex plan, then the configured backup, and pauses when neither can serve', () => {
+      const codexHome = mkdtempSync(join(tmpdir(), 'codex-cmem-cap-'));
+      const previousReadiness = setClaudeFallbackReadinessForTesting(() => false);
+      try {
+        pinOpenRouterEnv({ CODEX_HOME: codexHome, CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: '' });
+        noteCmemCapExhausted();
+        expect(selectProviderForGenerator('codex')).toEqual({
+          provider: 'openrouter', gatewayProbeClaimId: null, capBlocked: true,
+        });
+        setClaudeFallbackReadinessForTesting(() => true);
+        expect(selectProviderForGenerator('codex')).toEqual({
+          provider: 'claude', gatewayProbeClaimId: null, fallbackFrom: 'openrouter',
+        });
+        writeFileSync(join(codexHome, 'auth.json'), JSON.stringify({
+          auth_mode: 'chatgpt', tokens: { access_token: 'fixture' },
+        }), { mode: 0o600 });
+        expect(getSelectedProvider('codex')).toBe('codex');
+        expect(selectProviderForGenerator('codex')).toEqual({
+          provider: 'codex', gatewayProbeClaimId: null, fallbackFrom: 'openrouter',
+        });
+        process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'off';
+        expect(selectProviderForGenerator('codex').capBlocked).toBe(true);
+      } finally {
+        setClaudeFallbackReadinessForTesting(previousReadiness);
+        rmSync(codexHome, { recursive: true, force: true });
+      }
     });
 
     it('returns claude when the fallback marker is set on a cmem-gateway config', () => {

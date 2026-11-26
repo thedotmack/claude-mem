@@ -1,4 +1,7 @@
 export const viewerPtBr: Record<string, string> = {
+  'A gift for Claude-Mem users': 'Um presente para quem usa Claude-Mem',
+  'Check Claude’s latest fix from your phone. Get 30 free days of Cloud Sync and the remote Work Viewer. No credit card required.': 'Veja a última correção do Claude no celular. Experimente o Cloud Sync e o visualizador remoto de trabalho grátis por 30 dias. Não é preciso cartão de crédito.',
+  'Dismiss the Cloud Sync offer': 'Dispensar a oferta do Cloud Sync',
   'Language': 'Idioma',
   'Could not load sessions: {error}': 'Não foi possível carregar as sessões: {error}',
   'Unknown error': 'Erro desconhecido',

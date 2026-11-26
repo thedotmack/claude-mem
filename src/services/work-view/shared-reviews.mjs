@@ -6,6 +6,7 @@ import { publishSharedRecords, readSharedRecords } from './shared-record-store.m
 import { sharedRecordKey } from './shared-records.mjs';
 import { SHARED_REVIEW_KIND, SHARED_REVIEW_VERSION, isSharedReviewValue } from './shared-review-value.mjs';
 import { groupIdFor } from './request-groups.mjs';
+import { requestText } from './request-projection.mjs';
 
 export { SHARED_REVIEW_KIND, SHARED_REVIEW_VERSION, isSharedReviewValue } from './shared-review-value.mjs';
 
@@ -29,6 +30,7 @@ const validator = (kind, key, value, deleted, writer) => kind === SHARED_REVIEW_
   ? isSharedReviewValue(kind, key, value, deleted) : isSharedProjectionValue(kind, key, value, deleted, writer);
 
 function sessionIdentity(database, id) {
+  if (database.stableEvidenceRef) return database.stableEvidenceRef('session', id)?.conversation ?? null;
   try {
     const row = database.prepare('SELECT platform_source, content_session_id FROM sdk_sessions WHERE id = ?').get(id);
     return row?.platform_source && row?.content_session_id ? JSON.stringify(['conversation', row.platform_source, row.content_session_id]) : null;
@@ -36,6 +38,16 @@ function sessionIdentity(database, id) {
     if (/no such (table|column)/i.test(String(error.message))) return null;
     throw error;
   }
+}
+
+function matchesSessionDisclosure(native, shared) {
+  // Receiving stubs have no native opening. On the origin, a null shared
+  // opening means the publisher could not prove the local string syncable.
+  if (!native?.user_prompt) return true;
+  return (shared.user_prompt == null || requestText(native.user_prompt) === shared.user_prompt)
+    && sharedProjectKey(native.project) === (shared.project ?? null)
+    && (native.custom_title?.slice(0, 120) ?? null) === (shared.custom_title ?? null)
+    && ['status', 'platform_source', 'started_at_epoch'].every(key => (native[key] ?? null) === (shared[key] ?? null));
 }
 
 /** The same stable identity whether a session is native or a replica stub. */
@@ -156,6 +168,7 @@ export function sharedReviewDescriptor(database, request, { deviceId, sharedStat
   }
   selected.workProduct = (request.workProduct ?? []).map(productMeaning).sort(compare);
   selected.items?.sort(compare);
+  const originalRef = refFor(request.original);
   const evidence = [];
   for (const [identity, ref] of [...refs].sort(([a], [b]) => a === b ? 0 : a < b ? -1 : 1)) {
     const id = resolveEvidenceRef(database, ref, deviceId);
@@ -167,11 +180,11 @@ export function sharedReviewDescriptor(database, request, { deviceId, sharedStat
       const record = sharedState?.records?.get(sharedRecordKey('provenance', ref.conversation));
       if (!record || record.deleted || !record.value?.session) { missing.add(identity); continue; }
       row = { kind: 'session', ...record.value.session };
-      const native = evidenceRow('session', id);
-      // A receiving stub has no opening prompt; a populated native session
-      // must agree with its exported disclosure before it can be shared.
-      if (native?.user_prompt && ['user_prompt', 'custom_title', 'status', 'project', 'platform_source', 'started_at_epoch']
-        .some(key => (native[key] ?? null) !== (row[key] ?? null))) { missing.add(identity); continue; }
+      const isOriginal = originalRef?.kind === 'session' && originalRef.conversation === ref.conversation;
+      if (!matchesSessionDisclosure(evidenceRow('session', id), row)
+        || (isOriginal && request.original?.text && requestText(request.original.text) !== row.user_prompt)) {
+        missing.add(identity); continue;
+      }
     } else {
       row = evidenceRow(ref.kind, id);
       if (!row) { missing.add(identity); continue; }
@@ -186,7 +199,6 @@ export function sharedReviewDescriptor(database, request, { deviceId, sharedStat
     if (Object.hasOwn(content, 'project')) content.project = sharedProjectKey(content.project);
     evidence.push({ ref, hash: digest(semanticJson(content)) });
   }
-  const originalRef = refFor(request.original);
   if (!request.groupId && !request.explicitRequestId && request.original?.promptNumber == null && !originalRef) missing.add('request:unresolved');
   const requestId = sharedReviewRequestId(request, originalRef);
   return { version: SHARED_REVIEW_VERSION, requestId,

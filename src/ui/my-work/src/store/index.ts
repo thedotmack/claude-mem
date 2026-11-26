@@ -3,6 +3,7 @@
 import { useShallow } from 'zustand/react/shallow'
 import type { Agent, Device } from '@/data'
 import type { ConnectionStatus } from '@/live/connection-status'
+import { sharedViewerOwner } from '@/live/shared-viewer-session'
 import { localSource } from '@/live/local-source'
 import { sampleSourceAtThisAddress } from '@/live/sample-source'
 import { isServedFromCloud } from '@/live/served-from'
@@ -17,7 +18,8 @@ import type { StoreEnvironment, Workspace } from './store-types'
  * sampleSourceAtThisAddress); otherwise the local worker (through the dev proxy, or same origin when the worker serves
  * this page). Never falls back to sample data.
  */
-export const ACTIVE_SOURCE: WorkDataSource = new URLSearchParams(window.location.search).get('source') === 'sample' ? sampleSourceAtThisAddress() : localSource
+const sharedOwner = sharedViewerOwner()
+export const ACTIVE_SOURCE: WorkDataSource = !sharedOwner && new URLSearchParams(window.location.search).get('source') === 'sample' ? sampleSourceAtThisAddress() : localSource
 
 /**
  * Where the display preferences are saved. persist writes on every state change, live models included, so a value
@@ -44,10 +46,9 @@ const useStoreBase = createBoundStore({
   href: () => window.location.href,
   writeUrl: (url, replace) => replace ? window.history.replaceState(null, '', url) : window.history.pushState(null, '', url),
   storage: browserStorage(),
-  // Sample fixtures are not usage. The hosted viewer uses the same local source
-  // (the cloud worker) but its worker sets DO_NOT_TRACK, so its counts go to
-  // the host's usage endpoint instead of /api/work-view/usage.
-  reportsUsage: ACTIVE_SOURCE === localSource,
+  // The signed-in shared host records consent-aware milestones on its overview GET.
+  // Local workers and the legacy hosted viewer retain their existing usage endpoint.
+  reportsUsage: !sharedOwner && ACTIVE_SOURCE === localSource,
   sendUsage: isServedFromCloud(window.location.hostname) ? sendHostedUsage : sendUsageReport,
   scrollToTop: () => window.scrollTo(0, 0),
 })

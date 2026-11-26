@@ -5,7 +5,7 @@ import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/compo
 import { interpolate, useI18n } from '@/lib/i18n'
 import { CMEM_MCP_URL, type HistoryImportProgress, type SetupHistory, type SetupTool } from '../setup-data'
 import type { HistoryImportStatus, MemoryBranch } from '../setup-flow'
-import { PageHeading, SetupActions, SetupButton, SetupError, ToolMark, type SetupBack } from './shared'
+import { PageHeading, PrivateWorkViewLink, SetupActions, SetupButton, SetupError, ToolMark, type SetupBack } from './shared'
 
 function CopyUrl({ toolName }: { toolName: string }) {
   const { t } = useI18n()
@@ -125,12 +125,12 @@ function HistoryPanel({ history, status, result, stopping, onImport, onStop }: {
   return (
     <section className="panel is-memory history-panel" aria-labelledby="history-title">
       <h2 id="history-title">{t('Bring your existing memory')}</h2>
-      <p>{t('Upload your existing claude-mem history from all projects to your CMEM account.')}</p>
+      <p>{t('Add memories Claude-Mem already saved for your projects to your account.')}</p>
       {status === 'complete' ? <ImportReceipt result={result} /> : (
         <>
           <p className="history-count tabular">{interpolate(t('{projects} projects · {sessions} sessions · {observations} memories'), { projects: history.projects, sessions: history.sessions, observations: number(history.observations) })}</p>
           {/* The last run, as the worker reports it. */}
-          {result?.state === 'failed' && <SetupError title={t(IMPORT_RUN_WORDS.failed)} check={t('Import full history again to continue. Memories already in your CMEM account are skipped.')} detail={result.error} />}
+          {result?.state === 'failed' && <SetupError title={t(IMPORT_RUN_WORDS.failed)} check={t('Try adding your saved memories again. Your account keeps each memory once.')} detail={result.error} />}
           {result?.state === 'stopped' && <ImportStopped result={result} />}
           {/* A run found running (after a reload): Stop is right here, with no tick box; the box below is for a start. */}
           {result?.state === 'running' && (
@@ -142,11 +142,11 @@ function HistoryPanel({ history, status, result, stopping, onImport, onStop }: {
           {result?.state === 'done' && <ImportReceipt result={result} />}
           <label className="history-permission">
             <input type="checkbox" checked={permission} onChange={(event) => setPermission(event.target.checked)} />
-            <span>{t('Import my full history from all projects to my CMEM account.')}</span>
+            <span>{t('Add saved memories from all my projects to my CMEM account.')}</span>
           </label>
           <div className="history-actions">
             {/* Outlined: the screen's one navy button is Continue. Dimmed, it still reads at 4.5:1 and says what it waits for. */}
-            <SetupButton look="outline" className="import-button" aria-disabled={!permission || undefined} aria-describedby={permission ? undefined : 'history-import-hint'} onClick={onImport}>{t('Import full history')}</SetupButton>
+            <SetupButton look="outline" className="import-button" aria-disabled={!permission || undefined} aria-describedby={permission ? undefined : 'history-import-hint'} onClick={onImport}>{t('Add saved memories')}</SetupButton>
             {!permission && <p id="history-import-hint" className="setup-hint"><InfoIcon aria-hidden="true" />{t('Tick the box above to turn this on.')}</p>}
           </div>
         </>
@@ -198,6 +198,7 @@ export function FinishSetupScreen({ branch, tools, selected, onSelect, history, 
   return (
     <section aria-labelledby="finish-setup-title">
       <PageHeading id="finish-setup-title" title={t('Connect your tools')} />
+      {branch === 'go' && <PrivateWorkViewLink />}
       <form onSubmit={submit} noValidate>
         <div className={history ? 'finish-grid has-history' : 'finish-grid'}>
           <div className="panel finish-tools">

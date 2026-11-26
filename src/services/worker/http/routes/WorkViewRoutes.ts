@@ -43,7 +43,8 @@ import { runAgentTask } from '../../../agent-runner/run.js';
 import { ledgerSignature, readLedger } from '../../../work-view/request-groups.mjs';
 import { configuredJudge, decideSuggestion, jevClientFromSettings } from '../../../work-view/request-judge.mjs';
 import { labelOpenWorkState } from '../../../work-view/work-state-labels.mjs';
-import { normalizeRequestStatus } from '../../../../ui/my-work/src/live/status-normalization.js';
+import { isReportedReadyForCheck } from '../../../work-view/review-readiness.js';
+export { isReportedReadyForCheck } from '../../../work-view/review-readiness.js';
 import { configuredFocusJudge } from '../../../work-view/focus-judge.mjs';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
@@ -63,43 +64,10 @@ import {
 } from '../../../../shared/conversation-continuation.js';
 import type { ConversationContinuationRunner } from '../../../work-view/conversation-continuation-runner.js';
 
-// A request is ready for a human check once its explicit lifecycle reports it complete, shipped, or waiting for review.
-// Statuses are compared lowercased with `_` and spaces read as `-`, matching the viewer's status normalization.
-const READY_FOR_CHECK_LIFECYCLE_STATUSES = [
-  'done', 'completed', 'complete', 'shipped', 'delivered',
-  'needs-review', 'review', 'in-review', 'awaiting-review', 'ready-for-review',
-];
-type RecordedLifecycle = { explicit?: boolean; complete?: boolean | null; status?: string | null; atEpoch?: number | null } | null | undefined;
-type ReadyCheckItem = { kind: string; status: string; judgedStatus?: string | null; lastUpdateEpoch?: number };
-
-/** Mirrors the viewer's reviewIsNewerThanLifecycle (src/ui/my-work/src/live/to-work-model.ts). */
-function reviewIsNewerThanLifecycle(review: { checkedAt?: string | null }, lifecycle: RecordedLifecycle): boolean {
-  if (!lifecycle?.explicit || !lifecycle.atEpoch) return true;
-  const reviewedAt = Date.parse(review.checkedAt ?? '');
-  return Number.isFinite(reviewedAt) && reviewedAt >= lifecycle.atEpoch;
-}
-
 /** True while a process with this pid exists (signal 0 checks without signalling). */
 function processIsAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; } catch { return false; }
-}
-
-/** Ready for a person's check: the explicit lifecycle says so, or a memory review newer than it reached 100%.
- * The viewer offers "Mark checked" on exactly these requests. */
-export function isReportedReadyForCheck(request: { lifecycle?: RecordedLifecycle; progress?: { percent?: number; checkedAt?: string | null } | null; items?: ReadyCheckItem[] }, now = Date.now()): boolean {
-  const { lifecycle, progress } = request;
-  if (progress?.percent === 100 && reviewIsNewerThanLifecycle(progress, lifecycle)) return true;
-  // Item statuses, Jev's judged ones included, read with the viewer's own rule: an item an agent marked needs-review,
-  // or one a confident label judged finished, makes the viewer offer "Mark checked", so the check is accepted.
-  if (request.items?.length) {
-    const itemStatus = normalizeRequestStatus({ items: request.items, checked: false,
-      lifecycle: lifecycle?.explicit ? { status: lifecycle.status ?? null, explicit: true, complete: lifecycle.complete } : null }, now);
-    if (itemStatus === 'needs-review' || itemStatus === 'done') return true;
-  }
-  if (!lifecycle?.explicit) return false;
-  const status = String(lifecycle.status ?? '').trim().toLowerCase().replace(/[_ ]/g, '-');
-  return lifecycle.complete === true || READY_FOR_CHECK_LIFECYCLE_STATUSES.includes(status);
 }
 
 /** Recorded files plus the text kinds an agent attaches as a deliverable, served so a browser shows them rather than downloads them. */
@@ -395,9 +363,12 @@ const setupChoiceBody = z.object({
   branch: z.enum(SETUP_BRANCHES),
   memoryBilling: z.enum(SETUP_MEMORY_BILLINGS),
   cloudSyncOffer: z.enum(SETUP_CLOUD_SYNC_OFFERS).optional(),
+  shareWorkView: z.literal(true).optional(),
   openCheckout: z.literal(true).optional(),
 }).strict().refine(choice => !choice.cloudSyncOffer || (choice.branch === 'go' && choice.memoryBilling === 'existing'), {
   message: 'A Cloud Sync offer requires On The Go with your existing memory provider.',
+}).refine(choice => !choice.shareWorkView || !!choice.cloudSyncOffer, {
+  message: 'Work View sharing requires an explicit standalone Cloud Sync offer.',
 }).refine(choice => !choice.openCheckout || !!choice.cloudSyncOffer, {
   message: 'Select a Cloud Sync offer to open its checkout.',
 });
@@ -495,7 +466,7 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
     database.exec('PRAGMA busy_timeout = 1500');
     return database;
   };
-  // Setup's only extraction is hosted. Once setup is complete, ongoing refresh keeps its existing local path.
+  // Scheduled and manual refresh wait while the setup scan uses the worker.
   const setupRunning = () => {
     const state = readSetupState(setupPath);
     return setupActive() || hasPendingInstallSetup(state) || (state.status !== 'complete' && hasActiveSetupSession(setupPath));
@@ -509,8 +480,9 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
       && SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH !== 'false',
     runJob: async ({ needs, reason }) => {
       // The judges are read from settings per run, so a provider change applies to the next refresh.
+      const setup = reason === 'setup-scan';
       const task = buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase, localDeviceId, saveFocus,
-        judge: configuredJudge(settingsPath), focusJudge: configuredFocusJudge(settingsPath) });
+        judge: setup ? null : configuredJudge(settingsPath), focusJudge: setup ? null : configuredFocusJudge(settingsPath) });
       return { ...(await runAgentTask(task)), steps: task.steps };
     },
     // Jev labels open work-state items on every check; read from settings each time, like the judges.
@@ -664,6 +636,12 @@ export class WorkViewRoutes extends BaseRouteHandler {
       ? new FocusSharePublisher({ shares: this.focusShares, snapshot: () => this.snapshot(0, 'shared-focus'), everyMs: options.focusSharePublishEveryMs })
       : null;
     this.focusSharePublisher?.start();
+    if (this.autoRefresh) this.setupScan?.setLocalExtractor(async () => {
+      const result = await this.autoRefresh!.runNow({ reason: 'setup-scan' });
+      if (result === 'ok' || result === 'idle') return true;
+      if (result === 'waiting-for-agent' || result === 'failed') return false;
+      throw new Error('Another refresh is running. Try again when it finishes.');
+    });
     if (this.hostedIntent) this.setupScan?.setExtractor((prompts, improveProduct) => this.hostedIntent!.run(prompts, improveProduct));
     this.unsubscribeHistoryImport = this.historyImport?.subscribe(state => this.broadcast('setup-import', state)) ?? null;
     // Hosted extraction is awaited inside the scan, so failures stay in the scan screen's error slot.
@@ -1123,7 +1101,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   /** The choice can change until the installer acts on it; after that the installer holds the result. */
   private saveSetupChoice = (req: Request, res: Response): void => {
-    const { branch, memoryBilling, cloudSyncOffer, openCheckout } = req.body as z.infer<typeof setupChoiceBody>;
+    const { branch, memoryBilling, cloudSyncOffer, shareWorkView, openCheckout } = req.body as z.infer<typeof setupChoiceBody>;
     const offer = setupCloudSyncOffer({ branch, memoryBilling, cloudSyncOffer });
     const state = readSetupState(this.setupStatePath);
     if (state.status === 'complete') { res.status(409).json({ error: 'Setup is already complete.', state: this.setupStateView(state) }); return; }
@@ -1132,7 +1110,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     // The first checkout request belongs to the plan saved in this same write. A repeat
     // or a second browser tab cannot replace that plan while the terminal sets up pairing.
     const sameChoice = state.choice?.branch === branch && state.choice.memoryBilling === memoryBilling
-      && setupCloudSyncOffer(state.choice) === offer;
+      && setupCloudSyncOffer(state.choice) === offer && state.choice.shareWorkView === shareWorkView;
     const locked = applied || (!!state.checkout && state.installer?.stage !== 'failed');
     if (locked && !sameChoice) {
       res.status(409).json({ error: 'The installer already applied the earlier choice.', state: this.setupStateView(state) });
@@ -1149,6 +1127,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const usage = state.choice?.usage ?? (scanUsage ? toSetupUsage(scanUsage) : undefined);
     const choice = locked ? state.choice : {
       branch, memoryBilling, chosenAt: now,
+      ...(shareWorkView ? { shareWorkView } : {}),
       ...(offer ? { cloudSyncOffer: offer, ...(usage ? { usage } : {}) } : {}),
     };
     this.saveSetupState({ ...state, choice, checkout }, res);
@@ -1305,13 +1284,15 @@ export class WorkViewRoutes extends BaseRouteHandler {
    * being extracted now, read from what has landed: goals first, then work (request groups), then rules (the story).
    */
   private setupView(snapshot: WorkViewSnapshot) {
+    const scan = this.setupScan?.state() ?? null;
     const hosted = this.hostedIntent?.state();
-    if (hosted && hosted.state !== 'idle') return { scan: this.setupScan?.state() ?? null, work: this.setupWork(), extraction: hosted };
+    const ranHosted = scan && (scan.uploadedAgents !== null || (scan.done && scan.agents.every(agent => !agent.prompts)));
+    if (ranHosted && hosted && hosted.state !== 'idle') return { scan, work: this.setupWork(), extraction: hosted };
     const refresh = this.readableRefreshStatus();
     const view = snapshot as unknown as { goals?: unknown; story?: { groups?: number; story?: unknown } | null };
     const step = refresh?.state !== 'running' ? null : !view.goals ? 'goals' : !view.story?.groups ? 'work' : 'rules';
     return {
-      scan: this.setupScan?.state() ?? null,
+      scan,
       work: this.setupWork(),
       extraction: refresh ? {
         state: refresh.state, reason: refresh.reason ?? null, step, agent: refresh.agent ?? null,
