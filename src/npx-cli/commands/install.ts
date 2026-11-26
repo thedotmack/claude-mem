@@ -469,6 +469,36 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
       };
     }
 
+    case 'zcode': {
+      return {
+        title: 'ZCode: installing hooks + MCP',
+        task: async (message) => {
+          message('Loading ZCode installer…');
+          const { installZCode, readZCodeStatus } = await import('../../services/integrations/ZCodeHooksInstaller.js');
+          message('Installing ZCode hooks + MCP…');
+          const { result, output } = await bufferConsole(async () => installZCode());
+          if (result !== 0) {
+            recordFailure('ZCode: hooks + MCP installation failed', output);
+            return `ZCode: hooks + MCP installation failed ${styleText('red', 'FAIL')}`;
+          }
+          // Ask the status function, not the printed text: a run without a
+          // terminal buffers no output, so a phrase match never fires there.
+          if (readZCodeStatus().status === 'disabled') {
+            installerError(ErrorSeverity.WARN_CONTINUE, {
+              component: 'zcode',
+              ide: 'zcode',
+              phase: 'ide-install',
+              cause: new Error('ZCode hooks installed, but hooks.enabled is false in config.json.'),
+              remediation: 'Set hooks.enabled to true in ~/.zcode/cli/config.json, then start a new ZCode session.',
+              details: output,
+            }, summary);
+            return `ZCode: hooks + MCP installed, but hooks.enabled is false ${styleText('yellow', '!')}`;
+          }
+          return `ZCode: hooks + MCP installed ${styleText('green', 'OK')}`;
+        },
+      };
+    }
+
     case 'opencode': {
       return {
         title: 'OpenCode: installing plugin',

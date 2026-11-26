@@ -99,6 +99,7 @@ describe('npx CLI subcommand --help', () => {
     ['kimi', 'uninstall'],
     ['hermes', 'uninstall'],
     ['devin', 'uninstall'],
+    ['zcode', 'uninstall'],
     ['antigravity-cli', 'uninstall'],
     ['pi', 'uninstall'],
     ['project', 'merge', 'a', 'b'],
