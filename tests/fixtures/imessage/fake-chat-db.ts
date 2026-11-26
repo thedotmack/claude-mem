@@ -46,6 +46,8 @@ export interface FakeMessage {
   tapback?: { on: string; type: number; emoji?: string };
   rename?: string;
   member?: { person: string; removed?: boolean };
+  /** The sender left the group. */
+  left?: boolean;
   /** Store the date in seconds, as macOS before 10.13 did. */
   seconds?: boolean;
 }
@@ -81,7 +83,7 @@ export class FakeChatDb {
     const date = input.seconds ? BigInt(Math.floor((input.at - APPLE_EPOCH_MS) / 1000)) : appleNs(input.at);
     const text = input.text ?? null;
     const body = text !== null ? attributedBodyFor(text) : null;
-    const itemType = input.rename !== undefined ? 2 : input.member ? 1 : 0;
+    const itemType = input.rename !== undefined ? 2 : input.member ? 1 : input.left ? 3 : 0;
     const id = Number(this.db.query(
       `INSERT INTO message (guid, text, handle_id, service, date, is_from_me, cache_has_attachments, item_type, other_handle,
         group_title, group_action_type, associated_message_guid, associated_message_type, associated_message_emoji, attributedBody)

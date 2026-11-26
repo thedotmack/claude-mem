@@ -383,6 +383,11 @@ export class ChatDbSource implements MessageSource {
       const change = row.action_type === 1 ? 'removed' : 'added';
       return { type: 'membership', chatGuid, change, person: row.other, sender, isFromMe, occurredAt };
     }
+    if (itemType === 3 && (row.action_type ?? 0) === 0) {
+      // The sender left the group (other group actions here are photo and background changes).
+      const person = isFromMe ? 'me' : row.sender;
+      return person ? { type: 'membership', chatGuid, change: 'left', person, sender, isFromMe, occurredAt } : null;
+    }
     if (itemType === 2) {
       const title = row.group_title?.trim();
       return title ? { type: 'renamed', chatGuid, displayName: title, sender, isFromMe, occurredAt } : null;
