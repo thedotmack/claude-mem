@@ -113,6 +113,7 @@ describe('resolveOpenAICompatConfig', () => {
     ['worldrouter', 'https://inference-api.worldrouter.ai/v1', 'deepseek-v4-flash'],
     ['aigrow', 'https://aigrow.gg/v1', 'claude-haiku-5.5'],
     ['straitly', 'https://api.straitly.ai/v1', 'deepseek/deepseek-v4-1-flash-1017'],
+    ['teamorouter', 'https://api.teamorouter.com/v1', 'glm-5.3-flash'],
   ])('resolves %s with its hosted endpoint and default model', (id, baseUrl, defaultModel) => {
     process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = id;
     process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'fixture-preset-key';

@@ -127,6 +127,21 @@ describe('Claude provider condense calls carry the observer output cap (#6503)',
     expect(budgets).toEqual([8192]);
   });
 
+  it('skips the condense call when CLAUDE_MEM_FIELD_CONDENSE_ENABLED is false', async () => {
+    const prior = process.env.CLAUDE_MEM_FIELD_CONDENSE_ENABLED;
+    delete process.env.CLAUDE_MEM_FIELD_CONDENSE_ENABLED;
+    try {
+      settingsOverrides.CLAUDE_MEM_FIELD_CONDENSE_ENABLED = 'false';
+      const { budgets, prompts } = await condenseBudgets();
+      expect(budgets).toEqual([]);
+      // The observation is still sent, with the field cut by head/tail elision.
+      expect(prompts[0]).toContain('<elided');
+      expect(prompts[0]).not.toContain('condensed payload');
+    } finally {
+      if (prior !== undefined) process.env.CLAUDE_MEM_FIELD_CONDENSE_ENABLED = prior;
+    }
+  });
+
   it('fieldCompressionMaxOutputTokens returns the configured cap', () => {
     const provider = new ClaudeProvider(dbManager, sessionManagerHolding([])) as unknown as {
       fieldCompressionMaxOutputTokens(): number;

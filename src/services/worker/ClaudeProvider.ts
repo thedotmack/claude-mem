@@ -50,7 +50,7 @@ import { MAX_CONSECUTIVE_SDK_STREAM_EXITS, RESPONSE_STALL_MS, ObserverResponsePa
 import { recordObserverFailure } from '../../shared/observer-health.js';
 import type { ClaudeCredential } from '../../shared/quota-cooldown.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt, type CompressedField, type FieldCompressor } from './field-optimizer.js';
-import { resolveFieldOptimizeTimeoutMs } from './retry.js';
+import { resolveFieldCondenseEnabled, resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
 import { captureEvent } from '../telemetry/telemetry.js';
@@ -1395,6 +1395,7 @@ export class ClaudeProvider {
               resolveFieldOptimizeTimeoutMs,
               session.observerContextWindowTokens,
               () => this.fieldCompressionMaxOutputTokens(),
+              resolveFieldCondenseEnabled,
             )
           : { toolInput: message.tool_input, toolOutput: message.tool_response };
 

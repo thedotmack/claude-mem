@@ -170,7 +170,7 @@ import { isUserScopeRegistration } from '../../shared/claude-code-plugin-paths.j
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { clearClaudeAutoMemoryOverride } from '../utils/claude-auto-memory.js';
 import { readFlatSettings } from '../utils/settings.js';
-import { shutdownWorkerAndWait, type ShutdownBlocker } from '../../services/install/shutdown-helper.js';
+import { shutdownWorkerAndWait, WORKER_EXIT_WAIT_MS, type ShutdownBlocker } from '../../services/install/shutdown-helper.js';
 import { holdSpawnLock, SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-gate.js';
 import { readOwnedWorkerPidInfo, type PidInfo } from '../../supervisor/process-registry.js';
 import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
@@ -2755,6 +2755,9 @@ export interface InstallOptions {
   serverUrl?: string;
 }
 
+/** The worker stop's wait, as the abort messages state it. */
+const WORKER_EXIT_WAIT_SECONDS = WORKER_EXIT_WAIT_MS / 1000;
+
 /**
  * How the installer reacts when the worker port is not free. This runs before
  * the sign-in/trial step, which the install must still reach, so it aborts only
@@ -2788,8 +2791,8 @@ export function workerShutdownFailure(
         // a kill command (it may belong to a container, or be reused).
         return {
           severity: ErrorSeverity.ABORT,
-          cause: 'The running claude-mem worker accepted the shutdown request but was still serving after 10 seconds.',
-          remediation: 'Run `npx claude-mem stop`, verify it exits, then run `npx claude-mem install` again.',
+          cause: `The running claude-mem worker accepted the shutdown request but was still serving after ${WORKER_EXIT_WAIT_SECONDS} seconds.`,
+          remediation: 'Run `npx claude-mem stop`, verify it exits, rerun the command you were running (`npx claude-mem update` for an update), then run `npx claude-mem start` if no worker answers.',
         };
       }
       // The PID was verified as ours (PID file plus start token) at the
@@ -2797,8 +2800,8 @@ export function workerShutdownFailure(
       const killCommand = process.platform === 'win32' ? `taskkill /PID ${blocker.pid} /F` : `kill ${blocker.pid}`;
       return {
         severity: ErrorSeverity.ABORT,
-        cause: `The claude-mem worker (PID ${blocker.pid}) did not stop within 10 seconds.`,
-        remediation: `Run \`npx claude-mem stop\`, or end PID ${blocker.pid} (\`${killCommand}\`), then run \`npx claude-mem install\` again.`,
+        cause: `The claude-mem worker (PID ${blocker.pid}) did not stop within ${WORKER_EXIT_WAIT_SECONDS} seconds.`,
+        remediation: `Run \`npx claude-mem stop\`, or end PID ${blocker.pid} (\`${killCommand}\`), rerun the command you were running (\`npx claude-mem update\` for an update), then run \`npx claude-mem start\` if no worker answers.`,
       };
     }
   }
@@ -2901,7 +2904,10 @@ export async function requireWorkerStopped(
   spinner?.start(action);
 
   try {
-    const result = await stopWorker(port, 10000);
+    // One request, one wait as long as the worker's own shutdown may take. A second request does not buy a slow
+    // worker time: its listener closes first, so the request is refused at once while the process is still alive; and
+    // one it does accept ends in process.exit in the middle of the first shutdown.
+    const result = await stopWorker(port, WORKER_EXIT_WAIT_MS);
     if (!result.stopped) {
       const failure = workerShutdownFailure(result.blocker, port);
       if (failure.severity === ErrorSeverity.ABORT) {
