@@ -400,8 +400,16 @@ export function buildTimeline(
   observations: Observation[],
   summaries: SummaryTimelineItem[]
 ): TimelineItem[] {
+  // storeObservations() stamps one turn's rows with a single epoch, so the
+  // epoch does not order them. They arrive newest first, or in score order
+  // when reinforcement ranking chose them. SQLite ids count up in stored
+  // order. A server row's id is a UUID and nothing on the row gives its
+  // place in the turn, so those keep the reverse of the order they were read in.
+  const oldestFirst = [...observations].reverse().sort((a, b) =>
+    a.created_at_epoch - b.created_at_epoch
+    || (typeof a.id === 'number' && typeof b.id === 'number' ? a.id - b.id : 0));
   const timeline: TimelineItem[] = [
-    ...observations.map(obs => ({ type: 'observation' as const, data: obs })),
+    ...oldestFirst.map(obs => ({ type: 'observation' as const, data: obs })),
     ...summaries.map(summary => ({ type: 'summary' as const, data: summary }))
   ];
 
