@@ -68,6 +68,8 @@ describe('buildTimeline', () => {
     ['combines both kinds', [{ id: 1, created_at_epoch: 1000 }], [{ id: 1, displayEpoch: 2000 }], ['observation:1', 'summary:1']],
     ['sorts chronologically', [{ id: 1, created_at_epoch: 3000 }, { id: 2, created_at_epoch: 1000 }], [{ id: 1, displayEpoch: 2000 }], ['observation:2', 'summary:1', 'observation:1']],
     ['keeps one turn in stored order', [{ id: 3, created_at_epoch: 1000 }, { id: 2, created_at_epoch: 1000 }, { id: 1, created_at_epoch: 1000 }], [{ id: 1, displayEpoch: 1000 }], ['observation:1', 'observation:2', 'observation:3', 'summary:1']],
+    ['orders one turn by id when it arrives ranked', [{ id: 2, created_at_epoch: 1000 }, { id: 3, created_at_epoch: 1000 }, { id: 1, created_at_epoch: 1000 }], [{ id: 1, displayEpoch: 1000 }], ['observation:1', 'observation:2', 'observation:3', 'summary:1']],
+    ['reverses the read order of server ids', [{ id: 'b', created_at_epoch: 1000 }, { id: 'c', created_at_epoch: 1000 }, { id: 'a', created_at_epoch: 1000 }], [], ['observation:a', 'observation:c', 'observation:b']],
     ['no observations', [], [{ id: 1, displayEpoch: 1000 }], ['summary:1']],
     ['no summaries', [{ id: 1, created_at_epoch: 1000 }], [], ['observation:1']],
     ['both empty', [], [], []],
@@ -101,6 +103,38 @@ describe('timeline of turns that stored several observations', () => {
       const rows = queryObservationsMulti(store, ['turn-order'], config('turn-order'));
       expect(buildTimeline(rows, []).map(item => item.data.id))
         .toEqual([...first.observationIds, ...second.observationIds]);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe('timeline of a turn that reinforcement ranking selected', () => {
+  it('lists the turn in stored order when one of its rows was confirmed again', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      const day = 86_400_000;
+      const now = Date.now();
+      const sessionDbId = store.createSDKSession('content-ranked', 'ranked-turn', 'prompt');
+      store.ensureMemorySessionIdRegistered(sessionDbId, 'memory-ranked');
+      const observation = (title: string) => ({
+        type: 'discovery', title, subtitle: null, facts: [], narrative: title,
+        concepts: ['ranked-turn'], files_read: [], files_modified: [],
+      });
+      store.storeObservation('memory-ranked', 'ranked-turn', observation('old 40d'), 1, 0, now - 40 * day);
+      store.storeObservation('memory-ranked', 'ranked-turn', observation('old 30d'), 2, 0, now - 30 * day);
+      const turn = store.storeObservations('memory-ranked', 'ranked-turn',
+        [observation('read the config'), observation('found the bug'), observation('fixed the bug')], null, 3, 0, now - 2 * day);
+      // The same session reports the middle row again a day later: the store reinforces it.
+      store.storeObservation('memory-ranked', 'ranked-turn', observation('found the bug'), 4, 0, now - day);
+      const today = store.storeObservation('memory-ranked', 'ranked-turn', observation('today'), 5, 0, now).id;
+
+      // More candidates (6) than the window (4), so the ranked path runs and
+      // puts the reinforced row ahead of the rest of its turn.
+      const ranked = { ...config('ranked-turn'), totalObservationCount: 4, reinforcementAlpha: 1 };
+      const rows = queryObservationsMulti(store, ['ranked-turn'], ranked);
+      expect(rows.map(row => row.id)).toEqual([today, turn.observationIds[1], turn.observationIds[2], turn.observationIds[0]]);
+      expect(buildTimeline(rows, []).map(item => item.data.id)).toEqual([...turn.observationIds, today]);
     } finally {
       store.close();
     }
