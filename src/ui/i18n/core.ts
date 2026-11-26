@@ -17,6 +17,10 @@ import { viewerFr } from './viewer-fr';
 import { myworkFr } from './mywork-fr';
 import { setupFr } from './setup-fr';
 import { settingsFr } from './settings-fr';
+import { viewerRu } from './viewer-ru';
+import { myworkRu } from './mywork-ru';
+import { setupRu } from './setup-ru';
+import { settingsRu } from './settings-ru';
 import { LANGUAGE_STORAGE_KEY, parseLocale, type Locale } from './locale';
 
 export type { Locale } from './locale';
@@ -27,6 +31,7 @@ const catalogs: Partial<Record<Locale, Record<string, string>>> = {
   tr: myworkTr,
   'pt-BR': { ...viewerPtBr, ...myworkPtBr, ...setupPtBr, ...settingsPtBr },
   fr: { ...viewerFr, ...myworkFr, ...setupFr, ...settingsFr },
+  ru: { ...viewerRu, ...myworkRu, ...setupRu, ...settingsRu },
 };
 const listeners = new Set<() => void>();
 let sessionLocale: Locale = 'en';

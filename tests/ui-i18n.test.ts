@@ -22,6 +22,10 @@ import { viewerFr } from '../src/ui/i18n/viewer-fr.ts';
 import { myworkFr } from '../src/ui/i18n/mywork-fr.ts';
 import { setupFr } from '../src/ui/i18n/setup-fr.ts';
 import { settingsFr } from '../src/ui/i18n/settings-fr.ts';
+import { viewerRu } from '../src/ui/i18n/viewer-ru.ts';
+import { myworkRu } from '../src/ui/i18n/mywork-ru.ts';
+import { setupRu } from '../src/ui/i18n/setup-ru.ts';
+import { settingsRu } from '../src/ui/i18n/settings-ru.ts';
 
 const UI_ROOT = fileURLToPath(new URL('../src/ui/', import.meta.url));
 
@@ -96,6 +100,8 @@ describe('UI language catalogs', () => {
     assert.equal(parseLocale('tr'), 'tr');
     assert.equal(parseLocale('pt-BR'), 'pt-BR');
     assert.equal(LOCALE_NAMES['pt-BR'], 'Português (Brasil)');
+    assert.equal(parseLocale('ru'), 'ru');
+    assert.equal(LOCALE_NAMES.ru, 'Русский');
     assert.equal(parseLocale('toString'), 'en');
   });
 
@@ -109,6 +115,7 @@ describe('UI language catalogs', () => {
     viewerKo, myworkKo, setupKo, settingsKo, myworkTr,
     viewerFr, myworkFr, setupFr, settingsFr,
     viewerPtBr, myworkPtBr, setupPtBr, settingsPtBr,
+    viewerRu, myworkRu, setupRu, settingsRu,
   })) {
     it(`${name} has nonempty translations and preserves interpolation placeholders`, () => {
       assert.ok(Object.keys(catalog).length > 0);
@@ -125,6 +132,7 @@ describe('UI language catalogs', () => {
     ['viewerKo', viewerKo, viewerZh], ['myworkKo', myworkKo, myworkZh], ['setupKo', setupKo, setupZh], ['settingsKo', settingsKo, settingsZh],
     ['viewerFr', viewerFr, viewerZh], ['myworkFr', myworkFr, myworkZh], ['setupFr', setupFr, setupZh], ['settingsFr', settingsFr, settingsZh],
     ['viewerPtBr', viewerPtBr, viewerZh], ['myworkPtBr', myworkPtBr, myworkZh], ['setupPtBr', setupPtBr, setupZh], ['settingsPtBr', settingsPtBr, settingsZh],
+    ['viewerRu', viewerRu, viewerZh], ['myworkRu', myworkRu, myworkZh], ['setupRu', setupRu, setupZh], ['settingsRu', settingsRu, settingsZh],
   ] as const) {
     it(`${name} translates exactly the strings its Chinese catalog does`, () => {
       assert.deepEqual(Object.keys(localized).sort(), Object.keys(chinese).sort());
@@ -158,6 +166,7 @@ describe('UI language catalogs', () => {
     [viewerKo, myworkKo, setupKo, settingsKo],
     [viewerFr, myworkFr, setupFr, settingsFr],
     [viewerPtBr, myworkPtBr, setupPtBr, settingsPtBr],
+    [viewerRu, myworkRu, setupRu, settingsRu],
   ]) {
     it('shared English phrases have the same translation across catalogs', () => {
       const seen = new Map<string, string>();
