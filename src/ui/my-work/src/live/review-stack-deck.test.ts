@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { ReviewStackSnapshot } from '../../../../shared/review-stack.ts'
 import { readReviewStack, originalHttps } from './review-stack-client.ts'
-import { reviewDeck, horizontalTravel, milestoneCrossed } from './review-stack-deck.ts'
+import { reviewAreaOptions, reviewDeck, horizontalTravel, milestoneCrossed } from './review-stack-deck.ts'
 import { readReviewManifest, importReviewManifest } from './review-stack-import.ts'
 
 const card = (id: string, focus = 'Design') => ({ id, key: id, focus, title: 'Recorded project deliverable', what: 'A genuine original card.', context: 'The project this card belongs to.', excerpt: 'Source evidence.', createdAt: 1 })
@@ -18,6 +18,18 @@ test('a Browse deck includes reviewed originals; Work revisits only skips select
   assert.ok(horizontalTravel(65, 3, 400)); assert.equal(horizontalTravel(30, 90, 400), false)
   assert.ok(milestoneCrossed(4, 5)); assert.equal(milestoneCrossed(5, 5), false)
   assert.equal(originalHttps('javascript:alert(1)'), undefined); assert.equal(originalHttps('https://user@example.com'), undefined)
+})
+
+test('identical masked labels offer distinct areas and filter only their original card IDs', () => {
+  const cards = [
+    { ...card('b', 'Private'), focusId:'focus-b' }, { ...card('a', 'Private'), focusId:'focus-a' },
+    { ...card('a2', 'Private'), focusId:'focus-a' }, card('legacy', 'Design'),
+  ]
+  const options = reviewAreaOptions(cards)
+  assert.equal(options.get('focus-a'), 'Private (1)')
+  assert.equal(options.get('focus-b'), 'Private (2)')
+  assert.equal(options.get('design'), 'Design')
+  assert.deepEqual(reviewDeck({ ...empty, cards }, 'focus-a', new Set()).cards.map(c => c.id), ['a','a2'])
 })
 
 test('a stale cursor restarts the read before publishing any partially assembled deck', async () => {

@@ -13,7 +13,9 @@ import { decodeChanges } from '../../../src/services/sync/SyncClient.js';
 import { publishSharedRecords, readSharedRecords } from '../../../src/services/work-view/shared-record-store.mjs';
 import { createSharedBatch, createSharedEntry, sharedRecordKey, sharedValueHash } from '../../../src/services/work-view/shared-records.mjs';
 import { isSharedProjectionValue } from '../../../src/services/work-view/shared-projection.mjs';
-import { prepareReviewStackWrite, renderReviewStack } from '../../../src/services/work-view/review-stack.js';
+import { foldCloudBatch } from '../../../src/services/work-view/cloud-renderer.js';
+import { prepareReviewStackWrite, renderReviewStack, reviewStackPage, ReviewStackError } from '../../../src/services/work-view/review-stack.js';
+import { randomUUID } from 'node:crypto';
 import { redactSharedValue } from '../../../src/services/work-view/shared-redaction.mjs';
 import { WorkStateSource } from '../../../src/services/work-view/data-source.mjs';
 
@@ -82,6 +84,83 @@ test('review excerpts and 5-word titles honor source and recipient redaction bef
     expect(view.cards[0].title).toBe("Review this private design <redacted type='aws_access_key'/>");
     expect(serializedDatabase(recipient)).not.toContain(AWS);
   }
+});
+
+test('an enabled policy projects existing synced notes and selects a visible focus across devices', () => {
+  const a = fixture('a'), b = fixture('b');
+  const write = (f: Fixture, operation: 'import' | 'action', input: unknown) => {
+    const prepared = prepareReviewStackWrite(read(f).records.values(), operation, input, randomUUID(), 100, { redactText:redactSharedValue });
+    publishSharedRecords(f.db, { deviceId:f.deviceId, project:'Review', updates:prepared.updates, validateValue:isSharedProjectionValue });
+  };
+  policy(false);
+  write(a, 'import', {cards:['TEAM_BLUE', 'TEAM_GREEN'].map(focus => ({
+    key:'art-' + focus, focus, title:'Review the artwork',
+    what:'The first draft shows original cover artwork for our magazine.',
+    context:'We review the cover illustrations together ahead of final publication.',
+    source:'https://example.org/' + focus,
+  }))});
+  const original = renderReviewStack(read(a).records.values());
+  write(a, 'action', { action:'follow-up', cardId:original.cards[0].id, body:'Keep FOLLOWUP_PRIVATE visible only when authorized.' });
+  expect(apply(b, wires(a)).quarantined).toBe(0);
+  const cloud = foldCloudBatch(rows(a).map(row => ({...row, origin_device_id:'a', origin_local_id:String(row.id)})));
+  expect(cloud.invalid).toBe(0);
+  const plain = renderReviewStack(cloud.members);
+  policy(true, ['FOLLOWUP_PRIVATE']);
+  const notesMasked = renderReviewStack(cloud.members, {redactText:redactSharedValue});
+  expect(notesMasked.cards).toEqual(plain.cards);
+  expect(notesMasked.followUps[0].body).toContain("<redacted type='custom0'/>");
+  expect(notesMasked.revision).not.toBe(plain.revision);
+  expect(() => reviewStackPage(notesMasked, plain.revision + '.1')).toThrow(ReviewStackError);
+  policy(true, ['TEAM_BLUE|TEAM_GREEN', 'FOLLOWUP_PRIVATE']);
+  const safe = renderReviewStack(read(b).records.values(), {redactText:redactSharedValue});
+  expect(renderReviewStack(cloud.members, {redactText:redactSharedValue})).toEqual(safe);
+  for (const card of safe.cards) {
+    expect(card.key).toBe(card.id);
+    expect(card.source).toBeUndefined();
+    expect(card.focus).toBe("<redacted type='custom0'/>");
+  }
+  expect(new Set(safe.cards.map(card => card.focusId)).size).toBe(2);
+  expect(() => write(b, 'action', { action:'seen-group', focus:safe.cards[0].focus })).toThrow(ReviewStackError);
+  write(b, 'action', { action:'seen-group', focus:safe.cards[0].focus, cardId:safe.cards[0].id });
+  const maskedGroup = renderReviewStack(read(b).records.values(), {redactText:redactSharedValue});
+  expect(maskedGroup.groups[0]).toMatchObject({activeCount:1,focusId:safe.cards[0].focusId});
+  expect(maskedGroup.reviews.map(review => review.cardId)).toEqual([safe.cards[0].id]);
+  policy(false);
+  expect(apply(a, wires(b)).quarantined).toBe(0);
+  const received = renderReviewStack(read(a).records.values());
+  expect(received.cards.map(card => card.focus).sort()).toEqual(['TEAM_BLUE','TEAM_GREEN']);
+  expect(received.reviews).toEqual(maskedGroup.reviews);
+  write(a, 'action', { action:'undo-group', groupId:received.groups[0].id });
+  expect(renderReviewStack(read(a).records.values()).reviews).toEqual([]);
+});
+
+test('a stricter receiving device keeps two masked scopes distinct and undo leaves the other group seen', () => {
+  const a = fixture('alpha'), b = fixture('beta');
+  const write = (f: Fixture, operation: 'import' | 'action', body: unknown, mutationId = randomUUID()) => {
+    const { updates } = prepareReviewStackWrite(read(f).records.values(), operation, body, mutationId, 1, {redactText:redactSharedValue});
+    publishSharedRecords(f.db, {deviceId:f.deviceId,project:'Review',updates,validateValue:isSharedProjectionValue});
+    return mutationId;
+  };
+  policy(false);
+  write(a, 'import', {cards:['PRIVATE_ONE','PRIVATE_TWO'].map((focus,i) => ({
+    key:'art-' + i, focus, title:'Review the artwork', excerpt:'Original artwork',
+    what:'The first draft shows the original artwork for our magazine.',
+    context:'We review the magazine covers together ahead of final publication.',
+  }))});
+  const original = renderReviewStack(read(a).records.values());
+  const first = original.cards[0], second = original.cards[1];
+  const oldGroupId = write(a, 'action', {action:'seen-group', focus:first.focus});
+  policy(true, ['PRIVATE_ONE|PRIVATE_TWO']);
+  expect(apply(b, wires(a)).quarantined).toBe(0);
+  const received = renderReviewStack(read(b).records.values(), {redactText:redactSharedValue});
+  expect(received.cards.map(c => c.focus)).toEqual(["<redacted type='custom0'/>","<redacted type='custom0'/>"]);
+  expect(received.cards.map(c => c.focusId)).toEqual(original.cards.map(c => c.focusId));
+  expect(received.groups[0]).toMatchObject({id:oldGroupId,count:1,focusId:first.focusId});
+  const nextGroupId = write(b, 'action', {action:'seen-group',focus:received.cards[1].focus,cardId:second.id});
+  write(b, 'action', {action:'undo-group',groupId:oldGroupId});
+  const restored = renderReviewStack(read(b).records.values(), {redactText:redactSharedValue});
+  expect(restored.reviews.map(review => review.cardId)).toEqual([second.id]);
+  expect(restored.groups).toMatchObject([{id:nextGroupId,count:1,focusId:second.focusId}]);
 });
 
 test('origin redaction precedes payload and manifest hashes', () => {

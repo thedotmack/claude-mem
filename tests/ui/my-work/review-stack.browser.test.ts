@@ -5,6 +5,7 @@ import express from 'express';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { ReviewStackRoutes } from '../../../src/services/worker/http/routes/ReviewStackRoutes.js';
 import { WORKER_JSON_BODY_LIMIT_BYTES } from '../../../src/shared/worker-http-limits.js';
+import { _resetRedactionConfigCache } from '../../../src/utils/redaction.js';
 import { chromeExecutablePath, connectToPage, failOnCiWithoutChrome, launchChrome, REPOSITORY_ROOT, type DevToolsPage } from '../../helpers/chrome-devtools.ts';
 
 failOnCiWithoutChrome('Review Stack browser tests need Chromium.');
@@ -12,7 +13,7 @@ const browserTest = chromeExecutablePath ? it : it.skip;
 const stack = '/api/work-view/review-stack';
 const image = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jJXkAAAAASUVORK5CYII=';
 const cards = ['First original study', 'Second original study', 'Other project study'].map((title, index) => ({
-  key: 'browser-original-' + index, focus: index === 2 ? 'Other' : 'Illustrations', title,
+  key: 'browser-original-' + index, focus: 'Illustrations ' + (index === 2 ? 'PRIVATE_SECOND' : 'PRIVATE_FIRST'), title,
   what: 'This image records one design variation in our original illustration project.',
   context: 'The design team made these illustrations to compare visual ideas together.',
   source: `https://original.example/studies/${index}`, imageData: image, excerpt: 'Original excerpt ' + index,
@@ -50,11 +51,14 @@ browserTest('the built phone and desktop reviewer reads private thumbnails and k
   const overview = await Bun.file(join(REPOSITORY_ROOT, 'src/ui/my-work/test-fixtures/work-view-snapshot.trimmed.json')).json();
   const store = new SessionStore(':memory:');
   store.setLocalSyncDeviceId('review-browser-test');
+  const previousEnabled = process.env.CLAUDE_MEM_REDACT_ENABLED, previousPatterns = process.env.CLAUDE_MEM_REDACT_CUSTOM_PATTERNS;
   const auth: Array<{ path: string; owner?: string; token?: string }> = [];
+  const groupAnchors: string[] = [];
   const app = express();
   app.use(express.json({ limit: WORKER_JSON_BODY_LIMIT_BYTES }));
   app.use(stack, (req, res, next) => {
     auth.push({ path: req.path, owner: req.get('X-Work-Session'), token: req.get('X-Claude-Mem-Token') });
+    if (req.path === '/action' && req.body?.action === 'seen-group') groupAnchors.push(req.body.cardId);
     if (req.get('X-Work-Session') !== 'fixture-owner' && req.get('X-Claude-Mem-Token') !== 'fixture-token') { res.sendStatus(401); return; }
     next();
   });
@@ -74,6 +78,8 @@ browserTest('the built phone and desktop reviewer reads private thumbnails and k
   const chrome = launchChrome(url, { remoteDebugging: true, extraFlags: ['--no-proxy-server', '--disable-dev-shm-usage'] });
   let page: DevToolsPage | undefined;
   try {
+    process.env.CLAUDE_MEM_REDACT_ENABLED = 'false';
+    _resetRedactionConfigCache();
     page = await connectToPage(chrome, url);
     await page.send('Emulation.setDeviceMetricsOverride', { width: 320, height: 740, deviceScaleFactor: 1, mobile: true });
     await waitFor(page, `document.querySelector('.stack-empty h2')?.textContent.includes('empty')`);
@@ -87,12 +93,21 @@ browserTest('the built phone and desktop reviewer reads private thumbnails and k
     await click(page, 'Import cards', '[role=dialog]');
     await waitFor(page, `document.querySelector('[role=dialog] [role=status]')?.textContent.includes('3 added')`);
     await click(page, 'View cards', '[role=dialog]');
+    process.env.CLAUDE_MEM_REDACT_ENABLED = 'true';
+    process.env.CLAUDE_MEM_REDACT_CUSTOM_PATTERNS = JSON.stringify([{name:'area',regex:'PRIVATE_(FIRST|SECOND)'}]);
+    _resetRedactionConfigCache();
+    await page.send('Page.navigate', {url});
     await waitFor(page, `document.querySelector('.stack-preview img')?.naturalWidth === 1`);
     expect(auth.some(call => call.path.startsWith('/media/') && call.owner === 'fixture-owner')).toBe(true);
     expect(await page.evaluate(`document.querySelector('.stack-source').rel`)).toContain('noreferrer');
     expect(await page.evaluate(`document.querySelector('.stack-preview img').referrerPolicy`)).toBe('no-referrer');
     expect(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth`)).toBe(true);
-    await page.evaluate(`(() => { const select=document.querySelector('.stack-select'); select.value='Illustrations'; select.dispatchEvent(new Event('change',{bubbles:true})); })()`);
+    const projected = await (await fetch(origin + stack, {headers:{'X-Work-Session':'fixture-owner'}})).json();
+    const focusId = projected.cards.find((item: {title:string}) => item.title === cards[0].title).focusId;
+    const labels = await page.evaluate(`Array.from(document.querySelectorAll('.stack-select option'), o => o.textContent)`) as string[];
+    expect(labels.filter(label => label.includes("<redacted type='area'/>"))).toHaveLength(2);
+    expect(new Set(labels).size).toBe(3);
+    await page.evaluate(`(() => { const select=document.querySelector('.stack-select'); select.value=${JSON.stringify(focusId)}; select.dispatchEvent(new Event('change',{bubbles:true})); })()`);
     await click(page, 'Save', '.stack-actions');
     await waitFor(page, `!!(${button('Saved', '.stack-actions')})`);
     const first = await page.evaluate(`document.querySelector('.stack-card h2').textContent`);
@@ -111,6 +126,7 @@ browserTest('the built phone and desktop reviewer reads private thumbnails and k
     await click(page, 'Work', '.stack-modes');
     await drag(page, 90, 'abandon');
     await drag(page, 90, 'complete');
+    expect(groupAnchors).toEqual([projected.cards.find((item: {title:string}) => item.title === first).id]);
     await waitFor(page, `!!document.querySelector('.stack-empty') && document.querySelector('.stack-toolbar') && document.querySelector('.review-stack').innerText.includes('20 XP')`);
     await click(page, 'Undo group', '.stack-feedback');
     await waitFor(page, `document.querySelector('.stack-card h2')?.textContent === ${JSON.stringify(first)} && document.querySelector('.review-stack').innerText.includes('0 XP')`);
@@ -131,5 +147,10 @@ browserTest('the built phone and desktop reviewer reads private thumbnails and k
     await click(page, 'History');
     await waitFor(page, `!!(${button('Reopen follow-up', 'section[aria-label="Review history"]')})`);
     expect(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth`)).toBe(true);
-  } finally { page?.close(); await chrome.close(); server.closeAllConnections(); server.close(); store.close(); }
+  } finally {
+    if (previousEnabled === undefined) delete process.env.CLAUDE_MEM_REDACT_ENABLED; else process.env.CLAUDE_MEM_REDACT_ENABLED = previousEnabled;
+    if (previousPatterns === undefined) delete process.env.CLAUDE_MEM_REDACT_CUSTOM_PATTERNS; else process.env.CLAUDE_MEM_REDACT_CUSTOM_PATTERNS = previousPatterns;
+    _resetRedactionConfigCache();
+    page?.close(); await chrome.close(); server.closeAllConnections(); server.close(); store.close();
+  }
 }, 60_000);

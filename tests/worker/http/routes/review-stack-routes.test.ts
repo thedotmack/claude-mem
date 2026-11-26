@@ -159,17 +159,24 @@ test('metadata readers retain verified thumbnail locators and fetch just the ima
   expect(() => readSharedRecordValue(worker.store.db, worker.id, { ...images[0], sourceId: images.at(-1)!.sourceId })).toThrow();
 });
 
-test('worker redaction covers reassembled excerpts, invalidates cached pages, and protects subsequent imports at rest', async () => {
+function fixtureRedaction(name: string, regex: string) {
   const enabled = process.env.CLAUDE_MEM_REDACT_ENABLED, patterns = process.env.CLAUDE_MEM_REDACT_CUSTOM_PATTERNS;
   dispose.push(() => {
     if (enabled === undefined) delete process.env.CLAUDE_MEM_REDACT_ENABLED; else process.env.CLAUDE_MEM_REDACT_ENABLED = enabled;
     if (patterns === undefined) delete process.env.CLAUDE_MEM_REDACT_CUSTOM_PATTERNS; else process.env.CLAUDE_MEM_REDACT_CUSTOM_PATTERNS = patterns;
     _resetRedactionConfigCache();
   });
+  process.env.CLAUDE_MEM_REDACT_CUSTOM_PATTERNS = JSON.stringify([{ name, regex }]);
+  return (on: boolean) => {
+    process.env.CLAUDE_MEM_REDACT_ENABLED = String(on);
+    _resetRedactionConfigCache();
+  };
+}
+
+test('worker redaction covers reassembled excerpts, invalidates cached pages, and protects subsequent imports at rest', async () => {
   const sample = 'REVIEW_RULE_SAMPLE', marker = "<redacted type='review-fixture'/>";
-  process.env.CLAUDE_MEM_REDACT_ENABLED = 'false';
-  process.env.CLAUDE_MEM_REDACT_CUSTOM_PATTERNS = JSON.stringify([{ name: 'review-fixture', regex: sample }]);
-  _resetRedactionConfigCache();
+  const setRedaction = fixtureRedaction('review-fixture', sample);
+  setRedaction(false);
   const worker = await device('review-policy');
   const excerpt = '漢'.repeat(3994) + sample + '漢'.repeat(11_970);
   const cards = Array.from({ length: 12 }, (_, i) => ({ ...card, key: 'policy-' + i, imageData: undefined, excerpt }));
@@ -178,8 +185,7 @@ test('worker redaction covers reassembled excerpts, invalidates cached pages, an
   expect(old.cards[0].excerpt).toContain(sample);
   expect(old.nextCursor).toBeString();
 
-  process.env.CLAUDE_MEM_REDACT_ENABLED = 'true';
-  _resetRedactionConfigCache();
+  setRedaction(true);
   const current = await worker.read();
   expect(current.cards[0].excerpt).toContain(marker);
   expect(current.cards[0].excerpt).not.toContain(sample);
@@ -187,10 +193,73 @@ test('worker redaction covers reassembled excerpts, invalidates cached pages, an
   expect((await fetch(worker.url + '?cursor=' + encodeURIComponent(old.nextCursor))).status).toBe(409);
   const added = await (await worker.write('import', { cards: [{ ...cards[0], key: 'new-policy' }] })).json();
 
-  process.env.CLAUDE_MEM_REDACT_ENABLED = 'false';
-  _resetRedactionConfigCache();
+  setRedaction(false);
   const after = await worker.read();
   const persisted = after.cards.find((item: { id: string }) => item.id === added.firstId);
   expect(persisted.excerpt).toContain(marker);
   expect(persisted.excerpt).not.toContain(sample);
+});
+
+test('current policy masks saved card metadata, links, notes and focus names while actions retain stable identities', async () => {
+  const values = ['RULE_A_SAMPLE', 'RULE_B_SAMPLE'];
+  const setRedaction = fixtureRedaction('review-metadata', values.join('|'));
+  setRedaction(false);
+  const worker = await device('review-metadata-policy');
+  const cards = Array.from({ length: 12 }, (_, i) => {
+    const value = values[i % 2];
+    return {
+      key: 'original-' + value + '-' + i, focus: 'Launch ' + value, title: 'Holiday ' + value + ' Artwork',
+      what: 'This ' + value + ' draft illustrates the upcoming spring launch campaign artwork.',
+      context: 'The ' + value + ' project is choosing illustrations for its spring launch.',
+      source: 'https://original.example/source/' + value, preview: 'https://original.example/preview/' + value,
+      excerpt: '漢'.repeat(16_000), // pagination even when the excerpts themselves are unaffected by policy
+    };
+  });
+  const { firstId } = await (await worker.write('import', { cards })).json();
+  const noteId = randomUUID(), groupId = randomUUID();
+  expect((await worker.write('action', { action: 'follow-up', cardId: firstId, body: 'Inspect ' + values[0] }, noteId)).status).toBe(200);
+  expect((await worker.write('action', { action: 'seen-group', focus: cards[0].focus }, groupId)).status).toBe(200);
+  const before = await worker.read();
+  expect(before.nextCursor).toBeString();
+  expect(before.cards[0].source).toMatch(/RULE_[AB]_SAMPLE/);
+
+  setRedaction(true);
+  const safe = await worker.read();
+  expect(safe.revision).not.toBe(before.revision);
+  expect((await fetch(worker.url + '?cursor=' + encodeURIComponent(before.nextCursor))).status).toBe(409);
+  const pages = [safe];
+  while (pages.at(-1).nextCursor) {
+    pages.push(await (await fetch(worker.url + '?cursor=' + encodeURIComponent(pages.at(-1).nextCursor))).json());
+  }
+  for (const value of values) expect(JSON.stringify(pages)).not.toContain(value);
+  const marker = "<redacted type='review-metadata'/>";
+  for (const item of pages.flatMap(page => page.cards)) {
+    expect(item.key).toBe(item.id);
+    for (const field of ['focus', 'title', 'what', 'context']) expect(item[field]).toContain(marker);
+    expect(item.source).toBeUndefined();
+    expect(item.preview).toBeUndefined();
+  }
+  const note = pages.flatMap(page => page.followUps).find(n => n.id === noteId);
+  expect(note).toMatchObject({ body: 'Inspect ' + marker, cardId: firstId });
+  const group = pages.flatMap(page => page.groups).find(g => g.id === groupId);
+  expect(group).toMatchObject({ focus: 'Launch ' + marker, count: 6 });
+  expect((await worker.write('action', { action: 'set-follow-up', cardId: firstId, followUpId: note.id, closed: true, revision: note.revision })).status).toBe(200);
+  expect((await worker.write('action', { action: 'undo-group', groupId })).status).toBe(200);
+  const shown = pages.flatMap(page => page.cards);
+  const selected = safe.cards[0], other = shown.find(item => item.focusId !== selected.focusId)!;
+  expect(other.focus).toBe(selected.focus);
+  expect((await worker.write('action', { action: 'seen-group', focus: selected.focus })).status).toBe(409);
+  const visibleGroupId = randomUUID();
+  expect((await worker.write('action', { action: 'seen-group', focus: selected.focus, cardId:selected.id }, visibleGroupId)).status).toBe(200);
+  const updated = await worker.read();
+  const last = await (await fetch(worker.url + '?cursor=' + encodeURIComponent(updated.nextCursor))).json();
+  expect(last.groups.find((g: { id: string }) => g.id === visibleGroupId)).toMatchObject({ count:6, activeCount:6, focusId:selected.focusId });
+  expect(last.reviews.map((review: { cardId:string }) => review.cardId).sort())
+    .toEqual(shown.filter(item => item.focusId === selected.focusId).map(item => item.id).sort());
+  expect((await worker.write('action', { action:'seen-group',focus:other.focus,cardId:other.id })).status).toBe(200);
+  expect((await worker.write('action', { action:'undo-group',groupId:visibleGroupId })).status).toBe(200);
+  const restored = await worker.read();
+  const afterUndo = await (await fetch(worker.url + '?cursor=' + encodeURIComponent(restored.nextCursor))).json();
+  expect(afterUndo.reviews.map((review: { cardId:string }) => review.cardId).sort())
+    .toEqual(shown.filter(item => item.focusId === other.focusId).map(item => item.id).sort());
 });

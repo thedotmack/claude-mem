@@ -52,6 +52,8 @@ export interface WindowEntry {
 export interface Conversation {
   id: string;
   startedAt: Date;
+  /** Identifies the pick under which all entries in this conversation arrived. */
+  selectionId?: string;
   /** Windows handed over so far in this conversation. */
   windowCount: number;
 }
@@ -101,9 +103,14 @@ export class ChatWindowBatcher {
   constructor(private readonly options: BatcherOptions = DEFAULT_BATCHER_OPTIONS) {}
 
   /** Add one event. Returns what must be handed over now, in order. */
-  add(event: ObserverEvent, now: number = event.occurredAt.getTime()): BatcherAction[] {
+  add(event: ObserverEvent, now: number = event.occurredAt.getTime(), selectionId?: string): BatcherAction[] {
     const actions: BatcherAction[] = [];
     let state = this.chats.get(event.chatGuid);
+    if (state?.conversation && state.conversation.selectionId !== selectionId) {
+      actions.push(...this.closeConversation(event.chatGuid, state));
+      this.chats.delete(event.chatGuid);
+      state = undefined;
+    }
 
     // A long silence closes the old conversation before this event joins a new one.
     if (state?.conversation && now - state.lastActivityAt >= this.options.conversationGapMs) {
@@ -122,6 +129,7 @@ export class ChatWindowBatcher {
       state.conversation = {
         id: `${event.occurredAt.getTime().toString(36)}-${this.conversationSeq.toString(36)}`,
         startedAt: event.occurredAt,
+        selectionId,
         windowCount: 0,
       };
     }
@@ -136,9 +144,14 @@ export class ChatWindowBatcher {
   }
 
   /** Check every chat against the clock. Call this every few seconds. */
-  tick(now: number): BatcherAction[] {
+  tick(now: number, currentPick?: (guid: string) => string | undefined): BatcherAction[] {
     const actions: BatcherAction[] = [];
     for (const [chatGuid, state] of this.chats) {
+      if (currentPick && state.conversation && state.conversation.selectionId !== currentPick(chatGuid)) {
+        actions.push(...this.closeConversation(chatGuid, state));
+        this.chats.delete(chatGuid);
+        continue;
+      }
       if (state.entries.length > 0 && state.windowStartedAt !== null
         && (now - state.lastActivityAt >= this.options.quietMs
           || now - state.windowStartedAt >= this.options.maxWindowMs)) {

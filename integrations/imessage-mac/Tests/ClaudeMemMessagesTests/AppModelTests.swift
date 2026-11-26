@@ -58,6 +58,45 @@ final class AppModelTests: XCTestCase {
     }
 
     @MainActor
+    func testPhotonConfirmationAfterStopOrSourceSwitchCannotResumeOnNextLaunch() async throws {
+        for switchSource in [false, true] {
+            let suite = "ClaudeMemMessagesTests-" + UUID().uuidString
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+            defaults.set("photon", forKey: "messageSource")
+            defaults.set(true, forKey: "photonWasListening")
+            let model = AppModel(defaults: defaults)
+            model.workerReachable = true
+            model.photonConfigured = true
+            // Stay alive on SIGTERM and deliver output after the caller closes stdin.
+            let program = #"""
+            trap '' TERM
+            echo '{"type":"log","message":"fixture ready"}'
+            cat >/dev/null
+            echo '{"type":"started"}'
+            echo '{"type":"status","sent":99}'
+            """#
+            model.launch = CommandLaunch(executable: "/bin/sh", prefix: ["-c", program])
+            model.startListening()
+            for _ in 0..<100 where !model.log.contains(where: { $0.text == "fixture ready" }) {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            XCTAssertTrue(model.log.contains { $0.text == "fixture ready" })
+            XCTAssertEqual(model.listener, .starting)
+            if switchSource { model.selectSource(.mac) } else { model.stopListening() }
+            model.handle(.started(observing: 0))
+            model.handle(.status(observing: 1, sent: 99, skipped: 0))
+            for _ in 0..<100 where model.listener != .stopped {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            XCTAssertEqual(model.listener, .stopped)
+            XCTAssertEqual(model.source, switchSource ? .mac : .photon)
+            XCTAssertEqual(model.sent, 0)
+            XCTAssertFalse(defaults.bool(forKey: "photonWasListening"))
+        }
+    }
+
+    @MainActor
     private func waitForSave(_ model: AppModel) async {
         for _ in 0..<100 where !model.savingPicks.isEmpty {
             try? await Task.sleep(for: .milliseconds(20))

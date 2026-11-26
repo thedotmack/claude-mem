@@ -340,8 +340,8 @@ final class AppModel: ObservableObject {
         do {
             running = try runner.stream(
                 source.command("observe"),
-                onEvent: { [weak self] event in Task { @MainActor in guard self?.listenerID == id else { return }; self?.handle(event) } },
-                onStderr: { [weak self] text in Task { @MainActor in guard self?.listenerID == id else { return }; self?.append("warn", text) } },
+                onEvent: { [weak self] event in Task { @MainActor in self?.handle(event, from: id) } },
+                onStderr: { [weak self] text in Task { @MainActor in guard self?.listenerID == id, self?.userStopped == false else { return }; self?.append("warn", text) } },
                 onExit: { [weak self] status in Task { @MainActor in guard self?.listenerID == id else { return }; self?.listenerExited(status) } }
             )
         } catch {
@@ -356,7 +356,10 @@ final class AppModel: ObservableObject {
         running?.stop()
     }
 
-    func handle(_ event: CommandEvent) {
+    func handle(_ event: CommandEvent, from id: UUID? = nil) {
+        // Exit still owns cleanup for a stopping process. Its late output must
+        // not change the active source, status, or the person's launch choice.
+        guard !userStopped, id == nil || id == listenerID else { return }
         switch event {
         case let .started(observing):
             listener = .listening(observing: observing)

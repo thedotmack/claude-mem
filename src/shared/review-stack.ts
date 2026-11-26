@@ -46,7 +46,7 @@ export interface ReviewStackImportCard {
   key: string; focus: string; title: string; what: string; context: string;
   source?: string; preview?: string; imageData?: string; excerpt?: string;
 }
-export interface ReviewStackCard extends ReviewStackImportCard { id: string; createdAt: number }
+export interface ReviewStackCard extends ReviewStackImportCard { id: string; createdAt: number; focusId?: string }
 export interface ReviewStackReview {
   id: string; cardId: string; action: ReviewStackVerdict; createdAt: number; groupId?: string;
 }
@@ -54,7 +54,7 @@ export interface ReviewStackBookmark { cardId: string; saved: boolean; revision:
 export interface ReviewStackFollowUp {
   id: string; cardId: string; body: string; createdAt: number; closedAt: number | null; revision: number;
 }
-export interface ReviewStackGroup { id: string; focus: string; createdAt: number; count: number; activeCount: number }
+export interface ReviewStackGroup { id: string; focus: string; focusId?: string; createdAt: number; count: number; activeCount: number }
 export interface ReviewStackSnapshot {
   revision: string; cards: ReviewStackCard[]; reviews: ReviewStackReview[]; bookmarks: ReviewStackBookmark[];
   followUps: ReviewStackFollowUp[]; groups: ReviewStackGroup[];
@@ -66,7 +66,7 @@ export type ReviewStackAction =
   | { action: 'bookmark'; cardId: string; saved: boolean; revision: number }
   | { action: 'follow-up'; cardId: string; body: string }
   | { action: 'set-follow-up'; cardId: string; followUpId: string; closed: boolean; revision: number }
-  | { action: 'seen-group'; focus: string }
+  | { action: 'seen-group'; focus: string; cardId?: string }
   | { action: 'undo-group'; groupId: string };
 export interface ReviewStackImportResult { added: number; existing: number; firstId: string }
 export interface ReviewStackActionResult { ok: true }

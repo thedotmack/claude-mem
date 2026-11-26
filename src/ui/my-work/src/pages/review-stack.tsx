@@ -6,9 +6,9 @@ import { ReviewCard } from '@/components/review-stack-card'
 import { ReviewHistory } from '@/components/review-stack-history'
 import { ImportReviewCards } from '@/components/review-stack-import'
 import { useI18n, interpolate } from '@/lib/i18n'
-import { milestoneCrossed, reviewDeck, XP_PER_SEEN } from '@/live/review-stack-deck'
+import { milestoneCrossed, reviewAreaOptions, reviewDeck, XP_PER_SEEN } from '@/live/review-stack-deck'
 import { useReviewStack } from '@/live/use-review-stack'
-import { REVIEW_STACK_MODES, REVIEW_STACK_MODE_LABELS, reviewStackFocusKey, type ReviewStackAction, type ReviewStackCard, type ReviewStackMode } from '../../../../shared/review-stack.ts'
+import { REVIEW_STACK_MODES, REVIEW_STACK_MODE_LABELS, type ReviewStackAction, type ReviewStackCard, type ReviewStackMode } from '../../../../shared/review-stack.ts'
 import './review-stack.css'
 
 export default function ReviewStack() {
@@ -34,8 +34,8 @@ export default function ReviewStack() {
     {error && <Button className="mt-3" variant="outline" onClick={() => void refresh()}>{t('Try again')}</Button>}
   </section>
 
-  const areas = new Map(snapshot.cards.map(card => [reviewStackFocusKey(card.focus), card.focus]))
-  const area = areas.get(reviewStackFocusKey(focus)) ?? ''
+  const areas = reviewAreaOptions(snapshot.cards)
+  const area = areas.has(focus) ? focus : ''
   const deck = reviewDeck(snapshot, area, revisit)
   const browseIndex = Math.max(0, deck.cards.findIndex(card => card.id === browseId))
   const current = mode === 'work' ? deck.pending[0] : deck.cards[browseIndex]
@@ -85,7 +85,9 @@ export default function ReviewStack() {
     if (!current) return
     void apply({ action, cardId: current.id, expectedReviewId: deck.reviews.get(current.id)?.id ?? null })
   }
-  function seeGroup() { if (current) void apply({ action: 'seen-group', focus: current.focus }) }
+  function seeGroup() {
+    if (current) void apply({ action: 'seen-group', focus: current.focus, ...(current.focusId && { cardId: current.id }) })
+  }
   function toggleBookmark() {
     if (current) void apply({ action: 'bookmark', cardId: current.id, saved: !bookmark?.saved, revision: bookmark?.revision ?? 0 })
   }
@@ -104,7 +106,7 @@ export default function ReviewStack() {
     {snapshot.cards.length > 0 && <>
       <div className="stack-toolbar"><label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-medium text-muted-foreground">{t('Focus area')}
         <select className="stack-select" value={area} disabled={saving} onChange={event => chooseArea(event.target.value)}><option value="">{t('All focus areas')}</option>
-          {Array.from(areas.values(), name => <option key={name} value={name}>{name}</option>)}</select></label>
+          {Array.from(areas, ([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label>
         <div className="text-right text-sm"><p>{interpolate(t('{seen} of {total} seen'), { seen: deck.seen, total: deck.cards.length })}</p><p className="text-xs text-muted-foreground">{interpolate(t('{points} XP'), { points: totalSeen * XP_PER_SEEN })}</p></div>
       </div>
       <progress className="stack-progress" max={deck.cards.length || 1} value={deck.seen} aria-label={t('Cards seen in this focus area')} />

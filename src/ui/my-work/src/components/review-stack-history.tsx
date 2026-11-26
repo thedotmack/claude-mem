@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { useI18n, interpolate } from '@/lib/i18n'
-import { REVIEW_STACK_VERDICT_LABELS, reviewStackFocusKey, type ReviewStackAction, type ReviewStackCard, type ReviewStackSnapshot } from '../../../../shared/review-stack.ts'
+import { reviewAreaKey } from '@/live/review-stack-deck'
+import { REVIEW_STACK_VERDICT_LABELS, type ReviewStackAction, type ReviewStackCard, type ReviewStackSnapshot } from '../../../../shared/review-stack.ts'
 
 export function ReviewHistory({ snapshot, focus, disabled, onAction, onNote, onOpen }: {
   snapshot: ReviewStackSnapshot; focus: string; disabled: boolean; onAction: (action: ReviewStackAction) => void
@@ -20,10 +21,9 @@ export function ReviewHistory({ snapshot, focus, disabled, onAction, onNote, onO
     }
     return grouped
   }, [snapshot.followUps])
-  const areaKey = reviewStackFocusKey(focus)
-  const inArea = (name: string) => !focus || reviewStackFocusKey(name) === areaKey
-  const cards = snapshot.cards.filter(card => inArea(card.focus) && (savedOnly ? bookmarks.get(card.id)?.saved : reviews.has(card.id) || bookmarks.get(card.id)?.saved || notes.has(card.id)))
-  const groups = snapshot.groups.filter(group => inArea(group.focus) && group.activeCount > 0)
+  const inArea = (area: { focus: string; focusId?: string }) => !focus || reviewAreaKey(area) === focus
+  const cards = snapshot.cards.filter(card => inArea(card) && (savedOnly ? bookmarks.get(card.id)?.saved : reviews.has(card.id) || bookmarks.get(card.id)?.saved || notes.has(card.id)))
+  const groups = snapshot.groups.filter(group => inArea(group) && group.activeCount > 0)
   return <section className="space-y-3 rounded-xl border bg-card p-4" aria-label={t('Review history')}>
     <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-lg font-semibold">{t('Review history')}</h2>
       <label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={savedOnly} onChange={event => setSavedOnly(event.target.checked)} />{t('Saved only')}</label></div>

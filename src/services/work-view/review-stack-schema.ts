@@ -24,6 +24,8 @@ const words = (min: number, max: number, charLimit: number, label: string) => te
   .refine(s => s.split(' ').length >= min && s.split(' ').length <= max, label + ' needs ' + min + '–' + max + ' words.');
 const focus = text(64).transform(s => s.split(/\s+/u).join(' '));
 export const focusKey = reviewStackFocusKey;
+export const focusIdFor = (label: string) => 'focus-' + hexDigest(focusKey(label));
+const focusId = z.string().regex(/^focus-[a-f0-9]{64}$/);
 const url = z.string().trim().max(4096).refine(s => {
   if (!s.startsWith('https://') || /[\s\x00-\x1f\x7f\\]/u.test(s)) return false;
   try {
@@ -75,8 +77,9 @@ export function parseImport(input: unknown): ReviewStackImportCard[] {
 export const storedCard = z.strictObject({
   // Word counts guide authored copy. A recipient's redaction marker can replace
   // one word with two without changing the identity of a previously valid card.
-  ...metadata, title: metadata.title.or(redactedCopy()), what: metadata.what.or(redactedCopy()), context: metadata.context.or(redactedCopy()),
-  contentId: digest, createdAt: time, excerptParts: safeInt.max(MAX_EXCERPT_PARTS),
+  ...metadata, focus: focus.or(redactedCopy()), title: metadata.title.or(redactedCopy()),
+  what: metadata.what.or(redactedCopy()), context: metadata.context.or(redactedCopy()),
+  focusId: focusId.optional(), contentId: digest, createdAt: time, excerptParts: safeInt.max(MAX_EXCERPT_PARTS),
   imageParts: safeInt.max(Math.ceil(4 * Math.ceil(REVIEW_STACK_IMAGE_BYTES / 3) / IMAGE_CHUNK)),
   imageType: z.enum(imageTypes).nullable(), imageHash: digest.nullable(),
 }).refine(c => (c.imageType === null) === (c.imageParts === 0) && (c.imageHash === null) === (c.imageParts === 0)
@@ -91,7 +94,7 @@ const actionSchemas = [
   z.strictObject({ action: z.literal('bookmark'), cardId: asset, saved: z.boolean(), revision: safeInt }),
   z.strictObject({ action: z.literal('follow-up'), cardId: asset, body: text(4000) }),
   z.strictObject({ action: z.literal('set-follow-up'), cardId: asset, followUpId: uuid, closed: z.boolean(), revision: safeInt }),
-  z.strictObject({ action: z.literal('seen-group'), focus }),
+  z.strictObject({ action: z.literal('seen-group'), focus: focus.or(redactedCopy()), cardId: asset.optional() }),
   z.strictObject({ action: z.literal('undo-group'), groupId: uuid }),
 ] as const;
 const actionBody = z.discriminatedUnion('action', actionSchemas);
@@ -103,8 +106,10 @@ export function parseAction(value: unknown): ReviewStackAction {
 export function assertMutationId(id: string) {
   if (!uuidPattern.test(id)) throw new ReviewStackError(400, 'Use a fresh UUID in Idempotency-Key.');
 }
-const event = z.strictObject({ input: actionBody, fingerprint: digest, createdAt: time, order: safeInt.min(1), parts: safeInt.max(511) })
-  .refine(e => e.parts === 0 || e.input.action === 'seen-group');
+const storedAction = actionBody.or(z.strictObject({ action: z.literal('follow-up'), cardId: asset, body: redactedCopy() }));
+const event = z.strictObject({ input: storedAction, fingerprint: digest, createdAt: time, order: safeInt.min(1),
+  parts: safeInt.max(511), focusId: focusId.optional() })
+  .refine(e => (e.parts === 0 && e.focusId === undefined) || e.input.action === 'seen-group');
 export type StoredEvent = z.infer<typeof event>;
 const members = z.array(z.strictObject({ cardId: asset, previous: uuid.nullable() })).min(1).max(GROUP_CHUNK);
 export type GroupMember = z.infer<typeof members>[number];

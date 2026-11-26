@@ -140,7 +140,7 @@ async function pick(args: string[]): Promise<number> {
     allowPositionals: true,
     strict: true,
   });
-  const { MacSelection, writeSelection, withSelectionLock, MAX_FOCUS_CHARS } = await import('../../integrations/imessage-observer/mac-selection.js');
+  const { MacSelection, writeSelection, withSelectionLock, updateChatChoice, MAX_FOCUS_CHARS } = await import('../../integrations/imessage-observer/mac-selection.js');
   const path = macSelectionPath();
   const guid = positionals[0];
   if (!guid && values['default-focus'] === undefined) {
@@ -155,7 +155,7 @@ async function pick(args: string[]): Promise<number> {
       const choice = current.chats[guid] ?? { observe: false };
       const observe = values.off ? false : values.on ? true : choice.observe;
       const focus = values.focus !== undefined ? values.focus.slice(0, MAX_FOCUS_CHARS) : choice.focus;
-      current.chats[guid] = { observe, ...(focus ? { focus } : {}) };
+      current.chats[guid] = updateChatChoice(choice, observe, focus);
     }
     writeSelection(path, current);
     return current;
@@ -190,6 +190,7 @@ async function observe(args: string[], startIfNeeded: boolean): Promise<number> 
   const { label } = await peopleBook();
   const selection = new MacSelection(macSelectionPath());
   const isObserved = (guid: string) => selection.isObserved(guid);
+  const selectionId = (guid: string, at?: number) => selection.selectionId(guid, at);
 
   let post: (route: string, body: unknown) => Promise<unknown>;
   if (values['dry-run']) {
@@ -205,7 +206,7 @@ async function observe(args: string[], startIfNeeded: boolean): Promise<number> 
     post = async (route: string, body: unknown) => (await worker.post(route, body)).json();
   }
 
-  const source = new ChatDbSource({ dbPath: values.db, label, isObserved, log: out });
+  const source = new ChatDbSource({ dbPath: values.db, label, isObserved, selectionId, log: out });
   const observer = new GroupChatObserver({
     source,
     post,
@@ -215,6 +216,7 @@ async function observe(args: string[], startIfNeeded: boolean): Promise<number> 
     meLabel: 'Me',
     via: 'mac',
     isObserved,
+    selectionId,
     focusFor: guid => selection.focusFor(guid),
     clock: 'wall',
     excludedProjects: await excludedProjects(),

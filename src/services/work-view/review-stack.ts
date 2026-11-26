@@ -8,7 +8,7 @@ import {
 import { canonicalJson, compareCanonicalDecimals } from '../sync/CanonicalContent.js';
 import { SHARED_WORK_MAX_UPDATES, SHARED_WORK_MAX_VALUE_BYTES } from './shared-records.mjs';
 import {
-  assertMutationId, cardId, decodeImage, focusKey, GROUP_CHUNK, hexDigest, IMAGE_CHUNK, MAX_EXCERPT_PARTS,
+  assertMutationId, cardId, decodeImage, focusKey, focusIdFor, GROUP_CHUNK, hexDigest, IMAGE_CHUNK, MAX_EXCERPT_PARTS,
   imageParts, isReviewStackImagePart, isReviewStackValue, parseAction, parseImport, ReviewStackError,
   type GroupMember, type StoredCard, type StoredEvent, type StoredReceipt,
 } from './review-stack-schema.js';
@@ -108,12 +108,13 @@ export function reviewStackImage(records: Iterable<ReviewStackRecord>, id: strin
 }
 function readCard(index: RecordIndex, id: string, meta: StoredCard, options: ReadOptions): ReviewStackCard | null {
   const { contentId, excerptParts, imageParts: partCount, imageType, imageHash, ...fields } = meta;
-  const card: ReviewStackCard = { ...fields, id };
+  // Earlier cards contain the original label alone. New writes carry its
+  // identity through recipient redaction even if two areas display the same text.
+  const card: ReviewStackCard = { ...fields, id, focusId: meta.focusId ?? focusIdFor(meta.focus) };
   if (excerptParts) {
     const text = parts(index, id, meta, 'excerpt');
     if (!text) return null;
-    const excerpt = text.join('');
-    card.excerpt = options.redactText?.(excerpt) ?? excerpt;
+    card.excerpt = text.join('');
   }
   if (partCount && imageType) {
     // The dedicated media read rechecks image bytes before serving them. A deck page
@@ -134,6 +135,21 @@ function readCard(index: RecordIndex, id: string, meta: StoredCard, options: Rea
     }
   }
   return card;
+}
+/** Disclose authored text separately from IDs, verified image bytes and host-generated media URLs. */
+function discloseCard<T extends ReviewStackImportCard>(
+  card: T, id: string, redactText: DisclosureOptions['redactText'], generatedPreview = false,
+): T {
+  if (!redactText) return card;
+  const copy = {
+    ...card, key: redactText(card.key) === card.key ? card.key : id, focus: redactText(card.focus),
+    title: redactText(card.title), what: redactText(card.what), context: redactText(card.context),
+  };
+  if (card.excerpt !== undefined) copy.excerpt = redactText(card.excerpt);
+  // Redacting part of an authored URL can change its destination. Omit the entire link.
+  if (card.source !== undefined && redactText(card.source) !== card.source) delete copy.source;
+  if (!generatedPreview && card.preview !== undefined && redactText(card.preview) !== card.preview) delete copy.preview;
+  return copy;
 }
 interface ActiveGroup {
   summary: ReviewStackGroup;
@@ -163,8 +179,8 @@ function changeReview(state: State, id: string, incoming?: ReviewStackReview) {
   if (incoming) state.reviews.set(id, incoming);
   else state.reviews.delete(id);
 }
-function applyAction(state: State, id: string, input: ReviewStackAction, at: number, members: GroupMember[]) {
-  if ('cardId' in input && !state.cards.has(input.cardId)) throw missing();
+function applyAction(state: State, id: string, input: ReviewStackAction, at: number, members: GroupMember[], groupFocusId?: string) {
+  if (input.action !== 'seen-group' && 'cardId' in input && !state.cards.has(input.cardId)) throw missing();
   switch (input.action) {
     case 'seen':
     case 'skip': {
@@ -200,16 +216,22 @@ function applyAction(state: State, id: string, input: ReviewStackAction, at: num
     }
     case 'seen-group': {
       const displaced: ActiveGroup['displaced'] = new Map();
+      const firstMatch = groupFocusId ? undefined : members.map(m => state.cards.get(m.cardId))
+        .find(card => card && focusKey(card.focus) === focusKey(input.focus));
+      const focusId = groupFocusId ?? firstMatch?.focusId ?? focusIdFor(input.focus);
+      let label = input.focus;
       for (const member of members) {
         const card = state.cards.get(member.cardId);
         const old = state.reviews.get(member.cardId);
-        // Concurrent offline decisions remain valid, and new cards cannot join an old group swipe.
-        if (!card || focusKey(card.focus) !== focusKey(input.focus) || (old?.id ?? null) !== member.previous || old?.action === 'seen') continue;
+        // Preserve the original area and the decision observed by its writer,
+        // regardless of how the recipient currently discloses that area's name.
+        if (!card || card.focusId !== focusId || (old?.id ?? null) !== member.previous || old?.action === 'seen') continue;
+        if (groupFocusId) label = card.focus;
         displaced.set(card.id, old);
         changeReview(state, card.id, { id: groupReviewId(id, card.id), cardId: card.id, groupId: id, action: 'seen', createdAt: at });
       }
       state.groups.set(id, {
-        summary: { id, focus: input.focus, createdAt: at, count: displaced.size, activeCount: displaced.size }, displaced,
+        summary: { id, focus: label, focusId, createdAt: at, count: displaced.size, activeCount: displaced.size }, displaced,
       });
       break;
     }
@@ -247,7 +269,7 @@ function readState(index: RecordIndex, options: ReadOptions) {
       members.push(...part);
     }
     if (!complete) continue;
-    try { applyAction(state, id, value.input, value.createdAt, members); }
+    try { applyAction(state, id, value.input, value.createdAt, members, value.focusId); }
     catch (error) {
       // A losing concurrent action is still a receipt. It cannot overwrite the winning decision on replay.
       if (!(error instanceof ReviewStackError)) throw error;
@@ -261,19 +283,35 @@ export function renderReviewStack(records: Iterable<ReviewStackRecord>, options:
   const revision = createHash('sha256');
   for (const row of [...index.winners].sort((a, b) => cmp(a.kind, b.kind) || cmp(a.key, b.key))) {
     revision.update(canonicalJson([row.kind, row.key, row.hash, row.revision, row.valueHash ?? row.hash]));
-    // A recipient can apply a stricter policy to an excerpt assembled across rows.
-    // Cursor pages must pin the disclosed content as well as the origin hashes.
-    if (row.kind === REVIEW_STACK_CARD_KIND) {
-      const excerpt = state.cards.get(row.key)?.excerpt;
-      if (excerpt !== undefined) revision.update(hexDigest(excerpt));
-    }
   }
   const newest = (a: { createdAt: number; id: string }, b: { createdAt: number; id: string }) =>
     b.createdAt - a.createdAt || cmp(a.id, b.id);
+  const cards = [...state.cards.values()].sort(newest).map(card => {
+    const meta = index.get<StoredCard>(REVIEW_STACK_CARD_KIND, card.id)!;
+    return discloseCard(card, card.id, options.redactText, !!options.thumbnailUrl && meta.imageParts > 0);
+  });
+  const followUps = [...state.followUps.values()].sort(newest).map(note => options.redactText
+    ? { ...note, body: options.redactText(note.body) } : note);
+  const groups = [...state.groups.values()].map(g => g.summary).sort(newest).map(group => options.redactText
+    ? { ...group, focus: options.redactText(group.focus) } : group);
+  // A changed policy can affect existing metadata and notes without a shared write.
+  // Pin the actual disclosure in deterministic order; verified image bytes are already bound by their head hashes.
+  for (const { imageData, preview, ...metadata } of cards) {
+    const manifest = index.get<StoredCard>(REVIEW_STACK_CARD_KIND, metadata.id)!;
+    // An authenticated thumbnail path depends on the host, while the original
+    // payload and any policy-controlled external preview belong to the deck.
+    const authoredPreview = manifest.imageParts ? manifest.preview : preview;
+    if (authoredPreview !== undefined && (!options.redactText || options.redactText(authoredPreview) === authoredPreview)) {
+      revision.update(canonicalJson(authoredPreview));
+    }
+    revision.update(canonicalJson(metadata));
+  }
+  for (const note of followUps) revision.update(canonicalJson([note.id, note.body]));
+  for (const group of groups) revision.update(canonicalJson([group.id, group.focus]));
   return {
-    revision: revision.digest('hex'), cards: [...state.cards.values()].sort(newest),
+    revision: revision.digest('hex'), cards,
     reviews: [...state.reviews.values()].sort(newest), bookmarks: [...state.bookmarks.values()].sort((a, b) => cmp(a.cardId, b.cardId)),
-    followUps: [...state.followUps.values()].sort(newest), groups: [...state.groups.values()].map(g => g.summary).sort(newest),
+    followUps, groups,
   };
 }
 
@@ -338,14 +376,18 @@ function excerptParts(excerpt: string): string[] {
 function importedUpdates(card: ReviewStackImportCard, now: number, options: DisclosureOptions,
   add: (kind: ReviewStackRecordKind, key: string, value: unknown) => void) {
   const id = cardId(card.key);
-  const { excerpt: originalExcerpt, imageData, ...copy } = card;
-  const excerpt = originalExcerpt && (options.redactText?.(originalExcerpt) ?? originalExcerpt);
+  const disclosed = discloseCard(card, id, options.redactText);
+  if (disclosed.key !== card.key) throw new ReviewStackError(400, 'Choose a stable asset key that your redaction settings can store.');
+  const { excerpt, imageData, ...copy } = disclosed;
+  if (!excerpt && !imageData && !copy.source && !copy.preview) {
+    throw new ReviewStackError(400, 'The original link is hidden by your redaction settings. Include an excerpt or a thumbnail.');
+  }
   // The manifest points only to this import's parts even if two offline devices import different originals under the same key.
-  const contentId = hexDigest(canonicalJson(excerpt === undefined ? card : { ...card, excerpt }));
+  const contentId = hexDigest(canonicalJson(disclosed));
   const chunks = excerptParts(excerpt ?? '');
   const image = imageData ? imageParts(imageData) : null;
   const meta: StoredCard = {
-    ...copy, contentId, createdAt: now, excerptParts: chunks.length,
+    ...copy, focusId: focusIdFor(card.focus), contentId, createdAt: now, excerptParts: chunks.length,
     imageParts: image ? Math.ceil(image.data.length / IMAGE_CHUNK) : 0, imageType: image?.type ?? null,
     imageHash: image ? hexDigest(image.data) : null,
   };
@@ -394,24 +436,40 @@ export function prepareReviewStackWrite(
     add('stack-receipt', mutationId, { fingerprint, ...result });
     return { updates, result };
   }
-  const action = parseAction(input);
-  const fingerprint = hexDigest(canonicalJson(action));
+  const parsedAction = parseAction(input);
+  const fingerprint = hexDigest(canonicalJson(parsedAction));
   if (receipt || (previous && previous.fingerprint !== fingerprint)) throw conflict();
   if (previous) return { updates, result: { ok: true } };
+  let action = options.redactText && parsedAction.action === 'follow-up'
+    ? { ...parsedAction, body: options.redactText(parsedAction.body) } : parsedAction;
   const state = readState(index, { thumbnailUrl: id => id });
   const members: GroupMember[] = [];
+  let groupFocusId: string | undefined;
   if (action.action === 'seen-group') {
-    const groupCards = [...state.cards.values()].filter(c => focusKey(c.focus) === focusKey(action.focus));
-    if (!groupCards.length) throw missing();
+    const selected = focusKey(action.focus);
+    const displayKey = (card: ReviewStackCard) => focusKey(options.redactText?.(card.focus) ?? card.focus);
+    const anchor = action.cardId ? state.cards.get(action.cardId) : undefined;
+    if (action.cardId && !anchor) throw missing();
+    if (anchor && displayKey(anchor) !== selected) throw stale();
+    const matching = anchor ? [anchor] : [...state.cards.values()].filter(c => displayKey(c) === selected);
+    if (!matching.length) throw missing();
+    const scope = matching[0].focusId!;
+    if (matching.some(c => c.focusId !== scope)) throw stale();
+    const groupCards = [...state.cards.values()].filter(c => c.focusId === scope);
     for (const card of groupCards.sort((a, b) => cmp(a.id, b.id))) {
       const review = state.reviews.get(card.id);
       if (review?.action !== 'seen') members.push({ cardId: card.id, previous: review?.id ?? null });
     }
+    groupFocusId = scope;
+    // The anchor is a request precondition. Keep the shared action's original
+    // input shape; its separate scope survives redaction at a receiving device.
+    action = { action:'seen-group', focus:action.focus };
   }
   // Check CAS and existence in the same owner transaction in which the adapter commits these records.
-  applyAction(state, mutationId, action, now, members);
+  applyAction(state, mutationId, action, now, members, groupFocusId);
   const count = Math.ceil(members.length / GROUP_CHUNK);
   for (let n = 0; n < count; n++) add('stack-group-part', mutationId + ':' + n, members.slice(n * GROUP_CHUNK, (n + 1) * GROUP_CHUNK));
-  add('stack-event', mutationId, { input: action, fingerprint, createdAt: now, order: state.clock + 1, parts: count } satisfies StoredEvent);
+  add('stack-event', mutationId, { input: action, fingerprint, createdAt: now, order: state.clock + 1, parts: count,
+    ...(groupFocusId && {focusId:groupFocusId}) } satisfies StoredEvent);
   return { updates, result: { ok: true } };
 }

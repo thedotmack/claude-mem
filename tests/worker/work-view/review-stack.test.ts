@@ -55,7 +55,7 @@ describe('private Work View review stack', () => {
       publishSharedRecords(db, { deviceId:'author', project:'My Work', updates, validateValue:isSharedProjectionValue });
       const state = readSharedRecords(db, { deviceId:'author', validateValue:isSharedProjectionValue });
       const fromNative = renderReviewStack(state.records.values());
-      expect(fromNative.cards).toEqual([{ ...input, id, createdAt:10 }]);
+      expect(fromNative.cards).toEqual([{ ...input, id, createdAt:10, focusId:expect.stringMatching(/^focus-[a-f0-9]{64}$/) }]);
       const rows = db.query('SELECT id,list_name,fields FROM work_state_entries ORDER BY id').all() as
         { id: number; list_name: string; fields: string }[];
       const cloudRows = rows.map(row => ({ ...row, origin_device_id:'author', origin_local_id:String(row.id) }));
@@ -121,6 +121,42 @@ describe('private Work View review stack', () => {
     const changedDisclosure = records.map(r => r.kind === 'stack-card' ? {...r, valueHash:'recipient-hash'} : r);
     expect(renderReviewStack(changedDisclosure).revision).not.toBe(open.revision);
   });
+  test('prepares safe metadata, links and follow-ups while preserving verified uploaded media and idempotency', () => {
+    const redactText = (s: string) => s.replaceAll('SENSITIVE', "<redacted type='fixture'/>");
+    const asset = thumbnail(48);
+    const input = card('original-artwork', {
+      title:'Review this SENSITIVE original', focus:'SENSITIVE design',
+      what:'This SENSITIVE cover draft features illustrations from the new edition.',
+      context:'The SENSITIVE team is choosing which illustration appears in print.',
+      source:'https://example.org/SENSITIVE', preview:'https://preview.example.org/SENSITIVE', imageData:asset.imageData,
+    });
+    const importId = randomUUID();
+    const imported = prepareReviewStackWrite([], 'import', {cards:[input]}, importId, 1, {redactText});
+    expect(JSON.stringify(imported.updates)).not.toContain('SENSITIVE');
+    const rows = recorded(imported.updates);
+    const id = idFor(input.key);
+    const plain = renderReviewStack(rows).cards[0];
+    expect(plain.source).toBeUndefined();
+    expect(plain.preview).toBeUndefined();
+    expect(plain.imageData).toBe(asset.imageData);
+    expect(plain.focus).toBe("<redacted type='fixture'/> design");
+    const mediaPath = '/api/work-view/review-stack/media/' + id;
+    const local = renderReviewStack(rows, {thumbnailUrl:()=>mediaPath, redactText});
+    expect(local.cards[0].preview).toBe(mediaPath);
+    expect(renderReviewStack(rows, {redactText}).revision).toBe(local.revision);
+    expect(renderReviewStack(rows, {thumbnailUrl:()=>'/another/host/media', redactText}).revision).toBe(local.revision);
+    expect(Buffer.from(reviewStackImage(rows, id)!.bytes)).toEqual(asset.file);
+    expect(prepareReviewStackWrite(rows, 'import', {cards:[input]}, importId, 2, {redactText}).updates).toEqual([]);
+    const note = {action:'follow-up', cardId:id, body:'Check the SENSITIVE version.'};
+    const noteId = randomUUID();
+    const wrote = prepareReviewStackWrite(rows, 'action', note, noteId, 2, {redactText});
+    expect(JSON.stringify(wrote.updates)).not.toContain('SENSITIVE');
+    const after = [...rows, ...recorded(wrote.updates)];
+    expect(renderReviewStack(after).followUps[0].body).toBe("Check the <redacted type='fixture'/> version.");
+    expect(prepareReviewStackWrite(after, 'action', note, noteId, 3, {redactText}).updates).toEqual([]);
+    expect(() => prepareReviewStackWrite([], 'import', {cards:[card('SENSITIVE-key')]}, randomUUID(), 1, {redactText})).toThrow(ReviewStackError);
+    expect(() => prepareReviewStackWrite([], 'import', {cards:[card('only-link', {source:'https://example.org/SENSITIVE'})]}, randomUUID(), 1, {redactText})).toThrow(ReviewStackError);
+  });
   test('replays identical mutation IDs and identifies changed bodies without resurrecting old decisions', () => {
     const f=fixture(), id=idFor('one');
     const first=f.write('import',{cards:[card('one')]});
@@ -135,6 +171,24 @@ describe('private Work View review stack', () => {
     expect(f.view().reviews).toEqual([]);
     expect(() => f.write('action',{action:'skip',cardId:id,expectedReviewId:null},swipe.id)).toThrow(ReviewStackError);
     expect(() => f.write('action',{action:'seen',cardId:id,expectedReviewId:swipe.id})).toThrow(ReviewStackError);
+  });
+  test('older cards without a stored focus identity keep their original scope when labels become identical', () => {
+    const write = prepareReviewStackWrite([], 'import', {cards:[card('one',{focus:'Team North'}),card('two',{focus:'Team South'})]}, randomUUID(), 1);
+    const legacy = recorded(write.updates.map(update => {
+      if (update.kind !== 'stack-card') return update;
+      const {focusId, ...priorCard} = update.value as Record<string, unknown>;
+      return {...update, value:priorCard};
+    }));
+    const redactText = (s: string) => s.replace(/North|South/g, 'private');
+    const view = renderReviewStack(legacy, {redactText});
+    const [first, second] = view.cards;
+    expect(first.focus).toBe(second.focus);
+    expect(first.focusId).not.toBe(second.focusId);
+    expect(() => prepareReviewStackWrite(legacy, 'action', {action:'seen-group',focus:first.focus}, randomUUID(), 2, {redactText})).toThrow(ReviewStackError);
+    const mark = prepareReviewStackWrite(legacy, 'action', {action:'seen-group',focus:first.focus,cardId:first.id}, randomUUID(), 2, {redactText});
+    const merged = renderReviewStack([...legacy, ...recorded(mark.updates)]);
+    expect(merged.reviews.map(r => r.cardId)).toEqual([first.id]);
+    expect(merged.groups[0].focusId).toBe(first.focusId);
   });
   test('undo group restores displaced skips, preserves individual changes, new cards, and independent feedback', () => {
     const f=fixture(), a=idFor('a'), b=idFor('b'), c=idFor('c');
