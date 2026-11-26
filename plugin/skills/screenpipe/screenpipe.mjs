@@ -1,8 +1,9 @@
 import { parseArgs } from 'node:util';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, win32 } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const HELP = `Screenpipe context for claude-mem (Node.js 20+)
@@ -20,12 +21,25 @@ provider as part of the conversation. Save writes the reviewed note to
 claude-mem's local worker (found from CLAUDE_MEM_WORKER_PORT or settings.json
 when --worker-url is omitted). No automatic import or background sync.`;
 
+// The data folder with a leading ~ expanded, as src/shared/expand-home.ts does it.
+function dataFolder(env, platform = process.platform) {
+  const dataDir = env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
+  if (dataDir === '~') return homedir();
+  return dataDir.startsWith('~/') || (platform === 'win32' && dataDir.startsWith('~\\'))
+    ? join(homedir(), dataDir.slice(2))
+    : dataDir;
+}
+
 // The local worker's URL, resolved the way claude-mem does: environment first,
-// then ~/.claude-mem/settings.json, then the per-user default port.
+// then ~/.claude-mem/settings.json, then the per-user default port. settings.json is read the way
+// the worker reads it (src/shared/install-port.ts): a leading BOM is dropped, and its keys sit
+// under `env` when that block holds CLAUDE_MEM_* keys, else at the root.
 function readSettings(env) {
   try {
-    const dataDir = env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
-    return JSON.parse(readFileSync(join(dataDir, 'settings.json'), 'utf8')) || {};
+    const doc = JSON.parse(readFileSync(join(dataFolder(env), 'settings.json'), 'utf8').replace(/^﻿/, '')) || {};
+    const nested = doc.env;
+    return nested && typeof nested === 'object' && !Array.isArray(nested)
+      && Object.keys(nested).some(key => key.startsWith('CLAUDE_MEM_')) ? nested : doc;
   } catch { return {}; /* no settings file: use defaults */ }
 }
 
@@ -36,11 +50,20 @@ export function localApiTokenHeaders(env = process.env) {
   return typeof token === 'string' && token.trim() ? { 'X-Claude-Mem-Token': token.trim() } : {};
 }
 
-export function defaultWorkerUrl(env = process.env) {
+// The worker's default port, as src/shared/install-port.ts picks it (keep the two in step): the
+// user id where there is one, else a hash of the data folder (Windows has no user id, #6477).
+function defaultWorkerPort(env, { platform, uid }) {
+  if (uid !== null) return 37700 + (((uid % 100) + 100) % 100);
+  const expanded = dataFolder(env, platform);
+  const folder = platform === 'win32' ? win32.resolve(expanded).toLowerCase() : resolve(expanded);
+  return 37700 + (createHash('sha256').update(folder, 'utf8').digest().readUInt32BE(0) % 100);
+}
+
+export function defaultWorkerUrl(env = process.env, { platform = process.platform, uid = process.getuid?.() ?? null } = {}) {
   const settings = readSettings(env);
   const host = env.CLAUDE_MEM_WORKER_HOST || settings.CLAUDE_MEM_WORKER_HOST || '127.0.0.1';
   const port = env.CLAUDE_MEM_WORKER_PORT || settings.CLAUDE_MEM_WORKER_PORT
-    || String(37700 + ((process.getuid?.() ?? 77) % 100));
+    || String(defaultWorkerPort(env, { platform, uid }));
   const bracketed = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
   return `http://${bracketed}:${port}`;
 }
