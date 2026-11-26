@@ -19,7 +19,7 @@
  */
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 
 /** What the person wrote for "observe for"; kept short so it cannot crowd out the chat. */
 export const MAX_FOCUS_CHARS = 500;
@@ -27,6 +27,15 @@ export const MAX_FOCUS_CHARS = 500;
 export interface ChatChoice {
   observe: boolean;
   focus?: string;
+  selectionId?: string;
+  observedSince?: number;
+}
+
+/** Each activation is distinct, including two picks made in the same millisecond. */
+export function updateChatChoice(previous: ChatChoice, observe: boolean, focus?: string, now = Date.now()): ChatChoice {
+  const choice: ChatChoice = { observe, ...(focus ? { focus } : {}) };
+  if (observe && !previous.observe) return { ...choice, selectionId: randomUUID(), observedSince: now };
+  return previous.selectionId ? { ...choice, selectionId: previous.selectionId, observedSince: previous.observedSince } : choice;
 }
 
 export interface MacSelectionFile {
@@ -48,7 +57,10 @@ export function parseSelection(raw: unknown): MacSelectionFile {
     for (const [guid, choice] of Object.entries(input.chats)) {
       if (!guid || !choice || typeof choice !== 'object') continue;
       const focus = typeof choice.focus === 'string' ? choice.focus.slice(0, MAX_FOCUS_CHARS) : undefined;
-      file.chats[guid] = { observe: choice.observe === true, ...(focus ? { focus } : {}) };
+      const selectionId = typeof choice.selectionId === 'string' && choice.selectionId.length <= 128 ? choice.selectionId : undefined;
+      const since = choice.observedSince;
+      const observedSince = typeof since === 'number' && Number.isSafeInteger(since) && since >= 0 ? since : undefined;
+      file.chats[guid] = { observe: choice.observe === true, ...(focus ? { focus } : {}), ...(selectionId ? { selectionId, observedSince } : {}) };
     }
   }
   return file;
@@ -109,8 +121,8 @@ export class MacSelection {
   refresh(): boolean {
     let stamp: string;
     try {
-      const info = statSync(this.path);
-      stamp = `${info.mtimeMs}:${info.size}`;
+      const info = statSync(this.path, { bigint: true });
+      stamp = `${info.ino}:${info.mtimeNs}:${info.size}`;
     } catch {
       stamp = 'missing';
     }
@@ -135,8 +147,16 @@ export class MacSelection {
   }
 
   isObserved(guid: string): boolean {
+    return this.selectionId(guid) !== undefined;
+  }
+
+  /** Empty id is a previously saved v1 pick. An absent id means the event is ineligible. */
+  selectionId(guid: string, eventTime?: number): string | undefined {
     this.refresh();
-    return this.current.chats[guid]?.observe === true;
+    const choice = this.current.chats[guid];
+    if (!choice?.observe) return undefined;
+    if (eventTime !== undefined && choice.observedSince !== undefined && eventTime <= choice.observedSince) return undefined;
+    return choice.selectionId ?? '';
   }
 
   observedChats(): string[] {

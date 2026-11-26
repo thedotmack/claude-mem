@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { attributedBodyFor, textFromAttributedBody } from '../../src/integrations/imessage-observer/attributed-body';
 import { checkChatDbAccess } from '../../src/integrations/imessage-observer/chatdb';
 import { ChatDbSource } from '../../src/integrations/imessage-observer/chatdb-source';
-import { MacSelection, parseSelection, withSelectionLock, writeSelection } from '../../src/integrations/imessage-observer/mac-selection';
+import { MacSelection, parseSelection, updateChatChoice, withSelectionLock, writeSelection } from '../../src/integrations/imessage-observer/mac-selection';
 import { GroupChatObserver } from '../../src/integrations/imessage-observer/observer';
 import { conversationPrompt, personLabel } from '../../src/integrations/imessage-observer/transcript';
 import type { ObserverEvent } from '../../src/integrations/imessage-observer/types';
@@ -246,6 +246,7 @@ describe('MacSelection', () => {
     expect(selection.isObserved(GROUP)).toBe(false);
     writeSelection(path, { version: 1, defaultFocus: 'plans', chats: { [GROUP]: { observe: true, focus: 'who pays for what' }, [DIRECT]: { observe: true } } });
     expect(selection.isObserved(GROUP)).toBe(true);
+    expect(selection.selectionId(GROUP, T0)).toBe('');
     expect(selection.focusFor(GROUP)).toBe('who pays for what');
     expect(selection.focusFor(DIRECT)).toBe('plans');
     expect(selection.observedChats().sort()).toEqual([DIRECT, GROUP].sort());
@@ -284,6 +285,117 @@ describe('MacSelection', () => {
 });
 
 describe('Mac observer end to end', () => {
+  function selectedChat() {
+    const path = join(dir, 'mac.json');
+    const selection = new MacSelection(path);
+    function pick(guid: string, observe: boolean, now = T0) {
+      const file = new MacSelection(path).file;
+      const previous = file.chats[guid] ?? { observe: false };
+      file.chats[guid] = updateChatChoice(previous, observe, previous.focus, now);
+      writeSelection(path, file);
+    }
+    pick(GROUP, true);
+    const isObserved = (guid: string) => selection.isObserved(guid);
+    const selectionId = (guid: string, at?: number) => selection.selectionId(guid, at);
+    const src = new ChatDbSource({ dbPath: fake.path, label, isObserved, selectionId, watch: false });
+    src.start();
+    return { src, pick, selectionId, isObserved };
+  }
+
+  it('forgets the prior quiet window, its unsends, edits and already-read rows after reselect', async () => {
+    const { src, pick, selectionId, isObserved } = selectedChat();
+    const oldId = selectionId(GROUP);
+    fake.message({ chat: GROUP, guid: 'old', at: T0 + 1, text: 'old private text', from: ANA });
+    fake.message({ chat: GROUP, guid: 'old-edit', at: T0 + 2, text: 'old draft', from: ANA });
+    fake.message({ chat: GROUP, guid: 'prefetched', at: T0 + 3, text: 'old prefetched body', from: ANA });
+    const [old, oldEdit, prefetched] = src.poll();
+    const feed = async function* () {
+      yield old!;
+      yield oldEdit!;
+      pick(GROUP, false, T0 + 4);
+      fake.unsend('old', T0 + 5);
+      fake.edit('old-edit', 'edited outside consent', T0 + 6);
+      fake.message({ chat: GROUP, guid: 'while-off', at: T0 + 7, text: 'message outside consent', from: ANA });
+      // Neither the source nor the observer sees the intermediate off state.
+      pick(GROUP, true, T0 + 8);
+      expect(selectionId(GROUP)).not.toBe(oldId);
+      yield prefetched!;
+      fake.message({ chat: GROUP, guid: 'fresh', at: T0 + 9, text: 'newly selected text', from: ANA });
+      yield* src.poll();
+    };
+    const posts: string[] = [];
+    const observer = new GroupChatObserver({
+      source: { name: 'mac', events: feed, chat: guid => src.chat(guid), stop: () => src.stop() },
+      post: async (route, body) => { posts.push(JSON.stringify([route, body])); return {}; },
+      statePath: join(dir, 'chats.json'), log: silent, clock: 'event', isObserved, selectionId,
+    });
+    await observer.run();
+    const sent = posts.join('\n');
+    expect(sent).toContain('newly selected text');
+    expect(sent).not.toMatch(/old private|old draft|old prefetched|outside consent/);
+  });
+
+  it.each(['/api/sessions/init', '/api/sessions/observations'])('keeps the old pick revoked when reselected during %s with a frozen clock', async routeToPause => {
+    const { src, pick, isObserved, selectionId } = selectedChat();
+    const oldId = selectionId(GROUP);
+    fake.message({ chat: GROUP, guid: 'old', at: T0 + 1, text: 'revoked window', from: ANA });
+    const events = src.poll();
+    const routes: string[] = [];
+    const observer = new GroupChatObserver({
+      source: { name: 'mac', async *events() { yield* events; }, chat: guid => src.chat(guid), stop: () => src.stop() },
+      post: async route => {
+        routes.push(route);
+        if (route === routeToPause) {
+          pick(GROUP, false);
+          pick(GROUP, true);
+          expect(selectionId(GROUP)).not.toBe(oldId);
+        }
+        return {};
+      },
+      statePath: join(dir, 'chats.json'), log: silent, clock: 'event', isObserved, selectionId,
+    });
+    await observer.run();
+    const expected = ['/api/sessions/init'];
+    if (routeToPause.endsWith('observations')) expected.push(routeToPause);
+    expected.push('/api/sessions/session-end');
+    expect(routes).toEqual(expected);
+  });
+
+  it('discards queued windows across a same-millisecond off/on while a different worker session is waiting', async () => {
+    const { src, pick, isObserved, selectionId } = selectedChat();
+    pick(DIRECT, true);
+    fake.message({ chat: DIRECT, guid: 'blocking', at: T0 + 1, text: 'other chat', from: CAL });
+    fake.message({ chat: GROUP, guid: 'waiting', at: T0 + 2, text: 'old queued content', from: ANA });
+    const rows = src.poll();
+    let release!: () => void;
+    let started!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const workerStarted = new Promise<void>(resolve => { started = resolve; });
+    const feed = async function* () {
+      yield* rows;
+      await workerStarted;
+      pick(GROUP, false);
+      pick(GROUP, true);
+      fake.message({ chat: GROUP, guid: 'fresh', at: T0 + 3, text: 'new queued content', from: ANA });
+      yield* src.poll();
+      release();
+    };
+    const posts: string[] = [];
+    const observer = new GroupChatObserver({
+      source: { name: 'mac', events: feed, chat: guid => src.chat(guid), stop: () => src.stop() },
+      post: async (route, body) => {
+        if (posts.length === 0) { started(); await pending; }
+        posts.push(JSON.stringify([route, body]));
+        return {};
+      },
+      statePath: join(dir, 'chats.json'), log: silent, clock: 'event', isObserved, selectionId, batcher: { maxEntries: 1 },
+    });
+    await observer.run();
+    expect(posts.join('\n')).toContain('other chat');
+    expect(posts.join('\n')).toContain('new queued content');
+    expect(posts.join('\n')).not.toContain('old queued content');
+  });
+
   it('sends picked chats to Claude-Mem with the owner\'s focus, and stops sending a chat once it is unpicked', async () => {
     const picked = new Map<string, string | undefined>([[GROUP, 'the cabin and who pays'], [DIRECT, undefined]]);
     const src = new ChatDbSource({ dbPath: fake.path, label, isObserved: guid => picked.has(guid), watch: false });
@@ -377,6 +489,32 @@ describe('Mac observer end to end', () => {
     expect(sent.includes('Cabin is $1,200') !== sent.includes('waiting while unticked')).toBe(true);
     expect(observer.droppedWindows).toBe(1);
   });
+
+  for (const revokeAt of ['/api/sessions/init', '/api/sessions/observations']) {
+    it(`checks the pick again after ${revokeAt}, including before a recap`, async () => {
+      let selected = true;
+      const src = new ChatDbSource({ dbPath: fake.path, label, isObserved: () => selected, watch: false });
+      src.start();
+      fake.message({ chat: GROUP, guid: 'picked', at: T0, text: 'Fixture group decision', from: ANA });
+      const feed = src.poll();
+      const routes: string[] = [];
+      const observer = new GroupChatObserver({
+        source: { name: 'test', async *events() { yield* feed; }, chat: guid => src.chat(guid), stop: async () => {} },
+        post: async route => {
+          routes.push(route);
+          if (route === revokeAt) selected = false;
+          return { status: 'ok' };
+        },
+        log: silent, statePath: join(dir, 'chats.json'), via: 'mac', clock: 'event',
+        isObserved: () => selected,
+      });
+      await observer.run();
+      const expected = ['/api/sessions/init'];
+      if (revokeAt === '/api/sessions/observations') expected.push(revokeAt);
+      expected.push('/api/sessions/session-end');
+      expect(routes).toEqual(expected);
+    });
+  }
 
   it('keeps the Photon line prompt unchanged and names a direct chat as a conversation', () => {
     const chat = { guid: GROUP, displayName: 'Tahoe trip', isGroup: true, participants: [{ address: ANA }] };

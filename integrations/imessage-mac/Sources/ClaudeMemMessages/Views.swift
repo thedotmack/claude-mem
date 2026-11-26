@@ -6,8 +6,23 @@ struct ContentView: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        Group {
-            if model.needsSetup {
+        VStack(spacing: 0) {
+            Picker("Message source", selection: Binding(get: { model.selectedSource }, set: model.selectSource)) {
+                ForEach(MessageSource.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 420)
+            .padding(10)
+            Divider()
+            if model.source == .mac, !model.pendingOptOuts.isEmpty && model.savingPicks.isEmpty {
+                HStack {
+                    Text("Listening is paused until your chat choices are saved.")
+                    Button("Retry") { model.retryOptOuts() }
+                }.padding(8)
+            }
+            if model.source == .photon {
+                PhotonView()
+            } else if model.needsSetup {
                 SetupView()
             } else {
                 ChatsView()
@@ -26,7 +41,6 @@ struct ContentView: View {
 
 struct SetupView: View {
     @EnvironmentObject var model: AppModel
-    @State private var pathField = ""
 
     var body: some View {
         ScrollView {
@@ -63,38 +77,8 @@ struct SetupView: View {
                 }
 
                 StepCard(number: 2, title: "Connect to Claude-Mem", done: model.launch != nil && model.workerReachable) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        if let launch = model.launch {
-                            Text("Using \(launch.displayName)").font(.callout.monospaced()).textSelection(.enabled)
-                            if model.workerReachable {
-                                Text("Claude-Mem is running at \(model.workerURL).")
-                            } else {
-                                Text("Claude-Mem isn't running. The app starts it when it starts listening, or start it now.")
-                                Button("Start Claude-Mem") { Task { await model.startWorker() } }
-                            }
-                        } else {
-                            Text(model.commandProblem ?? "Looking for claude-mem…")
-                            Text("If you haven't installed Claude-Mem, run this in Terminal, then click Check Again:")
-                                .font(.callout)
-                            Text("npx claude-mem install").font(.body.monospaced()).textSelection(.enabled)
-                                .padding(8).background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-                        }
-                        // Always here, so a wrong command can be replaced or cleared.
-                        HStack {
-                            TextField("Full path to claude-mem (leave empty to find it)", text: $pathField)
-                                .textFieldStyle(.roundedBorder)
-                            Button("Use") { Task { await model.useCommand(pathField) } }
-                            if !model.commandPath.isEmpty {
-                                Button("Clear") {
-                                    pathField = ""
-                                    Task { await model.useCommand("") }
-                                }
-                            }
-                        }
-                        if let problem = model.commandProblem, model.launch != nil {
-                            Text(problem).foregroundStyle(.red).font(.callout)
-                        }
-                    }
+                    WorkerConnectionView()
+                    if let problem = model.commandProblem { Text(problem).foregroundStyle(.red) }
                 }
 
                 StepCard(number: 3, title: "Pick chats", done: false) {
@@ -110,7 +94,73 @@ struct SetupView: View {
             .padding(28)
             .frame(maxWidth: 680, alignment: .leading)
         }
-        .onAppear { pathField = model.commandPath }
+    }
+}
+
+struct WorkerConnectionView: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        if model.workerReachable {
+            Text("Claude-Mem is running at \(model.workerURL).")
+        } else {
+            Text("Start your installed Claude-Mem worker in Terminal, then check again.")
+            Text("npx claude-mem start").font(.body.monospaced()).textSelection(.enabled)
+            Text("First install: npx claude-mem install").font(.callout).textSelection(.enabled)
+            Button("Check Connection") { Task { await model.refreshAll() } }
+        }
+    }
+}
+
+struct PhotonView: View {
+    @EnvironmentObject var model: AppModel
+    @State private var projectID = ""
+    @State private var secret = ""
+    @State private var replace = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Form {
+                Section("Photon group observer") {
+                    Text("Add your dedicated Photon iMessage line to each group you want Claude-Mem to remember. Listening starts with new group messages.")
+                    if model.photonConfigured {
+                        LabeledContent("Photon project", value: "Connected")
+                        ForEach(model.photonNumbers, id: \.self) { number in
+                            LabeledContent("Add to your groups", value: number).textSelection(.enabled)
+                        }
+                        Button(replace ? "Cancel" : "Change Project") { replace.toggle(); secret = "" }
+                            .disabled(model.listener != .stopped && !listenerFailed)
+                    }
+                    if !model.photonConfigured || replace {
+                        Link("Open Photon project settings", destination: URL(string: "https://app.photon.codes")!)
+                        TextField("Project ID", text: $projectID)
+                        SecureField("Project secret", text: $secret)
+                        Button(model.connectingPhoton ? "Connecting…" : "Connect Project") {
+                            let submitted = secret
+                            secret = ""
+                            Task {
+                                await model.connectPhoton(projectID: projectID, secret: submitted)
+                                if model.commandProblem == nil { replace = false }
+                            }
+                        }
+                        .disabled(model.connectingPhoton || projectID.isEmpty || secret.isEmpty || model.launch == nil)
+                    }
+                    if let problem = model.commandProblem { Text(problem).foregroundStyle(.red) }
+                }
+                Section("Claude-Mem") { WorkerConnectionView() }
+                Section {
+                    HStack { ListenerBadge(); Spacer(); ListenButton() }
+                    Toggle("Start listening when the app opens", isOn: $model.listenOnLaunch)
+                    Toggle("Open at login", isOn: Binding(get: { model.opensAtLogin }, set: { model.opensAtLogin = $0 }))
+                }
+            }
+            .formStyle(.grouped)
+            ActivityView().frame(minHeight: 65, maxHeight: 150)
+        }
+    }
+
+    private var listenerFailed: Bool {
+        if case .failed = model.listener { return true }
+        return false
     }
 }
 
@@ -198,6 +248,7 @@ struct ChatRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Toggle("", isOn: Binding(get: { chat.observed }, set: { model.setObserved(chat.guid, $0) }))
+                .disabled(model.savingPicks.contains(chat.guid))
                 .toggleStyle(.checkbox)
                 .labelsHidden()
                 .help(chat.observed ? "Stop observing this chat" : "Observe this chat")
@@ -245,6 +296,7 @@ struct ChatDetail: View {
                 }
                 LabeledContent("Messages", value: "\(chat.messageCount)")
                 Toggle("Observe this chat", isOn: Binding(get: { chat.observed }, set: { model.setObserved(chat.guid, $0) }))
+                    .disabled(model.savingPicks.contains(chat.guid))
             }
             Section {
                 TextField("Anything worth remembering", text: $focus, axis: .vertical)
@@ -309,9 +361,6 @@ struct OverviewView: View {
             Section("App") {
                 Toggle("Start listening when the app opens", isOn: $model.listenOnLaunch)
                 Toggle("Open at login", isOn: Binding(get: { model.opensAtLogin }, set: { model.opensAtLogin = $0 }))
-                if let launch = model.launch {
-                    LabeledContent("Claude-Mem command", value: launch.displayName).textSelection(.enabled)
-                }
                 LabeledContent("Claude-Mem", value: model.workerReachable ? "Running at \(model.workerURL)" : "Not running")
             }
         }
@@ -368,7 +417,7 @@ struct ListenerBadge: View {
 
     private var text: String {
         switch model.listener {
-        case let .listening(count): return "Listening to \(count) chat\(count == 1 ? "" : "s")"
+        case let .listening(count): return model.source == .photon ? "Listening to Photon groups" : "Listening to \(count) chat\(count == 1 ? "" : "s")"
         case .starting: return "Starting…"
         case .failed: return "Stopped with a problem"
         case .stopped: return "Not listening"
@@ -390,7 +439,7 @@ struct ListenButton: View {
             Button { model.stopListening() } label: { Label("Stop", systemImage: "stop.fill") }
         default:
             Button { model.startListening() } label: { Label("Listen", systemImage: "play.fill") }
-                .disabled(model.observedCount == 0)
+                .disabled(!model.canListen)
         }
     }
 }
@@ -406,7 +455,7 @@ struct MenuBarContent: View {
         case .listening, .starting:
             Button("Stop Listening") { model.stopListening() }
         default:
-            Button("Start Listening") { model.startListening() }.disabled(model.observedCount == 0 || model.needsSetup)
+            Button("Start Listening") { model.startListening() }.disabled(!model.canListen)
         }
         Button("Open Claude-Mem Messages") {
             openWindow(id: "main")
@@ -418,7 +467,7 @@ struct MenuBarContent: View {
 
     private var statusLine: String {
         switch model.listener {
-        case let .listening(count): return "Listening to \(count) chat\(count == 1 ? "" : "s") · \(model.sent) sent"
+        case let .listening(count): return model.source == .photon ? "Listening to Photon groups · \(model.sent) sent" : "Listening to \(count) chat\(count == 1 ? "" : "s") · \(model.sent) sent"
         case .starting: return "Starting…"
         case let .failed(message): return "Stopped: \(message)"
         case .stopped: return "Not listening"

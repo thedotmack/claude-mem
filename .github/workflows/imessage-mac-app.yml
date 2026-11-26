@@ -1,11 +1,46 @@
 name: iMessage Mac app
 
 on:
+  workflow_call:
   pull_request:
-    paths: ['integrations/imessage-mac/**', '.github/workflows/imessage-mac-app.yml']
+    paths:
+      - 'integrations/imessage-mac/**'
+      - 'src/integrations/imessage-observer/**'
+      - 'src/integrations/harness-worker.ts'
+      - 'src/npx-cli/commands/imessage*.ts'
+      - 'src/npx-cli/install/**'
+      - 'src/npx-cli/utils/paths.ts'
+      - 'src/server/middleware/request-auth-helpers.ts'
+      - 'src/services/infrastructure/**'
+      - 'src/services/smart-file-read/tree-sitter-*.ts'
+      - 'src/services/sync/**'
+      - 'src/services/telemetry/**'
+      - 'src/supervisor/**'
+      - 'src/shared/**'
+      - 'src/utils/**'
+      - 'tests/fixtures/imessage/**'
+      - 'package.json'
+      - '.github/workflows/imessage-mac-app.yml'
   push:
     branches: [main]
-    paths: ['integrations/imessage-mac/**', '.github/workflows/imessage-mac-app.yml']
+    paths:
+      - 'integrations/imessage-mac/**'
+      - 'src/integrations/imessage-observer/**'
+      - 'src/integrations/harness-worker.ts'
+      - 'src/npx-cli/commands/imessage*.ts'
+      - 'src/npx-cli/install/**'
+      - 'src/npx-cli/utils/paths.ts'
+      - 'src/server/middleware/request-auth-helpers.ts'
+      - 'src/services/infrastructure/**'
+      - 'src/services/smart-file-read/tree-sitter-*.ts'
+      - 'src/services/sync/**'
+      - 'src/services/telemetry/**'
+      - 'src/supervisor/**'
+      - 'src/shared/**'
+      - 'src/utils/**'
+      - 'tests/fixtures/imessage/**'
+      - 'package.json'
+      - '.github/workflows/imessage-mac-app.yml'
 
 permissions:
   contents: read
@@ -19,6 +54,19 @@ jobs:
         working-directory: integrations/imessage-mac
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install observer build dependencies
+        working-directory: .
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund
+          npm ci --ignore-scripts --no-audit --no-fund --prefix integrations/imessage-mac/observer
       - name: Swift version
         run: swift --version
       - name: Build
@@ -26,9 +74,65 @@ jobs:
       - name: Test
         run: swift test
       - name: Build the app
-        run: scripts/build-app.sh
+        run: |
+          version=$(node -p "require('../../package.json').version")
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            test "$GITHUB_REF_NAME" = "v$version"
+          fi
+          scripts/build-app.sh "$version"
+      - name: Verify the downloadable app
+        run: |
+          extract=$(mktemp -d)
+          ditto -x -k build/Claude-Mem-Messages.zip "$extract"
+          app="$extract/Claude-Mem Messages.app"
+          version=$(node -p "require('../../package.json').version")
+          test "$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")" = "$version"
+          test "$(plutil -extract CFBundleVersion raw "$app/Contents/Info.plist")" = "$version"
+          test "$(plutil -extract CFBundleIdentifier raw "$app/Contents/Info.plist")" = ai.cmem.messages
+          codesign --verify --deep --strict "$app"
+          lipo "$app/Contents/MacOS/ClaudeMemMessages" -verify_arch arm64 x86_64
+          lipo "$app/Contents/Helpers/imessage-observer-arm64" -verify_arch arm64
+          lipo "$app/Contents/Helpers/imessage-observer-x64" -verify_arch x86_64
+          for executable in "$app" "$app/Contents/Helpers/imessage-observer-"{arm64,x64}; do
+            codesign --display --verbose=4 "$executable" 2>&1 | grep -E 'flags=0x[[:xdigit:]]+\([^)]*runtime[,)]'
+            entitlements=$(codesign --display --entitlements - "$executable")
+            if [[ -n "$entitlements" ]]; then
+              test "$(plutil -convert json -o - - <<<"$entitlements")" = '{}'
+            fi
+          done
+          test "$(uname -m)" = arm64
+          "$app/Contents/MacOS/ClaudeMemMessages" --verify-bundle
+          bun scripts/smoke-observer.ts "$app/Contents/Helpers/imessage-observer-arm64"
       - uses: actions/upload-artifact@v4
         with:
           name: Claude-Mem-Messages
           path: integrations/imessage-mac/build/Claude-Mem-Messages.zip
+          if-no-files-found: error
+          overwrite: true
           retention-days: 14
+
+  verify-intel:
+    needs: build
+    runs-on: macos-15-intel
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - uses: actions/download-artifact@v4
+        with:
+          name: Claude-Mem-Messages
+          path: integrations/imessage-mac/build
+      - name: Run the downloadable app on Intel
+        working-directory: integrations/imessage-mac
+        run: |
+          test "$(uname -m)" = x86_64
+          extract=$(mktemp -d)
+          ditto -x -k build/Claude-Mem-Messages.zip "$extract"
+          app="$extract/Claude-Mem Messages.app"
+          codesign --verify --deep --strict "$app"
+          "$app/Contents/MacOS/ClaudeMemMessages" --verify-bundle
+          bun scripts/smoke-observer.ts "$app/Contents/Helpers/imessage-observer-x64"
