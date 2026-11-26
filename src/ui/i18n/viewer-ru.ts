@@ -339,7 +339,7 @@ export const viewerRu: Record<string, string> = {
   'Jump to newest': 'К новейшим',
   'Full height': 'На всю высоту',
   'Find in logs': 'Найти в логах',
-  'in the last {count} line': 'среди последних {count} строк',
+  'in the last {count} line': 'в последней {count} строке',
   'in the last {count} lines': 'среди последних {count} строк',
   'DB': 'DB',
   'HTTP': 'HTTP',
