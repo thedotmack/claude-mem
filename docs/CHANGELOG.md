@@ -26,12 +26,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **OpenCode Go and OpenCode Zen presets use the new `/inference` addresses** (#6463, thanks @maxmad64bis).
 - **Updating no longer aborts while the old worker is still shutting down** (#6453, thanks @maxmad64bis). The installer waited a flat 10 seconds for the old worker to exit, less than the worker's own shutdown can take, so a manual update aborted on any worker that hit its drain deadline. It now waits out the worker's full shutdown (25.5 seconds, 35.5 seconds on Windows) after one stop request.
 - **Test runs on macOS no longer end in exit 134** (#6479, @thedotmack). After every test passed, a run that had loaded the embedding model crashed on exit with "A C++ exception occurred". The test setup now releases that runtime before the process exits.
+- **My Work refresh no longer fails when the model skips a group** (#6515, @thedotmack). A group still unreviewed after the retry failed the whole refresh, so titles, focus and the story never ran. Now the refresh carries on, says how many groups were left without a review, and asks for them again next time.
 
 ## New
 
 - **Skip Bash commands segment by segment** (#6504, thanks @zhangkom). Set `CLAUDE_MEM_SKIP_BASH_PATTERNS_MATCH_EVERY_SEGMENT=true` to skip a compound command only when every part of it matches `CLAUDE_MEM_SKIP_BASH_PATTERNS`. It is off by default. See the configuration docs for the trade-off.
 - **ZCode support** (#6487, thanks @rochafialvin). `npx claude-mem install --ide zcode` adds ZCode hooks and MCP recall, and status reports a disabled or incomplete setup.
 - **Per-prompt memory in OpenCode** (#6454, thanks @maxmad64bis). With `CLAUDE_MEM_SEMANTIC_INJECT=true`, OpenCode gets the observations that best match each prompt.
+- **OpenCode can use the session's own model for the observer** (#6493, thanks @maxmad64bis). Set `CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION=true` and the OpenAI-compatible observer uses the model picked in that OpenCode session. It is off by default.
 - **Turn off the oversized-field condense call** (#6516, thanks @harpreetkbadhan). Set `CLAUDE_MEM_FIELD_CONDENSE_ENABLED=false` to skip the model call that shortens an oversized tool field; the field then goes straight to head and tail trimming. It is on by default, so nothing changes unless you set it.
 - **Rapid-MLX, Straitly and TeamoRouter presets** for the OpenAI-compatible provider (#6502, thanks @raullenchai; #6498, thanks @HashimSyedUBC; #6451, thanks @2867297362mjb-sketch). The TeamoRouter docs state what its privacy policy says it records.
 - **Docs:** a verified Kiro MCP recall guide (#6473, thanks @rochafialvin), a note on how `CLAUDE_MEM_DEDUP_ENABLED` affects `CLAUDE_MEM_REINFORCE_ALPHA` (#6461, thanks @maxmad64bis), and a note that `CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS` also sizes the condense request (#6518, thanks @harpreetkbadhan).
