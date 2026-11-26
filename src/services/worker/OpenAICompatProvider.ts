@@ -140,8 +140,66 @@ export interface OpenAICompatConfig {
    * observation.
    */
   requiresApiKey: boolean;
+  /**
+   * The host session's model id, set when `model` was taken from it
+   * (CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION). A request whose `model` is
+   * still this id was sent on the session's choice, so a 404 for it is the
+   * endpoint refusing that choice, not a wrong configured model.
+   */
+  sessionModel?: string;
   /** Set for a Telegram wrap-up request (OpenAICompatibleProvider.formatTelegramWrapup). */
   plainText?: boolean;
+}
+
+/** The code of a 404 for a request sent on a model id the host chose, not claude-mem's settings (classifyOpenAICompatError). */
+export const HOST_MODEL_NOT_SERVED_CODE = 'host_model_not_served';
+
+/**
+ * Host-session model ids the observer endpoint answered 404 for, by endpoint
+ * URL and id (CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION).
+ *
+ * The host sends its model id without its provider, so the id is only right
+ * when the host session's provider is the same service as the observer
+ * endpoint. When it is not, every request for it gets the same 404, and the
+ * plugin sends the id again with each prompt: without this, the first batch of
+ * every prompt would be refused and the failure would name the wrong setting.
+ * A refused id is ignored from then on and the configured model serves.
+ *
+ * Kept for the worker's life, not on the session: an unrecoverable failure ends
+ * the session's live state (handleGeneratorExit), and the next prompt builds a
+ * new one. It holds no inference input and sends nothing by itself. A restart
+ * forgets it, so an endpoint that starts serving the model is used again then.
+ *
+ * Not capped. An entry takes a 404 from the user's own endpoint for an id their
+ * host selected, an id is at most 200 characters (the session-init schema), and
+ * each one is logged at WARN when it is added.
+ */
+const sessionModelsRefusedByEndpoint = new Set<string>();
+
+function refusedSessionModelKey(apiUrl: string, model: string): string {
+  return `${apiUrl}\n${model}`;
+}
+
+/** The model of this request when it is the host session's choice, else undefined. */
+function sessionModelOfRequest(config: OpenAICompatConfig): string | undefined {
+  return config.sessionModel !== undefined && config.model === config.sessionModel ? config.sessionModel : undefined;
+}
+
+/** Stop using a host-session model this endpoint answered 404 for. Says so once per endpoint and id. */
+function rememberSessionModelRefused(config: OpenAICompatConfig): void {
+  const key = refusedSessionModelKey(config.apiUrl, config.model);
+  if (sessionModelsRefusedByEndpoint.has(key)) return;
+  sessionModelsRefusedByEndpoint.add(key);
+  logger.warn('SDK', `${config.preset.label} does not serve the host session's model; the observer goes back to the configured model for it`, {
+    model: config.model,
+    url: config.apiUrl,
+    setting: 'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION',
+  });
+}
+
+/** Test seam: forget the refused host-session models. */
+export function resetRefusedSessionModelsForTesting(): void {
+  sessionModelsRefusedByEndpoint.clear();
 }
 
 /**
@@ -306,6 +364,8 @@ export function classifyOpenAICompatError(input: {
   endpointLabel?: string;
   /** The URL a request with no response was sent to, named in the network-error message. */
   requestUrl?: string;
+  /** The request's model when it was the host session's choice, not the configured one. */
+  sessionModel?: string;
 }): ClassifiedProviderError {
   const body = input.bodyText ?? '';
   const lower = body.toLowerCase();
@@ -386,6 +446,17 @@ export function classifyOpenAICompatError(input: {
   // 404 on a self-configured endpoint is very often a wrong base URL or a model
   // id the endpoint does not serve, so say so instead of just "bad request".
   if (status === 404) {
+    // The id came from the host session, so _MODEL is not what to check: name the
+    // setting that sent it. If the base URL is the real fault, the configured
+    // model's own 404 says so on the next request.
+    if (input.sessionModel) {
+      return new ClassifiedProviderError(describe('not found'), {
+        kind: 'unrecoverable',
+        cause: input.cause,
+        code: HOST_MODEL_NOT_SERVED_CODE,
+        action: `The endpoint answered 404 for "${input.sessionModel}", the model selected in the host session, which CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION sends as-is. The observer stops using that id and goes back to the configured model. To use the session's model, serve it on CLAUDE_MEM_OPENAI_COMPAT_BASE_URL and restart the worker; otherwise set CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION to false.`,
+      });
+    }
     return new ClassifiedProviderError(describe('not found'), {
       kind: 'unrecoverable',
       cause: input.cause,
@@ -553,7 +624,11 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     // Defense in depth: the init schema already rejects a blank id, but any
     // other writer must not replace a valid configured model with whitespace.
     const sessionModel = session.observerModel?.trim();
-    return { ...config, model: sessionModel || config.model };
+    if (!sessionModel || sessionModel === config.model) return config;
+    // An id this endpoint answered 404 for is not sent again; a different
+    // selection later in the session applies as usual.
+    if (sessionModelsRefusedByEndpoint.has(refusedSessionModelKey(config.apiUrl, sessionModel))) return config;
+    return { ...config, model: sessionModel, sessionModel };
   }
 
   /** Extend this turn with already-queued events; normal confirm/reset covers every claim. */
@@ -642,10 +717,17 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     if (!config.apiUrl || !config.model) {
       throw this.missingApiKeyError();
     }
-    return withKeyPool(
-      { poolId: 'openai-compatible', keys: resolvePoolKeys(config), label: config.preset.label, rateLimitUntilNextKey },
-      ({ key, poolSize }) => this.queryChatCompletions(history, key, poolSize, config, signal, perAttemptTimeoutMs, paidSendBudget, label?.sessionId),
-    );
+    try {
+      return await withKeyPool(
+        { poolId: 'openai-compatible', keys: resolvePoolKeys(config), label: config.preset.label, rateLimitUntilNextKey },
+        ({ key, poolSize }) => this.queryChatCompletions(history, key, poolSize, config, signal, perAttemptTimeoutMs, paidSendBudget, label?.sessionId),
+      );
+    } catch (error) {
+      // The failed batch is not resent: the error ends this generation as any
+      // unrecoverable one does. Only later requests change model.
+      if (isClassified(error) && error.code === HOST_MODEL_NOT_SERVED_CODE) rememberSessionModelRefused(config);
+      throw error;
+    }
   }
 
   /**
@@ -698,7 +780,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
       signal: attemptSignal,
       liveness,
       label,
-      classify: (input) => classifyOpenAICompatError({ ...input, endpointLabel: label, requestUrl: config.apiUrl }),
+      classify: (input) => classifyOpenAICompatError({ ...input, endpointLabel: label, requestUrl: config.apiUrl, sessionModel: sessionModelOfRequest(config) }),
     });
     try {
       return await send(includeReasoning);
@@ -764,6 +846,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
           headers: exchange.headers,
           cause: new Error(`${label} API error: ${responseData.error.code} - ${responseData.error.message}`),
           endpointLabel: label,
+          sessionModel: sessionModelOfRequest(config),
         });
       }
 
@@ -900,7 +983,12 @@ export function isOpenAICompatAvailable(
     && typeof sessionModel === 'string'
     ? sessionModel.trim()
     : '';
-  const model = fromSession || config.model;
+  // An id the endpoint answered 404 for supplies no model: with none configured
+  // either, dispatch falls through as it does for any half-configured endpoint.
+  const usableFromSession = fromSession && !sessionModelsRefusedByEndpoint.has(refusedSessionModelKey(config.apiUrl, fromSession))
+    ? fromSession
+    : '';
+  const model = usableFromSession || config.model;
   if (!config.apiUrl || !model) return false;
   if (!config.requiresApiKey) return true;
   return config.apiKeys.length > 0;
