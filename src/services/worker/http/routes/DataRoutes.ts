@@ -29,7 +29,7 @@ import { emitContextInvalidation } from '../../../../shared/context-invalidation
 import { parseProjectList } from '../../../../shared/project-list.js';
 import { resolveDateBound } from '../../../../shared/date-bounds.js';
 import { AppError } from '../../../server/ErrorHandler.js';
-import { listingOffsetCapMessage, capListingPage } from '../../../../shared/listing-offset-cap.js';
+import { MAX_LISTING_LIMIT, listingOffsetCapMessage, capListingPage } from '../../../../shared/listing-offset-cap.js';
 import { parseStringListField } from '../../../sync/string-list-field.js';
 import { projectReadKeysFor } from '../../search/project-where-filter.js';
 import { scheduleChromaRowCleanup, type IndexedRowKind } from '../../../sync/chroma-row-cleanup.js';
@@ -853,7 +853,7 @@ export class DataRoutes extends BaseRouteHandler {
     }
     // SQLite interprets a negative LIMIT as unbounded, including limit + 1
     // used by PaginationHelper to detect whether another page exists.
-    const limit = Math.min(Math.max(requestedLimit, 1), 100);
+    const limit = Math.min(Math.max(requestedLimit, 1), MAX_LISTING_LIMIT);
     const project = req.query.project as string | undefined;
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
     const contentSessionId = req.query.contentSessionId as string | undefined;

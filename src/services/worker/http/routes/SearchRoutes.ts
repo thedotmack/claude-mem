@@ -8,6 +8,7 @@ import type { SearchTelemetryEnvelope } from '../../SearchManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { AppError } from '../../../server/ErrorHandler.js';
 import { resolveDateBound } from '../../../../shared/date-bounds.js';
+import { LISTING_OFFSET_CAP_MESSAGE, MAX_LISTING_LIMIT, MAX_LISTING_OFFSET } from '../../../../shared/listing-offset-cap.js';
 import { scopedProjects } from '../../../sqlite/project-read-keys.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { isForeignBrowserRead } from './SettingsRoutes.js';
@@ -774,6 +775,12 @@ export class SearchRoutes extends BaseRouteHandler {
    * LIMIT/OFFSET: `limit=-1` returned every row and `limit=abc` became NaN
    * (no results). Accept only digits, with `limit >= 1`, like /api/logs does
    * for `lines`; an empty value counts as absent.
+   *
+   * Both are bounded here too, the way the listing feeds already bound them
+   * (DataRoutes.parsePaginationParams): a `limit` past MAX_LISTING_LIMIT is
+   * clamped to it, and an `offset` past MAX_LISTING_OFFSET is rejected. These
+   * six search routes were the one read plane where a single request could
+   * still ask SQLite to scan and materialize an entire table.
    */
   private static assertValidPagination(searchArgs: Record<string, any>): void {
     for (const [key, minimum] of [['limit', 1], ['offset', 0]] as const) {
@@ -791,6 +798,12 @@ export class SearchRoutes extends BaseRouteHandler {
         );
       }
       searchArgs[key] = String(parsed);
+    }
+    if (searchArgs.limit !== undefined && Number(searchArgs.limit) > MAX_LISTING_LIMIT) {
+      searchArgs.limit = String(MAX_LISTING_LIMIT);
+    }
+    if (searchArgs.offset !== undefined && Number(searchArgs.offset) > MAX_LISTING_OFFSET) {
+      throw new AppError(LISTING_OFFSET_CAP_MESSAGE, 400, 'INVALID_PAGINATION');
     }
   }
 
