@@ -194,6 +194,13 @@ export interface ActiveSession {
   lastModelId?: string;
   /** Model the OBSERVED IDE session is running (from its transcript) — telemetry observed_model. Not the observer model. */
   observedModel?: string;
+  /**
+   * Endpoint-ready observer model id sent by the host on session-init. Live
+   * session state only: never persisted, and optional so a session can exist
+   * without a host-supplied id. Not modelOverride (Claude-only tier routing)
+   * and not observedModel (telemetry of the IDE's own model).
+   */
+  observerModel?: string;
   /** Billing posture of the observed Claude Code session (closed enum, see observed-billing.ts) — telemetry observed_billing. */
   observedBilling?: string;
   /** Whether the OpenRouter provider targets openrouter.ai or a custom OpenAI-compatible gateway — telemetry endpoint_class. */

@@ -341,7 +341,9 @@ interface WorkerRequest {
 
 type Callback = (event: any) => Promise<void> | void;
 
-function createV2Host(directory = "/work/project") {
+type SessionGet = NonNullable<NonNullable<OpenCodePluginContextV2["session"]>["get"]>;
+
+function createV2Host(directory = "/work/project", sessionGet?: SessionGet) {
   const callbacks = new Map<string, Callback>();
   const tools: Array<Record<string, any>> = [];
   const stream = new FakeEventStream();
@@ -363,6 +365,7 @@ function createV2Host(directory = "/work/project") {
         callbacks.set(`session.${name}`, callback as Callback);
         return { dispose: async () => {} };
       },
+      ...(sessionGet ? { get: sessionGet } : {}),
     },
     event: { subscribe: stream.subscribe },
   };
@@ -628,8 +631,7 @@ describe("OpenCode V2 callbacks drive the worker", () => {
     worker.restore();
   });
 
-  async function start() {
-    const host = createV2Host();
+  async function start(host = createV2Host()) {
     cleanup = await setupV2(host.ctx);
     return host;
   }
@@ -698,6 +700,94 @@ describe("OpenCode V2 callbacks drive the worker", () => {
       platform_source: "opencode",
     });
     expect(init.body!.contentSessionId).toBe("ses_cb_prompt");
+  });
+
+  it("v2-explicit-model: sends the endpoint-ready model id from session.get on the first prompt", async () => {
+    // V2 exposes the selected model through session.get. Read `model.id`, which
+    // is endpoint-ready; `providerID/model.id` is a display key and must never
+    // be forwarded as an inference model name.
+    const host = await start(createV2Host("/work/project", async () => ({
+      model: { providerID: "custom", id: "endpoint-model" },
+    })));
+    await host.call("session.prompt", {
+      sessionID: "ses_v2_explicit",
+      prompt: { text: "first prompt" },
+    });
+
+    const [init] = worker.to("/api/sessions/init");
+    expect(init, "session.prompt must post session init").toBeTruthy();
+    expect(init.body!.observerModel).toBe("endpoint-model");
+    expect(init.body!.observerModel).not.toContain("custom/");
+    // Pre-existing init fields must be untouched by the new one.
+    expect(init.body!.prompt).toBe("first prompt");
+    expect(init.body!.contentSessionId).toBe("ses_v2_explicit");
+  });
+
+  it("v2-default-model-omitted: omits observerModel when session.get has no model", async () => {
+    // An object without `model` must leave the key out so the worker's global
+    // CLAUDE_MEM_OPENAI_COMPAT_MODEL fallback applies. No fallback in V2.
+    const host = await start(createV2Host("/work/project", async () => ({})));
+    await host.call("session.prompt", {
+      sessionID: "ses_v2_no_model",
+      prompt: { text: "prompt" },
+    });
+
+    const [init] = worker.to("/api/sessions/init");
+    expect(init, "session.prompt must post session init").toBeTruthy();
+    expect(Object.prototype.hasOwnProperty.call(init.body, "observerModel")).toBe(false);
+    expect(init.body!.prompt).toBe("prompt");
+  });
+
+  it("v2-default-model-omitted: omits observerModel when session.get is absent", async () => {
+    // A beta host with no `session.get` at all must still capture the prompt.
+    const host = await start();
+    await host.call("session.prompt", {
+      sessionID: "ses_v2_no_get",
+      prompt: { text: "prompt" },
+    });
+
+    const [init] = worker.to("/api/sessions/init");
+    expect(init, "session.prompt must post session init").toBeTruthy();
+    expect(Object.prototype.hasOwnProperty.call(init.body, "observerModel")).toBe(false);
+    expect(init.body!.prompt).toBe("prompt");
+  });
+
+  it("v2-model-read-failure: a throwing session.get never rejects the prompt", async () => {
+    // Reading the model is best-effort: a failed read means no model, not a
+    // failed prompt. Capture still posts the init without observerModel.
+    const host = await start(createV2Host("/work/project", async () => {
+      throw new Error("session.get unavailable");
+    }));
+    await expect(host.call("session.prompt", {
+      sessionID: "ses_v2_get_throws",
+      prompt: { text: "prompt" },
+    })).resolves.toBeUndefined();
+
+    const [init] = worker.to("/api/sessions/init");
+    expect(init, "session.prompt must post session init").toBeTruthy();
+    expect(Object.prototype.hasOwnProperty.call(init.body, "observerModel")).toBe(false);
+  });
+
+  it("v2-model-read-never-settles: a hanging session.get cannot hold the prompt hook", async () => {
+    // The model read is best-effort and time-bounded. A get() promise that
+    // never settles must not stall the hook before it posts session init.
+    const host = await start(createV2Host("/work/project", () => new Promise<never>(() => {})));
+    let guard: ReturnType<typeof setTimeout> | undefined;
+    const settled = await Promise.race([
+      host.call("session.prompt", {
+        sessionID: "ses_v2_get_hangs",
+        prompt: { text: "prompt" },
+      }).then(() => true),
+      // Far above the 250 ms read budget, but bounded so a regression fails
+      // instead of hanging the whole suite.
+      new Promise<boolean>((resolve) => { guard = setTimeout(() => resolve(false), 2_000); }),
+    ]).finally(() => { if (guard !== undefined) clearTimeout(guard); });
+
+    expect(settled, "prompt hook must not wait forever on session.get").toBe(true);
+    const [init] = worker.to("/api/sessions/init");
+    expect(init, "session.prompt must post session init").toBeTruthy();
+    expect(Object.prototype.hasOwnProperty.call(init.body, "observerModel")).toBe(false);
+    expect(init.body!.prompt).toBe("prompt");
   });
 
   it("pushes memory onto the system prompt as one tagged text part", async () => {

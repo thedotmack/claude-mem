@@ -120,6 +120,66 @@ describe('OpenAICompatibleProvider summary tier routing', () => {
     expect(provider.queriedModels).toEqual(['session-model']);
   });
 
+  it('observer-model-summary-composition: observation and summary both use the session observer model', async () => {
+    loadFromFileSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',
+      CLAUDE_MEM_TIER_SUMMARY_MODEL: 'summary-model',
+    }));
+
+    const provider = new TestProvider({} as any, {
+      getMessageIterator: async function* () {
+        yield { type: 'observation', tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 2 };
+        yield { type: 'summarize', last_assistant_message: 'done' };
+      },
+    } as any);
+
+    await provider.startSession(makeSession({ observerModel: 'session-model' }));
+
+    expect(provider.queriedModels).toEqual(['session-model', 'summary-model']);
+  });
+
+  it('observer-model-isolation: modelOverride and observedModel never become the observer model', async () => {
+    loadFromFileSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',
+      CLAUDE_MEM_TIER_SUMMARY_MODEL: 'summary-model',
+    }));
+
+    const provider = new TestProvider({} as any, {
+      getMessageIterator: async function* () {
+        yield { type: 'observation', tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 2 };
+        yield { type: 'summarize', last_assistant_message: 'done' };
+      },
+    } as any);
+
+    await provider.startSession(makeSession({
+      observerModel: 'session-model',
+      modelOverride: 'claude-tier-model',
+      observedModel: 'ide-observed-model',
+    }));
+
+    expect(provider.queriedModels).toEqual(['session-model', 'summary-model']);
+  });
+
+  it('observer-model tier-disabled: routing off keeps the summary on the session observer model', async () => {
+    loadFromFileSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_TIER_ROUTING_ENABLED: 'false',
+      CLAUDE_MEM_TIER_SUMMARY_MODEL: 'summary-model',
+    }));
+
+    const provider = new TestProvider({} as any, {
+      getMessageIterator: async function* () {
+        yield { type: 'summarize', last_assistant_message: 'done' };
+      },
+    } as any);
+
+    await provider.startSession(makeSession({ observerModel: 'session-model' }));
+
+    expect(provider.queriedModels).toEqual(['session-model']);
+  });
+
   it('reuses the persisted synthetic id when an in-memory session restarts', async () => {
     const updateMemorySessionId = mock(() => {});
     const provider = new TestProvider({

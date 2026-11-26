@@ -318,7 +318,12 @@ function goalsJson(saved: ReturnType<typeof readGoals>, story: { preferences?: A
 const NAV_LABEL_RULE = `A focus area's name never reuses a nav label as whole words, in any case: ${NAV_LABELS.map(label => `"${label}"`).join(', ')}. The worker refuses such a name and the whole answer fails.`;
 const focusAreasNote = (path: string) => `The focus areas already saved in My Focus are in ${path} (id, name, goal, status; do not run --print-focus-areas). For each focus area you write, set "matches" to the id of the saved area it already is, whatever its name, or null when none is. Never match by name alone. ${NAV_LABEL_RULE}`;
 
-export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { steps: StepTiming[] } {
+export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & {
+  steps: StepTiming[];
+  /** How many due groups the last run left without a review: the model gave none for them, on the first ask and on
+   * the retry. They stay due. 0 before a run and after one that reviewed every due group. */
+  readonly groupsLeftWithoutReview: number;
+} {
   const { needs, reason, dataDir, ledgerDir, pluginRoot, openDatabase } = options;
   if (typeof options.localDeviceId !== 'function') throw new TypeError('buildRefreshTask needs localDeviceId, the worker\'s sync device id.');
   const now = options.now ?? Date.now;
@@ -375,7 +380,11 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
   };
 
   const steps: StepTiming[] = [];
+  // Groups the run in progress (or the last one) left without a review: counted in the result line and read by the
+  // scheduler after the run (WorkViewRoutes defaultAutoRefresh). Each run starts from zero, a fallback agent's too.
+  let groupsLeftWithoutReview = 0;
   const run = async (askBackend: AskAgent, agent: TaskAgentId): Promise<string> => {
+    groupsLeftWithoutReview = 0;
     const runDir = join(ledgerDir, 'agent-runs', randomBytes(6).toString('hex'));
     mkdirSync(runDir, { recursive: true });
     let fileNumber = 0;
@@ -808,11 +817,19 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       const due: Array<{ groupId: string }> = cli(['pending', '--days', '14', '--limit', '1000000']).groups;
       let reviewed = 0;
       const coercedReviewFields = new Set<string>(), droppedPreferences = new Set<string>();
-      /** One batch of reviews. Like step(), but a refusal re-asks only for the groups that were refused. */
+      /** One batch of reviews. Like step(), but a refusal re-asks only for the groups that were refused.
+       * A group the model gave no review for, on the first ask and on that one retry, is left without a review: it
+       * stays due and the next refresh asks for it again. A model that leaves the same group out every time used to
+       * fail every refresh here, so titles, focus and the story never ran (#6432). The batch's saved reviews stand
+       * and the refresh goes on. A review that was given and could not be saved (the check refused it, or the write
+       * failed) still fails the batch unless its retry is saved: leaving that group out on the retry does not
+       * forgive it, so a write that keeps failing is never reported as a group the model left out. */
       const reviewBatch = async (groups: Array<{ groupId: string }>, rule: string) => {
         let shows = groups.map(group => cli(['show', group.groupId]));
         let refusals: string[] = [];
         let rejectedReviews: Array<{ groupId?: string }> = [];
+        /** Why a review that was given could not be saved, by group, from either ask. */
+        const rejections = new Map<string, string>();
         for (let attempt = 0; attempt < 2 && shows.length; attempt++) {
           const retryGroupIds = new Set(shows.map(show => show.groupId));
           let text: string;
@@ -847,12 +864,23 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
               for (const label of saved?.droppedPreferences ?? []) droppedPreferences.add(`${review.groupId}:${label}`);
               recorded.add(String(review.groupId)); reviewed++;
             }
-            catch (error) { rejectedReviews.push(review); refusals.push(`${review.groupId}: ${error instanceof Error ? error.message : String(error)}`); }
+            catch (error) {
+              const why = error instanceof Error ? error.message : String(error);
+              rejectedReviews.push(review); refusals.push(`${review.groupId}: ${why}`); rejections.set(String(review.groupId), why);
+            }
           }
           shows = shows.filter(show => !recorded.has(show.groupId));
-          for (const show of shows) if (!refusals.some(line => line.startsWith(`${show.groupId}:`))) refusals.push(`${show.groupId}: no review was given.`);
+          for (const show of shows) if (!refusals.some(line => line.startsWith(`${show.groupId}:`))) {
+            // Left out on the retry after a review that could not be saved: the failure keeps that first reason.
+            const earlier = rejections.get(show.groupId);
+            refusals.push(earlier ? `${show.groupId}: no review was given on the retry; the first one was not saved: ${earlier}` : `${show.groupId}: no review was given.`);
+          }
         }
-        if (shows.length) throw refused(new Error(`reviews: ${refusals.join('; ').slice(0, 500)}`));
+        if (!shows.length) return;
+        if (rejectedReviews.length || shows.some(show => rejections.has(show.groupId))) throw refused(new Error(`reviews: ${refusals.join('; ').slice(0, 500)}`));
+        groupsLeftWithoutReview += shows.length;
+        // The failed run used to name these groups in the worker log; the run that now finishes still does.
+        logger.warn('WORKER', `Work view refresh (${reason}) left ${shows.length} groups without a review; they stay due for the next refresh`, { agent, reviews: refusals.join('; ') });
       };
       // Batches are independent, so a few run at once; every batch finishes (and saves) before a failure is reported.
       // Not all at once: each batch is its own agent process, and a large backlog (Oct 25: ~1,100 due groups,
@@ -870,9 +898,10 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       await Promise.all(Array.from({ length: Math.min(reviewConcurrency(dataDir), batches.length) }, lane));
       const failed = outcomes.filter(outcome => outcome.status === 'rejected');
       if (failed.length) throw (failed[0] as PromiseRejectedResult).reason;
-      const reviewRepairs = [...(coercedReviewFields.size ? [`${coercedReviewFields.size} oversized fields trimmed after retry`] : []),
-        ...(droppedPreferences.size ? [`${droppedPreferences.size} preferences without a quote or text dropped after retry`] : [])];
-      if (reviewed) done.push(`${reviewed} requests reviewed${reviewRepairs.length ? ` (${reviewRepairs.join(', ')})` : ''}`);
+      const reviewNotes = [...(coercedReviewFields.size ? [`${coercedReviewFields.size} oversized fields trimmed after retry`] : []),
+        ...(droppedPreferences.size ? [`${droppedPreferences.size} preferences without a quote or text dropped after retry`] : []),
+        ...(groupsLeftWithoutReview ? [`${groupsLeftWithoutReview} left without a review until the next refresh`] : [])];
+      if (reviewed || groupsLeftWithoutReview) done.push(`${reviewed} requests reviewed${reviewNotes.length ? ` (${reviewNotes.join(', ')})` : ''}`);
 
       // Names: a request the judge started (or whose title a grouping answer copied) still shows its opening ask word for
       // word as its title. After the reviews, so a vague ask ("figure it out") is named from what its review found; before
@@ -1063,6 +1092,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
   return {
     reason,
     steps,
+    get groupsLeftWithoutReview() { return groupsLeftWithoutReview; },
     // The refresh runs on the agent the owner's settings name, and stays there (#5189, #5435).
     ...resolveRefreshAgents(dataDir, reason === 'setup-scan'),
     // The work-view folder holds every input file; the data dir above it holds .env and settings.json.

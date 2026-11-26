@@ -296,6 +296,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENAI_COMPAT_API_KEYS: string;
   CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: string;
   CLAUDE_MEM_OPENAI_COMPAT_MODEL: string;
+  CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION: string;
   CLAUDE_MEM_OPENAI_COMPAT_REASONING: string;
   CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT: string;
   CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE: string;
@@ -637,6 +638,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENAI_COMPAT_API_KEYS: '',  // Optional extra keys (newline/comma separated) for the openai-compatible provider.
     CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: '',  // OpenAI-compatible base URL, e.g. https://integrate.api.nvidia.com/v1. Overrides the preset's base URL when set.
     CLAUDE_MEM_OPENAI_COMPAT_MODEL: '',  // Model id passed verbatim. Empty = the preset's default model.
+    CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION: 'false',  // opt-in: use the model selected in the host session
     CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT: '',
     CLAUDE_MEM_OPENAI_COMPAT_REASONING: '',  // off | on. Empty = off: every openai-compatible request sends reasoning:{enabled:false}. "on" leaves reasoning to the endpoint.
     CLAUDE_MEM_OPENAI_COMPAT_OBSERVATION_BATCH_SIZE: '1', // Queued same-context events per observer prompt (1-32); opt-in.

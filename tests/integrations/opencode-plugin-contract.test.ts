@@ -556,6 +556,110 @@ describe("OpenCode plugin event contract", () => {
   });
 });
 
+describe("OpenCode core observer model payload", () => {
+  function stubInitCapture() {
+    const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {},
+      });
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+    return { posts, restore: () => { globalThis.fetch = originalFetch; } };
+  }
+
+  it("carries the observer model in the session-init payload", async () => {
+    const { posts, restore } = stubInitCapture();
+    try {
+      const { createCore } = await import("../../src/integrations/opencode-plugin/core.ts");
+      const core = createCore({ directory: "/tmp/x" });
+      await core.captureUserPrompt("ses_a", "prompts", "endpoint-model");
+
+      const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
+      expect(initPost, "captureUserPrompt must post session init").toBeTruthy();
+      expect(initPost!.body.observerModel).toBe("endpoint-model");
+      // The pre-existing fields must survive the new one.
+      expect(initPost!.body.contentSessionId).toBe("ses_a");
+      expect(initPost!.body.prompt).toBe("prompts");
+      expect(initPost!.body.cwd).toBe("/tmp/x");
+      expect(initPost!.body.platform_source).toBe("opencode");
+      expect(initPost!.body.platformSource).toBe(normalizePlatformSource("opencode"));
+      expect(initPost!.body.telemetryPromptEpochMs).toEqual(expect.any(Number));
+    } finally {
+      restore();
+    }
+  });
+
+  it("omits the observer model key when no argument is given", async () => {
+    const { posts, restore } = stubInitCapture();
+    try {
+      const { createCore } = await import("../../src/integrations/opencode-plugin/core.ts");
+      const core = createCore({ directory: "/tmp/x" });
+      await core.captureUserPrompt("ses_b", "prompts");
+
+      const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
+      expect(initPost, "captureUserPrompt must post session init").toBeTruthy();
+      expect(Object.prototype.hasOwnProperty.call(initPost!.body, "observerModel")).toBe(false);
+      expect(initPost!.body.prompt).toBe("prompts");
+    } finally {
+      restore();
+    }
+  });
+
+  it("v1-first-prompt-model: sends the endpoint-ready modelID on the first prompt", async () => {
+    // V1 reads the host's selected model straight from the chat.message input;
+    // it must not wait for a later system.transform or cache one in a Map. The
+    // value sent must be the endpoint-ready modelID, never `providerID/modelID`.
+    const { posts, restore } = stubInitCapture();
+    try {
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      await plugin["chat.message"](
+        { model: { providerID: "custom", modelID: "endpoint-model" } },
+        {
+          message: { role: "user", sessionID: "ses_v1_first" },
+          parts: [{ type: "text", text: "first prompt" }],
+        },
+      );
+
+      const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
+      expect(initPost, "chat.message(user) must post session init").toBeTruthy();
+      expect(initPost!.body.observerModel).toBe("endpoint-model");
+      expect(initPost!.body.observerModel).not.toContain("custom/");
+      // Pre-existing init fields must be untouched by the new one.
+      expect(initPost!.body.prompt).toBe("first prompt");
+      expect(initPost!.body.contentSessionId).toBe("ses_v1_first");
+    } finally {
+      restore();
+    }
+  });
+
+  it("v1-model-absent: omits observerModel so the global fallback applies", async () => {
+    // With no model on the input, V1 must not send the key at all: the worker
+    // then falls back to CLAUDE_MEM_OPENAI_COMPAT_MODEL. No new fallback logic
+    // belongs in the adapter, and the prompt must still be captured.
+    const { posts, restore } = stubInitCapture();
+    try {
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      await plugin["chat.message"](
+        {},
+        {
+          message: { role: "user", sessionID: "ses_v1_absent" },
+          parts: [{ type: "text", text: "prompt" }],
+        },
+      );
+
+      const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
+      expect(initPost, "chat.message(user) must post session init").toBeTruthy();
+      expect(Object.prototype.hasOwnProperty.call(initPost!.body, "observerModel")).toBe(false);
+      expect(initPost!.body.prompt).toBe("prompt");
+    } finally {
+      restore();
+    }
+  });
+});
+
 describe("OpenCode plugin attribution contract", () => {
   const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
   const originalFetch = globalThis.fetch;

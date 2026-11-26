@@ -164,7 +164,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const activeSession = this.sessionManager.getSession(input.sessionDbId);
     const selection = activeSession?.currentProvider
       ? { provider: activeSession.currentProvider, gatewayProbeClaimId: null }
-      : selectProviderForGenerator(activeSession?.platformSource ?? input.platformSource);
+      : selectProviderForGenerator(activeSession?.platformSource ?? input.platformSource, activeSession?.observerModel);
     if (selection.capBlocked) throw new Error('CMEM credits are exhausted and the configured fallback is unavailable');
     const activeModelId = activeSession?.currentProvider ? activeSession.lastModelId : undefined;
 
@@ -216,7 +216,8 @@ export class SessionRoutes extends BaseRouteHandler {
       // Each session is paced on the provider its own source dispatches to.
       const probed = new Set<SelectableProvider>();
       sessionIds = sessionIds.filter(sessionDbId => {
-        const provider = getSelectedProvider(this.sessionManager.getSession(sessionDbId)?.platformSource);
+        const session = this.sessionManager.getSession(sessionDbId);
+        const provider = getSelectedProvider(session?.platformSource, session?.observerModel);
         const cooldown = getQuotaCooldown(provider);
         // The quota-fallback credential serves while the primary one is held, so it paces nothing.
         if (!cooldown || !cooldownAppliesToCurrentAccount(cooldown)
@@ -299,7 +300,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     // The claiming variant: this path is about to SEND, so it must take the
     // single gateway re-probe rather than merely reading the clock.
-    const selection = selectProviderForGenerator(session.platformSource);
+    const selection = selectProviderForGenerator(session.platformSource, session.observerModel);
     const selectedProvider = selection.provider;
     if (selection.capBlocked || (source === 'cmem-cap-fallback' && selectedProvider === 'openrouter')) {
       releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
@@ -715,6 +716,10 @@ export class SessionRoutes extends BaseRouteHandler {
     // The checkout `project` was resolved from, and how (gate P1-2).
     cwd: z.string().optional(),
     projectKeySource: z.string().optional(),
+    // Endpoint-ready observer model id from the host's session-init. `.catch`
+    // drops a malformed value instead of failing the prompt on safeParse:
+    // validateBody would otherwise turn it into a 400 before this handler runs.
+    observerModel: z.string().min(1).max(200).refine(value => value.trim().length > 0).optional().catch(undefined),
   }).passthrough();
 
   private static readonly observationsByClaudeIdSchema = z.object({
@@ -850,7 +855,7 @@ export class SessionRoutes extends BaseRouteHandler {
   }
 
   private handleSessionInitByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { contentSessionId } = req.body;
+    const { contentSessionId, observerModel } = req.body;
 
     const rawPrompt = typeof req.body.prompt === 'string' ? req.body.prompt : undefined;
     const platformSource = this.getPlatformSourceFromRequest(req);
@@ -1034,11 +1039,23 @@ export class SessionRoutes extends BaseRouteHandler {
 
     if (duplicatePrompt) {
       const activeSession = this.sessionManager.getSession(sessionDbId);
+      const hasObserverModel = typeof observerModel === 'string' && observerModel.trim().length > 0;
+      // A retry still carries the host's current observer model, but only the
+      // live turn or a newer durable turn may refresh the live selection. An
+      // older retry (or one without a model) must not clear a newer prompt's
+      // choice. The prompt stays skipped either way (no new paid send).
+      const refreshObserverModel = hasObserverModel && activeSession !== undefined
+        && (activeSession.lastPromptNumber === duplicatePrompt.prompt_number
+          || activeSession.lastPromptNumber < duplicatePrompt.prompt_number);
+      if (refreshObserverModel) activeSession.observerModel = observerModel;
       // The durable claim can survive an initialization failure. Repair only
       // a stale live native turn; cold sessions remain lazy and older retries
       // must never replace a newer prompt's context.
       if (nativeAnchor && activeSession && activeSession.lastPromptNumber < duplicatePrompt.prompt_number) {
-        this.sessionManager.initializeSession(sessionDbId, sdkPrompt, duplicatePrompt.prompt_number, project);
+        const repairedSession = this.sessionManager.initializeSession(sessionDbId, sdkPrompt, duplicatePrompt.prompt_number, project);
+        // The repaired session is a different object: apply the model only in
+        // the repair case, and only when the retry actually carried one.
+        if (hasObserverModel) repairedSession.observerModel = observerModel;
       }
       const contextInjected = activeSession !== undefined;
       logger.debug('SESSION', 'Duplicate user prompt skipped', {
@@ -1098,6 +1115,9 @@ export class SessionRoutes extends BaseRouteHandler {
 
     if (platformSource !== 'cursor') {
       const session = this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber, project);
+      // Only a prompt that carried a model changes the choice: the host's model read is best-effort (V2 gives it
+      // 250 ms), so a prompt without one is a missed read, not a session that went back to the configured model.
+      if (observerModel) session.observerModel = observerModel;
 
       // The row this request saved, by id. A newest-by-timestamp lookup can
       // return a neighbouring turn saved in the same millisecond.
@@ -1148,7 +1168,8 @@ export class SessionRoutes extends BaseRouteHandler {
     } else {
       // Cursor creates its observer lazily, but accepted prompts still update an existing session.
       if (this.sessionManager.getSession(sessionDbId)) {
-        this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber, project);
+        const session = this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber, project);
+        if (observerModel) session.observerModel = observerModel;
       }
       logger.debug('HTTP', 'session-init: Skipping SDK agent init for Cursor platform', { sessionDbId, promptNumber });
     }

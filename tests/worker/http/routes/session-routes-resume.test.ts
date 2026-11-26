@@ -388,6 +388,21 @@ describe('paused in-memory session recovery', () => {
     expect(manager.getAbandonedStallSessions()).toEqual([]);
   });
 
+  it('threads the live session observer model into provider selection', async () => {
+    const { routes, manager } = fixture();
+    const session = manager.getSession(1)!;
+    session.observerModel = 'session-model';
+
+    routes.resumePendingSessions('test');
+    await flushStarts();
+
+    // Both the read-only pacing check and the generator-starting selection see
+    // the session's current model, so a bare custom endpoint can dispatch to
+    // openai-compatible instead of silently falling through to Claude.
+    expect(providerDispatch.getSelectedProvider).toHaveBeenCalledWith(session.platformSource, 'session-model');
+    expect(providerDispatch.selectProviderForGenerator).toHaveBeenCalledWith(session.platformSource, 'session-model');
+  });
+
   it('does not list an exhausted session that restarted and then paused with its own retry scheduled (#5405)', () => {
     // The stall counter resets only on an answered turn, so after a restart
     // it stays above the cap. A later exit on a transport backoff or a
