@@ -4179,11 +4179,13 @@ export class SessionStore {
         return { reason: 'recorded-by-hook', hookRowId: hookRow.id };
       }
     } else if (sessionDbId === undefined) {
+      // The tagged user_prompts row is the local source for this opening.
+      // Copying it onto the session loses its import origin during publication.
       const at = new Date(prompt.createdAtEpoch).toISOString();
       const inserted = this.db.prepare(`INSERT INTO sdk_sessions
         (content_session_id, memory_session_id, project, platform_source, user_prompt, started_at, started_at_epoch, completed_at, completed_at_epoch, status)
-        VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, 'completed')`)
-        .run(prompt.contentSessionId, prompt.project, platformSource, text, at, prompt.createdAtEpoch, at, prompt.createdAtEpoch);
+        VALUES (?, NULL, ?, ?, NULL, ?, ?, ?, ?, 'completed')`)
+        .run(prompt.contentSessionId, prompt.project, platformSource, at, prompt.createdAtEpoch, at, prompt.createdAtEpoch);
       sessionDbId = Number(inserted.lastInsertRowid);
     }
     const result = this.saveNativeUserPrompt(prompt.contentSessionId, sessionDbId, nativePromptId,

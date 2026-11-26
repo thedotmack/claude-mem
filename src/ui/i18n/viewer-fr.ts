@@ -1,4 +1,7 @@
 export const viewerFr: Record<string, string> = {
+  'A gift for Claude-Mem users': 'Un cadeau pour les utilisateurs de Claude-Mem',
+  'Check Claude’s latest fix from your phone. Get 30 free days of Cloud Sync and the remote Work Viewer. No credit card required.': 'Consultez le dernier correctif de Claude sur votre téléphone. Profitez de Cloud Sync et de la vue de travail à distance pendant 30 jours gratuits, sans carte bancaire.',
+  'Dismiss the Cloud Sync offer': 'Masquer l’offre Cloud Sync',
   'Language': 'Langue',
   'Could not load sessions: {error}': 'Impossible de charger les sessions : {error}',
   'Unknown error': 'Erreur inconnue',

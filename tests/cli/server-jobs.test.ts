@@ -470,6 +470,46 @@ describe('server jobs CLI — state changed after the status check', () => {
     expect(spies[0]!.mock.calls.some(call => /failed to close queue/.test(String(call[1])))).toBe(true);
   });
 
+  // `retry` refuses a processing job with "Cancel first or wait". The cancel
+  // cannot take the BullMQ job from the worker, which holds it until the
+  // provider call returns.
+  it('retry does not report a job requeued while a worker still holds its BullMQ job', async () => {
+    await move('processing');
+    await runServerJobsCommand(['cancel', jobId, '--team', teamId]);
+    process.env.CLAUDE_MEM_QUEUE_ENGINE = 'bullmq';
+    process.env.CLAUDE_MEM_REDIS_URL = '';
+    let heldByWorker = true;
+    const delivered: string[] = [];
+    // No republishToBullmq seam: the command's own publish path runs, on a
+    // queue that answers as BullMQ does for a job a worker holds.
+    __setServerJobsTestSeams({
+      openPool: seamedPool,
+      bullmqQueueFactory: () => ({
+        add: async (_name: string, _payload: unknown, opts?: { jobId?: string }) => {
+          if (!heldByWorker) delivered.push(String(opts?.jobId));
+          return { id: opts?.jobId } as never;
+        },
+        getJob: async () => undefined,
+        getJobCounts: async () => ({}),
+        remove: async () => (heldByWorker ? 0 : 1),
+        close: async () => {},
+      }),
+    });
+
+    await expect(runServerJobsCommand(['retry', jobId, '--team', teamId])).rejects.toThrow(/__exit_1__/);
+    const refused = await reload();
+    expect(refused?.status).toBe('failed');
+    expect(String((refused?.lastError as { error?: string } | null)?.error)).toMatch(/a worker still holds BullMQ job/);
+    expect(delivered).toEqual([]);
+
+    // The provider call has returned and the worker let the job go.
+    heldByWorker = false;
+    await runServerJobsCommand(['retry', jobId, '--team', teamId]);
+    const requeued = await reload();
+    expect(requeued?.status).toBe('queued');
+    expect(delivered).toEqual([String(requeued?.bullmqJobId)]);
+  });
+
   it('a failed publish does not undo a later cancel and retry of the same job', async () => {
     await move('processing'); await move('failed');
     // Retry A is still publishing when another operator cancels the job and

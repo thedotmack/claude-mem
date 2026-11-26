@@ -3,7 +3,7 @@
 // There is no overall time limit for the person: the URL is printed once the worker answers, and if the browser
 // never connects the wait goes on. Individual worker requests are bounded so an unresponsive connection cannot pin
 // a poll or keep the installer waiting after checkout has finished.
-import type { SetupCheckoutState, SetupChoice, SetupInstallerStage, SetupStateView } from '../../shared/setup-state.js';
+import type { SetupCheckoutState, SetupChoice, SetupDeviceCode, SetupInstallerStage, SetupStateView } from '../../shared/setup-state.js';
 import type { SetupInstallCatalog, SetupInstallSelection, SetupInstallStatus } from '../../shared/setup-install.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { settingsTarget, type SettingsDocument } from '../../shared/settings-document.js';
@@ -13,12 +13,124 @@ import { settingsTarget, type SettingsDocument } from '../../shared/settings-doc
 // budget as READ_TIMEOUT_MS in usage-summary.ts for the installer's other loopback reads.
 const WORKER_REQUEST_TIMEOUT_MS = 5_000;
 
+/**
+ * Puts the code of the pairing the open checkout waits on beside "Waiting for this device to connect…" on the setup
+ * page. A resumed installer runs hidden, so the page is the only place the person can see it.
+ */
+export type ShowDeviceCode = (code: SetupDeviceCode) => Promise<void>;
+
 /** On The Go checkout on the existing pairing path (funnel Phase 8). */
 export interface BrowserCheckout {
-  /** Opens the pairing's checkout and waits for it however long it takes; true once paid and the settings are saved. */
-  run: () => Promise<boolean>;
-  /** The page asked again while a checkout is open: open the same checkout page again. */
-  reopen: () => void;
+  /**
+   * Opens the pairing's checkout and waits for it however long it takes; true once paid and the settings are saved.
+   * Shows each pairing's code before opening that pairing's page.
+   */
+  run: (showCode: ShowDeviceCode) => Promise<boolean>;
+  /** The page asked again while a checkout is open: open the same checkout page again (a fresh one once it expired). */
+  reopen: (showCode: ShowDeviceCode) => void | Promise<void>;
+}
+
+/** What the checkout needs of a pairing (install.ts InstallerOAuthPairing). `expiresAt` is epoch ms. */
+export interface CheckoutPairing { userCode: string; checkoutUrl: string; expiresAt?: number }
+
+export function deviceCodeOf(pairing: CheckoutPairing): SetupDeviceCode {
+  return { userCode: pairing.userCode, expiresAt: pairing.expiresAt === undefined ? null : new Date(pairing.expiresAt).toISOString() };
+}
+
+/**
+ * On The Go's checkout on the pairing the installer holds; install.ts wires cmem.ai into it. The pairing the choice
+ * started is held for the first ask. A pairing whose checkout failed, or one past its expiry, is never opened again:
+ * the next ask, or a reopen after the expiry, starts a fresh pairing with a new code. Without an expiry from cmem.ai,
+ * a reopen opens the same page, as before.
+ */
+export function createPairingCheckout<P extends CheckoutPairing>(deps: {
+  /** Starts a new pairing (startOnTheGoPairing). Throws when cmem.ai cannot start one. */
+  start: () => Promise<P>;
+  /**
+   * Opens the pairing's page and notes its code unless `opened`, waits for it, and saves what it delivers: true once
+   * paid. `superseded` answers true once a fresh pairing replaced this one, so its wait ends without a timeout notice.
+   */
+  complete: (pairing: P, opened: boolean, superseded: () => Promise<boolean>) => Promise<boolean>;
+  /** Prints the code in the terminal, as `complete` does for a page it opens itself. */
+  noteCode: (pairing: P) => void;
+  openBrowser: (url: string) => void;
+  log: { warn: (message: string) => void };
+  now?: () => number;
+}): BrowserCheckout & { hold: (pairing: P) => void } {
+  const now = deps.now ?? Date.now;
+  const expired = (pairing: P) => pairing.expiresAt !== undefined && now() >= pairing.expiresAt;
+  let held: P | null = null;
+  // A reopen after the held pairing expired starts its replacement here, and the open checkout moves on to it: the
+  // old pairing's wait ends at that same expiry.
+  let replacement: Promise<P | null> | null = null;
+  // Each run of the checkout, and whether it still waits. A replacement still starting once its run has returned
+  // (paid, failed or thrown) is dropped, so a pairing approved meanwhile never gets a second code or checkout tab.
+  let runs = 0;
+  let running = false;
+  return {
+    hold: (pairing) => { held = pairing; },
+    run: async (showCode) => {
+      runs++;
+      running = true;
+      // A replacement left by an earlier run belongs to that run.
+      replacement = null;
+      try {
+        if (!held || expired(held)) held = await deps.start();
+        let pairing: P = held;
+        let opened = false;
+        for (;;) {
+          await showCode(deviceCodeOf(pairing));
+          const current = pairing;
+          // The replacement a reopen is starting for this pairing, if any: its wait then ends quietly.
+          const superseded = async () => {
+            const next = replacement ? await replacement : null;
+            return next !== null && next !== current;
+          };
+          if (await deps.complete(pairing, opened, superseded)) return true;
+          const next = replacement ? await replacement : null;
+          replacement = null;
+          if (!next) { held = null; return false; }
+          pairing = next;
+          opened = true;
+        }
+      } finally {
+        running = false;
+      }
+    },
+    reopen: async (showCode) => {
+      const pairing = held;
+      if (!pairing) return;
+      if (!expired(pairing)) { deps.openBrowser(pairing.checkoutUrl); return; }
+      // One replacement at a time: it opens its own page once cmem.ai answers.
+      if (replacement) { await replacement; return; }
+      const forRun = runs;
+      const settled = () => !running || runs !== forRun;
+      replacement = (async () => {
+        let fresh: P;
+        try {
+          fresh = await deps.start();
+        } catch (error) {
+          // The expired checkout then reports failed, and the page's next ask tries a fresh pairing again.
+          deps.log.warn(error instanceof Error ? error.message : String(error));
+          return null;
+        }
+        // The old pairing was approved while cmem.ai started this one: nothing waits on it.
+        if (settled()) return null;
+        held = fresh;
+        deps.noteCode(fresh);
+        // The terminal has the code (noteCode); a worker that did not take it must not stop the fresh pairing.
+        try {
+          await showCode(deviceCodeOf(fresh));
+        } catch (error) {
+          deps.log.warn(`Could not show the device code on the setup page: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        if (settled()) return null;
+        deps.openBrowser(fresh.checkoutUrl);
+        return fresh;
+      })();
+      await replacement;
+    },
+  };
 }
 
 /**
@@ -141,11 +253,12 @@ export async function runBrowserSetup(deps: BrowserSetupDeps): Promise<BrowserSe
       await sleep(pollIntervalMs);
     }
   };
-  const report = async (stage: SetupInstallerStage, error: string | null = null, checkout?: Exclude<SetupCheckoutState, 'requested'>): Promise<void> => {
+  const report = async (stage: SetupInstallerStage, error: string | null = null, checkout?: Exclude<SetupCheckoutState, 'requested'>, deviceCode?: SetupDeviceCode | null): Promise<void> => {
     const response = await request(`${deps.workerBaseUrl}/api/setup/installer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(checkout ? { stage, error, checkout } : { stage, error }),
+      // Only a waiting checkout carries the code; paid and failed reports leave it out, which clears it.
+      body: JSON.stringify(checkout ? { stage, error, checkout, ...(checkout === 'waiting' && deviceCode ? { deviceCode } : {}) } : { stage, error }),
       signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) throw await workerResponseError(response, `The worker did not take the installer stage ${stage}`);
@@ -219,8 +332,15 @@ export async function runBrowserSetup(deps: BrowserSetupDeps): Promise<BrowserSe
     const state = await waitFor((current) => current.status === 'complete' || newRequest(current));
     if (state.status === 'complete') return { choice, stage, state, checkoutPaid };
     handledRequests = state.checkout!.requests;
+    // A new run may start a new pairing, so no code shows until the run says which pairing it waits on.
+    let deviceCode = null as SetupDeviceCode | null;
     await report(stage, null, 'waiting');
     let settled = false;
+    // Every waiting report from here on carries the code of the pairing the open checkout waits on.
+    const showCode: ShowDeviceCode = async (code) => {
+      deviceCode = code;
+      if (!settled) await report(stage, null, 'waiting', code);
+    };
     // While the checkout is open, a repeat Continue on the page opens it again.
     const watchForRepeats = (async () => {
       while (!settled) {
@@ -228,8 +348,10 @@ export async function runBrowserSetup(deps: BrowserSetupDeps): Promise<BrowserSe
         const current = settled ? null : await readState();
         if (current && newRequest(current)) {
           handledRequests = current.checkout!.requests;
-          deps.checkout!.reopen();
-          await report(stage, null, 'waiting');
+          await deps.checkout!.reopen(showCode);
+          // A reopen past the pairing's expiry that started no fresh pairing leaves a dead code: the page shows none.
+          if (deviceCode?.expiresAt && Date.now() >= Date.parse(deviceCode.expiresAt)) deviceCode = null;
+          if (!settled) await report(stage, null, 'waiting', deviceCode);
         }
       }
     })().then(
@@ -242,7 +364,7 @@ export async function runBrowserSetup(deps: BrowserSetupDeps): Promise<BrowserSe
       },
     );
     let failure: string | null = null;
-    try { checkoutPaid = await deps.checkout!.run(); }
+    try { checkoutPaid = await deps.checkout!.run(showCode); }
     catch (error: unknown) { failure = error instanceof Error ? error.message : String(error); }
     settled = true;
     const watcherOutcome = await watchForRepeats;

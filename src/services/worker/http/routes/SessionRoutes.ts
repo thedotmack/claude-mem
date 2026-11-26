@@ -165,6 +165,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const selection = activeSession?.currentProvider
       ? { provider: activeSession.currentProvider, gatewayProbeClaimId: null }
       : selectProviderForGenerator(activeSession?.platformSource ?? input.platformSource);
+    if (selection.capBlocked) throw new Error('CMEM credits are exhausted and the configured fallback is unavailable');
     const activeModelId = activeSession?.currentProvider ? activeSession.lastModelId : undefined;
 
     try {
@@ -300,6 +301,18 @@ export class SessionRoutes extends BaseRouteHandler {
     // single gateway re-probe rather than merely reading the clock.
     const selection = selectProviderForGenerator(session.platformSource);
     const selectedProvider = selection.provider;
+    if (selection.capBlocked || (source === 'cmem-cap-fallback' && selectedProvider === 'openrouter')) {
+      releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
+      if (!session.generatorPromise) {
+        this.sessionManager.discardBufferedWork(sessionDbId);
+        session.pendingAgentId = null;
+        session.pendingAgentType = null;
+        session.paidSendBudget = undefined;
+        session.pausedReason = 'quota';
+      }
+      logger.warn('SESSION', 'CMEM credits exhausted and no local provider can take this work', { sessionId: sessionDbId });
+      return;
+    }
 
     if (!session.generatorPromise) {
       // Overflow breaker (#3800). Recycling twice without producing a

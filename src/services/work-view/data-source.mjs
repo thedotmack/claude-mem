@@ -1,3 +1,4 @@
+import { requestEvidenceRefs } from './request-evidence-refs.mjs';
 // Bun's native SQLite reader; source data is never opened for writing.
 import { Database as DatabaseSync } from 'bun:sqlite';
 import { readFileSync, statSync } from 'node:fs';
@@ -5,7 +6,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { readWorkStateRows, reduceWorkState } from './work-state-reduce.mjs';
-import { activitySignature, buildAgentView, readAgentRecords, readEvidence } from './agent-view.mjs';
+import { activitySignature, buildAgentView, DEFAULT_RECENT_ACTIVITY_MS, readAgentRecords, readEvidence } from './agent-view.mjs';
 import { ledgerSignature, openSuggestions, readLedger } from './request-groups.mjs';
 import { recordedFile, bucketFileAvailable, copyCoversSource, servableFile } from './work-product.mjs';
 import { buildRules, MY_RULES_LIST } from './my-rules.mjs';
@@ -138,7 +139,7 @@ export class WorkStateSource {
       this.readTitleCache();
       this.readLedger();
       this.readWorkStateLabels();
-      if (!this.sharedState || signature !== this.signature) this.sharedState = readSharedRecords(database, { deviceId: this.localDeviceId, validateValue: isSharedProjectionValue });
+      if (!this.sharedState || signature !== this.signature) this.sharedState = readSharedRecords(database, { deviceId: this.localDeviceId, validateValue: isSharedProjectionValue, reviewStack: 'exclude' });
       const now = Date.now();
       // Only background polling opts into this window. Direct reads (including
       // review writes) must still notice evidence edits that retain row IDs.
@@ -180,27 +181,7 @@ export class WorkStateSource {
           const evidenceHashes = new Map();
           const evidenceRows = new Map();
           for (const request of this.agentView.humanRequests) {
-            const refs = new Map();
-            const add = ref => {
-              if (ref && ['work-state', 'observation', 'prompt', 'summary', 'session'].includes(ref.kind)
-                && Number.isSafeInteger(ref.id) && ref.id > 0) refs.set(`${ref.kind}:${ref.id}`, ref);
-            };
-            const addUrl = url => {
-              const match = /^\/api\/work-view\/evidence\/([\w-]+)\/(\d+)$/.exec(url ?? '');
-              if (match) add({ kind: match[1], id: Number(match[2]) });
-            };
-            addUrl(request.original?.url);
-            for (const update of request.scopeUpdates) addUrl(update.url);
-            for (const item of request.items) {
-              addUrl(item.url);
-              addUrl(item.request?.url);
-              addUrl(item.request?.original?.url);
-              for (const field of [item.nextStep, item.outcome]) {
-                if (field?.source === 'session-summary') add({ kind: 'summary', id: field.sourceId });
-              }
-              for (const ref of item.sourceRefs ?? []) add(ref);
-            }
-            for (const activity of [...request.activity, ...request.workstreams.flatMap(stream => stream.activity)]) add(activity.sourceRef);
+            const refs = requestEvidenceRefs(request);
             request.sourceContentHashes = [...refs].sort(([a], [b]) => a.localeCompare(b)).map(([key, ref]) => {
               if (!evidenceHashes.has(key)) {
                 const evidence = readEvidence(database, ref.kind, ref.id);
@@ -252,7 +233,7 @@ export class WorkStateSource {
         try { story = JSON.parse(readFileSync(join(this.ledgerDir, 'story.json'), 'utf8')); }
         catch (error) { if (error.code !== 'ENOENT') storyError = error; }
       }
-      const shared = readSharedRecords(database, { deviceId: this.localDeviceId, validateValue: isSharedProjectionValue });
+      const shared = readSharedRecords(database, { deviceId: this.localDeviceId, validateValue: isSharedProjectionValue, reviewStack: 'exclude' });
       if (storyError && ![...shared.records.values()].some(record => record.kind === 'story' && record.key === 'current')) throw storyError;
       story = applySharedProjection(database, shared, { ledger: { story }, deviceId: this.localDeviceId }).ledger.story;
       const state = reduceWorkState(entries, { localDeviceId: this.localDeviceId });
@@ -348,7 +329,7 @@ export class WorkStateSource {
       agents: this.agentView.agents.map((agent) => ({ ...agent, presence: {
         ...agent.presence,
         // A recorded finish is evidence, not an age label: the clock never changes it.
-        status: agent.presence.status === 'finished' ? 'finished' : !agent.presence.lastActivityAt ? 'unknown' : now - Date.parse(agent.presence.lastActivityAt) <= 15 * 60 * 1000 ? 'recent' : 'quiet',
+        status: agent.presence.status === 'finished' ? 'finished' : !agent.presence.lastActivityAt ? 'unknown' : now - Date.parse(agent.presence.lastActivityAt) <= DEFAULT_RECENT_ACTIVITY_MS ? 'recent' : 'quiet',
       } })),
       source: { ...this.source, kind: 'claude-mem-recorded-agent-activity', lastUpdatedAt: this.agentView.agents[0]?.presence.lastActivityAt ?? null, stale: !this.source.connected && this.agentView.agents.length > 0 },
     };

@@ -91,7 +91,28 @@ describe('setup extraction', () => {
     } finally { rmSync(scratch, { recursive: true, force: true }); }
   });
 
-  it('waits for hosted extraction before done and never starts the local setup agent', async () => {
+  it('uses the owner’s available inference without requesting or sending hosted prompts', async () => {
+    const refresh = fakeRefresh();
+    refresh.runNow = async ({ reason }) => {
+      refresh.runs.push(reason);
+      refresh.current = { state: 'ok', reason, agent: 'claude-code' };
+      return 'ok';
+    };
+    const hosted = { state: () => ({ state: 'idle', reason: 'setup-scan', step: null, agent: null, startedAt: null, finishedAt: null, error: null } as HostedIntentState),
+      run: async () => { throw new Error('Hosted inference contacted during local discovery'); } };
+    const scan = await start(refresh, null, hosted);
+    const phases: string[] = [];
+    scan.subscribe(state => phases.push(state.phase));
+    await postScan();
+    await scan.finished();
+    expect(phases).toContain('organizing');
+    expect(phases).not.toContain('awaiting-consent');
+    expect(scan.state()).toMatchObject({ phase: 'done', uploadedAgents: null });
+    expect(refresh.runs).toEqual(['setup-scan']);
+    expect((await snapshot()).setup.extraction).toMatchObject({ agent: 'claude-code' });
+  });
+
+  it('waits for explicit consent when the owner’s inference is unavailable', async () => {
     const refresh = fakeRefresh();
     let complete!: () => void;
     let calls = 0;
@@ -121,7 +142,7 @@ describe('setup extraction', () => {
     for (let wait = 0; scan.state().phase !== 'done' && wait < 100; wait++) await Bun.sleep(10);
     expect(scan.state()).toMatchObject({ phase: 'done', done: true });
     expect((await snapshot()).setup.extraction).toMatchObject({ state: 'ok' });
-    expect(refresh.runs).toEqual([]);
+    expect(refresh.runs).toEqual(['setup-scan']);
   });
 
   it('keeps the hosted reason in the existing scan error slot', async () => {

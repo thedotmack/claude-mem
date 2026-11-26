@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { canonicalJson, compareCanonicalDecimals, incrementCanonicalDecimal, sha256Base64Url } from '../sync/CanonicalContent.js';
 import { SHARED_WORK_MAX_UPDATES, sharedIdentity, sharedWriter, sharedValueHash, sharedEntryRef,
   sharedRecordKey, createSharedEntry, createSharedBatch, parseSharedRow, isSharedWorkList, sharedWorkListSql } from './shared-records.mjs';
-import { assertSharedMetadataRedactionSafe, readSharedRedactionReceipts, redactSharedValue } from './shared-redaction.mjs';
+import { assertSharedMetadataRedactionSafe, readSharedRedactionReceipts, redactSharedValue, sharedReviewCardRepairClock } from './shared-redaction.mjs';
+import { isReviewStackImagePart } from './review-stack-schema.js';
+import { isReviewStackKind } from '../../shared/review-stack.js';
 import { logger } from '../../utils/logger.js';
 
 const compareText = (a, b) => a === b ? 0 : a < b ? -1 : 1;
@@ -86,6 +88,33 @@ export function readSharedRecords(db, options) {
   return readShared(db, options, !db.inTransaction);
 }
 
+/** Fetch one validated native image part inside the same snapshot that selected its head. */
+export function readSharedRecordValue(db, deviceId, head) {
+  if (!head.valueOmitted) return head.value;
+  if (!Number.isSafeInteger(head.sourceId)) throw new StaleRowSummaryError(head.sourceId);
+  const byId = db.prepare(`SELECT ${SHARED_ROW_COLUMNS} FROM work_state_entries WHERE id = ?`);
+  try {
+    const row = byId.get(head.sourceId);
+    const entry = row ? parseRow({ db, deviceId }, row) : null;
+    if (entry?.record !== 'entry' || entry.kind !== head.kind || entry.key !== head.key
+      || entry.revision !== head.revision || entry.writer !== head.writer || entry.batch !== head.batchId
+      || entry.hash !== head.hash || sharedValueHash(entry.kind, entry.key, entry.value, entry.deleted) !== head.valueHash) {
+      throw new StaleRowSummaryError(head.sourceId);
+    }
+    return entry.value;
+  } finally { byId.finalize(); }
+}
+
+/** Fold supplied canonical cloud rows without a SQLite connection or any device-local receipts. */
+export function foldPortableSharedRows(rows, validateValue) {
+  const context = {
+    deviceId: '', validateValue, reread: row => row, redactionReceipts: new Map(),
+    // Persist the verified source, even when a bad sibling makes the same identity/hash claims.
+    sourceId: summary => summary.source.id,
+  };
+  return foldSharedRows(rows.map(row => summarizeRow(context, row, row)), context, false, new Map());
+}
+
 /**
  * fillCacheFromOwnTransaction: the read runs in a transaction that cannot roll back rows it sees
  * (its own read transaction), so it may fill the row cache.
@@ -93,7 +122,7 @@ export function readSharedRecords(db, options) {
 function readShared(db, options, fillCacheFromOwnTransaction) {
   // Preloaded rows are already in memory and must not cost another query.
   if (options.rows) {
-    const context = { db, deviceId: options.deviceId, validateValue: options.validateValue, reread: row => row };
+    const context = { db, deviceId: options.deviceId, validateValue: options.validateValue, reviewStack: options.reviewStack, reread: row => row };
     return foldSharedRows(options.rows.map(row => summarizeRow(context, row, row)), context, options.includeHistory ?? false, new Map());
   }
   try { return scanShared(db, options, fillCacheFromOwnTransaction); }
@@ -106,7 +135,7 @@ function readShared(db, options, fillCacheFromOwnTransaction) {
   }
 }
 
-function scanShared(db, { deviceId, validateValue, includeHistory = false }, fillCacheFromOwnTransaction) {
+function scanShared(db, { deviceId, validateValue, includeHistory = false, reviewStack = 'full' }, fillCacheFromOwnTransaction) {
   // The value re-reads below must see the same rows as the scan, so both run in one read transaction.
   const read = () => {
     let scan, byId;
@@ -120,7 +149,13 @@ function scanShared(db, { deviceId, validateValue, includeHistory = false }, fil
     }
     try {
       const summaries = summariesFor(db, deviceId, validateValue);
-      const context = { db, deviceId, validateValue, reread: id => byId.get(id) };
+      const repairClock = sharedReviewCardRepairClock(db);
+      if ((summaries.repairClock ?? '') !== repairClock) {
+        summaries.rows.clear();
+        summaries.values.clear();
+        summaries.repairClock = repairClock;
+      }
+      const context = { db, deviceId, validateValue, reviewStack, reread: id => byId.get(id) };
       const seen = new Map();
       const items = [];
       for (const head of scan.iterate()) {
@@ -197,7 +232,7 @@ function foldSharedRows(items, context, includeHistory, values, previousValues =
         throw new StaleRowSummaryError(entry.source);
       }
     }
-    values.set(entry, record);
+    if (!entry.imageHead || context.reviewStack == null || context.reviewStack === 'full') values.set(entry, record);
     return record;
   };
   const batches = new Map();
@@ -246,6 +281,9 @@ function foldSharedRows(items, context, includeHistory, values, previousValues =
     }
     if (context.validateValue && !entries.every(entry => entry.valid)) { diagnostics.invalid++; continue; }
     for (const entry of entries) {
+      // Ordinary My Work and its sync projection never inspect cards. Still verify every member
+      // and manifest above so invalid or mixed batches keep the same atomic visibility.
+      if (context.reviewStack === 'exclude' && isReviewStackKind(entry.kind)) continue;
       const identity = sharedRecordKey(entry.kind, entry.key);
       if (!candidates.has(identity)) candidates.set(identity, []);
       candidates.get(identity).push(entry);
@@ -257,8 +295,16 @@ function foldSharedRows(items, context, includeHistory, values, previousValues =
     const latest = entries.at(-1);
     const sameRevision = entries.filter(entry => entry.revision === latest.revision);
     const recordOf = summary => {
+      if (context.reviewStack === 'metadata' && summary.imageHead) {
+        // Every member passed the same entry, manifest, commit and domain checks above.
+        // Keep the validated locator and both hashes. The image endpoint fetches only its winning parts.
+        return { kind: summary.kind, key: summary.key, value: null, valueOmitted: true,
+          sourceId: typeof summary.source === 'object' ? summary.source.id : summary.source,
+          revision: summary.revision, writer: summary.writer, hash: summary.hash, batchId: summary.batch, ...summary.imageHead };
+      }
       const entry = full(summary);
-      return { kind: entry.kind, key: entry.key, value: entry.value, deleted: entry.deleted,
+      return { ...(context.sourceId ? { sourceId: context.sourceId(summary) } : {}),
+        kind: entry.kind, key: entry.key, value: entry.value, deleted: entry.deleted,
         revision: entry.revision, writer: entry.writer, hash: entry.hash, batchId: entry.batch, base: entry.base,
         valueHash: sharedValueHash(entry.kind, entry.key, entry.value, entry.deleted) };
     };
@@ -286,7 +332,10 @@ function entrySummary(entry, source, validateValue) {
     catch { valid = false; }
   }
   return { record: 'entry', kind: entry.kind, key: entry.key, revision: entry.revision, writer: entry.writer, batch: entry.batch,
-    hash: entry.hash, ref: canonicalJson(sharedEntryRef(entry)), valid, source };
+    hash: entry.hash, ref: canonicalJson(sharedEntryRef(entry)), valid, source,
+    ...(entry.kind === 'stack-part' && isReviewStackImagePart(entry.key) ? { imageHead: {
+      base: entry.base, deleted: entry.deleted, valueHash: sharedValueHash(entry.kind, entry.key, entry.value, entry.deleted),
+    } } : {}) };
 }
 
 /**
@@ -314,7 +363,9 @@ export function workStateRowsRevision(db, { where = '1', syncRev = true } = {}) 
   const statement = db.prepare(`SELECT COUNT(*) AS count, MAX(id) AS id${revisionSums} FROM work_state_entries WHERE ${where}`);
   try {
     const row = statement.get();
-    return `${row.count}:${row.id ?? 0}:${row.high ?? 0}:${row.low ?? 0}`;
+    const stamp = `${row.count}:${row.id ?? 0}:${row.high ?? 0}:${row.low ?? 0}`;
+    const repairClock = sharedReviewCardRepairClock(db);
+    return repairClock ? stamp + ':' + repairClock : stamp;
   } finally { statement.finalize(); }
 }
 
@@ -350,7 +401,7 @@ export function createSharedRecordReader(db, options) {
       return state;
     })();
   };
-  sharedRecordReaders.set(reader, { db, deviceId: options.deviceId, validateValue: options.validateValue ?? null });
+  sharedRecordReaders.set(reader, { db, deviceId: options.deviceId, validateValue: options.validateValue ?? null, reviewStack: options.reviewStack });
   return reader;
 }
 
@@ -364,12 +415,15 @@ export function publishSharedRecords(db, { deviceId, project, updates, now = Dat
     if (!reads || reads.db !== db || reads.deviceId !== deviceId || reads.validateValue !== (validateValue ?? null)) {
       throw new TypeError('Shared My Work: the reader reads another database, device or validator');
     }
+    if (reads.reviewStack === 'exclude' && Array.isArray(updates) && updates.some(update => isReviewStackKind(update.kind))) {
+      throw new TypeError('Shared My Work: the reader excludes review stack updates');
+    }
   }
   if (typeof project !== 'string' || !project.trim() || project.length > 1_024) throw new TypeError('Shared My Work: invalid project');
   if (!Array.isArray(updates) || updates.length > SHARED_WORK_MAX_UPDATES) throw new RangeError('Shared My Work: too many updates');
   if (!Number.isSafeInteger(now) || now < 0 || !Number.isFinite(new Date(now).getTime())) throw new TypeError('Shared My Work: invalid timestamp');
   return db.transaction(() => {
-    const state = reader ? reader() : readSharedRecords(db, { deviceId, validateValue });
+    const state = reader ? reader() : readSharedRecords(db, { deviceId, validateValue, reviewStack: 'metadata' });
     const batchId = randomUUID();
     const entries = [], seen = new Set();
     for (const update of updates) {

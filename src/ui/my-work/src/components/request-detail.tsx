@@ -28,6 +28,7 @@ import { OpenFollowUps } from './request-card'
 import { useRequestDetail } from '@/lib/use-request-detail'
 import { MediaCountBadge, ObsMediaStrip } from './observation-media/ObsMedia'
 import { DeliverableList } from './deliverable-list'
+import { AddProductToReview } from './add-product-to-review'
 import { isCardDeliverable } from '@/lib/deliverables'
 import { requestImages } from './observation-media/request-images'
 import { RequestDrawerLoading, RequestDrawerSheet } from './request-drawer'
@@ -686,6 +687,7 @@ function LoadedRequestDetail({ request, newerVersionReadFailure, onOpenFocus }: 
           <Req ids={['R5.10', 'R5.12']}>
             <DrawerFold title={t('Deliverables')} count={deliverablesCount(request.workProduct)}>
               <DeliverableList products={request.workProduct} />
+              <AddProductToReview request={request} />
             </DrawerFold>
           </Req>
 
