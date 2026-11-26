@@ -16,9 +16,7 @@ import { resolveDbPath, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, getLastWorkerBootFailure, type WorkerStartResult } from '../../services/worker-spawner.js';
-import { formatHostForUrl } from '../../shared/worker-utils.js';
-import { readLocalApiToken } from '../../shared/hook-settings.js';
-import { localApiTokenHeadersFor } from '../../shared/local-api-token.js';
+import { clearPortCache, formatHostForUrl, workerAuthHeaders } from '../../shared/worker-utils.js';
 import {
   ensureBun,
   ensureUv,
@@ -65,6 +63,7 @@ import { relayedLine } from '../../shared/relayed-text.js';
 import { endSetupSession, hasProConfiguration, INITIAL_SETUP_STATE, readSetupState, readSetupTelemetryContext, startSetupSession, writeSetupState } from '../../shared/setup-state.js';
 import { CLOUD_SYNC_SETUP_CONTRACT, PRIVATE_WORK_VIEW_URL, SETUP_DEVICE_CODE_PATTERN, isSetupId, setupCloudSyncOffer, type SetupCloudSyncOffer } from '../../shared/setup-funnel.js';
 import { intentCredentialHeaders, readIntentCredentials } from '../../shared/intent-credentials.js';
+import { restartWorkerToPickUpCloudSync, workerSyncStatus } from '../install/worker-sync-restart.js';
 import { AGENT_BROWSER_SETUP_HINT, createPairingCheckout, runBrowserSetup, settingsChangesNeedingRestart, shouldPrintAgentBrowserSetupHint, shouldUseBrowserSetup, waitForBackgroundWorkToFinish, type BrowserSetupOutcome } from '../install/browser-setup.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
@@ -1721,9 +1720,6 @@ function nonEmptyTrimmedString(value: unknown): string | null {
 }
 
 const OAUTH_START_TIMEOUT_MS = 10_000;
-// The optional end-of-install sign-in offer must not hold a finished install
-// hostage to a stalled cmem.ai: give up well before the blocking login would.
-const OAUTH_DEFERRED_START_TIMEOUT_MS = 3_000;
 const OAUTH_POLL_TIMEOUT_MS = 10_000;
 // Fallback budget when the server does not report `expires_in`. The server
 // pairing lives 30 minutes; polling past that only yields `gone`.
@@ -2327,8 +2323,8 @@ export async function waitForInstallerPairing(
     }
 
     if (superseded && await superseded()) return null;
-    // The telemetry `phase` enum is the installer's (login / enrollment /
-    // deferred); a TeamBrain join is not reported.
+    // The telemetry `phase` enum is the installer's (login / enrollment);
+    // a TeamBrain join is not reported.
     if (phase !== 'teambrain_join') {
       await captureCliEvent('installer_oauth_timeout', {
         version,
@@ -2452,51 +2448,6 @@ async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAu
 
   const completed = await completeInstallerOAuthLogin(pairing, version);
   return completed ? pairing : null;
-}
-
-/**
- * Best-effort, non-blocking sign-in offer for non-interactive installs that
- * skipped login (provider needs no account). Agents run `npx claude-mem install`
- * in non-TTY shells; the blocking OAuth step cannot run there, so the install
- * completes and the agent can relay the optional login-only link.
- *
- * Never polls, never opens a browser, never prints the device code or the
- * checkout URL, and never touches exit status. Skipped under CI. Not gated on
- * the do-not-track env var: only telemetry is, and captureCliEvent already honors it.
- * The server ignores `source` today and will allowlist it separately.
- */
-export async function offerDeferredLogin(options: InstallOptions, version: string): Promise<void> {
-  if (options.update) return;
-  if (isInteractive) return;
-  if (providerNeedsAccount(options.provider)) return;
-  if (process.env.CI) return;
-  // Nobody reads an auto-update run's output, and each offer starts a cmem.ai
-  // pairing (shared/auto-update-install-run.ts).
-  if (isInstallRunByAutoUpdate()) return;
-
-  const pairing = await startInstallerOAuthPairing({
-    source: 'npx-installer-deferred',
-    timeoutMs: OAUTH_DEFERRED_START_TIMEOUT_MS,
-  });
-  if (!pairing) {
-    await captureCliEvent('installer_oauth_start_failed', {
-      version,
-      outcome: lastOAuthStartFailure() ?? 'network',
-      interactive: false,
-      phase: 'deferred',
-    });
-    log.error(lastOAuthStartErrorMessage()
-      ? `Could not start the optional claude-mem sign-in: ${lastOAuthStartErrorMessage()}`
-      : 'Could not start the optional claude-mem sign-in. Run npx claude-mem install again when cmem.ai is reachable.');
-    return;
-  }
-
-  // Telemetry first so that, in CLAUDE_MEM_TELEMETRY_DEBUG=1 mode, its stderr
-  // line cannot interrupt the link and its accompanying instruction.
-  await captureCliEvent('installer_oauth_deferred', { version, interactive: false });
-  log.info('Optional: sign in to claude-mem to unlock cloud sync and the CMEM Pro trial.');
-  log.info(`Sign-in link: ${pairing.authorizationUrl}`);
-  log.info('AGENT: show this link to the user so they can finish signing in. This optional link is for account sign-in only.');
 }
 
 export function noteDeviceCode(
@@ -3819,9 +3770,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     // `--provider claude` (or the non-interactive default to claude) runs memory on the user's own Anthropic
     // plan, so gating it on browser OAuth made an unrelated cmem.ai outage fail
     // an install that could have completed offline — and there is no account
-    // question left to ask, because the provider already answered it. Such a
-    // non-interactive install still prints an optional, non-blocking sign-in
-    // link at the very end (offerDeferredLogin).
+    // question left to ask, because the provider already answered it.
     //
     // Deliberately keyed on the resolved provider, not on reachability: a silent
     // fallback to a local install whenever cmem.ai is down would quietly change
@@ -3901,7 +3850,12 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
           const needRestart = settingsChangesNeedingRestart(settingsBeforeBrowserSetup ?? '', readSettingsSnapshot());
           if (!needRestart.length) return describeWorkerStart(workerStartResult);
           message('Waiting for the worker to finish its setup work before it restarts...');
-          await waitForBackgroundWorkToFinish({ workerBaseUrl: `http://127.0.0.1:${getSetting('CLAUDE_MEM_WORKER_PORT')}`, log: { info: message, warn: message } });
+          // GET /api/setup/state takes the local API token when that mode is on (#5141).
+          await waitForBackgroundWorkToFinish({
+            workerBaseUrl: `http://127.0.0.1:${getSetting('CLAUDE_MEM_WORKER_PORT')}`,
+            headers: workerAuthHeaders({ readOnly: true }),
+            log: { info: message, warn: message },
+          });
         }
         const port = Number(getSetting('CLAUDE_MEM_WORKER_PORT'));
         const scriptPath = installedWorkerScriptPath(version);
@@ -4018,39 +3972,17 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       healthSpinner?.stop(`Worker not yet responding on port ${workerPort} (still starting)`);
     }
 
-    // A sign-in just wrote cloud-sync settings the worker booted with, so
-    // one cheap read of /api/sync/status confirms sync is really configured.
-    // Purely informational and fail-soft — a warming worker legitimately
-    // can't answer yet, and the state is always visible via the cloud-sync skill.
+    // A sign-in just wrote cloud-sync settings, so one read of /api/sync/status says whether the worker runs with
+    // them. A worker that booted before they were saved reports `configured: false`: restart it the way
+    // `teambrain join` does, once its extraction or history import has finished, so setup does not end with an
+    // approved device that never syncs. A worker that cannot answer yet is left alone; sync state stays visible
+    // via the cloud-sync skill. A worker the person's own manager runs is never restarted here: they are told to.
     if (cloudSyncConfigured && workerReady) {
-      try {
-        // /api/sync/status takes the local API token when that mode is on (#5141).
-        // The installer passes no remote token host, so the shared rule (#6390) never
-        // carries the token to another machine from here: a remote worker is read by the
-        // clients that the person opted in, not by the installer.
-        const syncOrigin = `http://${workerUrlHost}:${actualPort}`;
-        const syncHeaders = localApiTokenHeadersFor({
-          token: readLocalApiToken(),
-          workerOrigin: syncOrigin,
-          localOrigin: syncOrigin,
-          configuredHost: workerHost,
-          remoteTokenHost: '',
-        });
-        const syncResponse = await fetch(`${syncOrigin}/api/sync/status`, {
-          ...(Object.keys(syncHeaders).length > 0 ? { headers: syncHeaders } : {}),
-          signal: AbortSignal.timeout(3000),
-        });
-        if (syncResponse.ok) {
-          const sync = await syncResponse.json() as { configured?: boolean };
-          if (sync && sync.configured === false) {
-            log.warn('Cloud sync: worker has not picked up the sync settings yet — it will on its next restart.');
-          } else {
-            log.success('Cloud sync: configured — the worker is reporting sync status.');
-          }
-        }
-      } catch {
-        // [ANTI-PATTERN IGNORED]: this read-through is purely informational; a worker still warming up legitimately can't answer, and sync state stays visible via the cloud-sync skill.
-      }
+      // The same worker address and local API token (#5141) as the restart that may follow.
+      clearPortCache();
+      const sync = await workerSyncStatus();
+      if (sync?.configured === false) await restartWorkerToPickUpCloudSync({ log, managedExternally: workerManagedExternally });
+      else if (sync) log.success('Cloud sync: configured — the worker is reporting sync status.');
     }
   }
 
@@ -4123,12 +4055,6 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       process.exitCode = 1;
     } else {
       console.log(options.update ? '\nclaude-mem updated successfully!' : '\nclaude-mem installed successfully!');
-    }
-    // Keep the optional sign-in link separate from the local setup page.
-    try {
-      await offerDeferredLogin(options, version);
-    } catch {
-      // best-effort only
     }
     if (shouldPrintAgentBrowserSetupHint({
       ci: Boolean(process.env.CI),

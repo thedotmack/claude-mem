@@ -1248,4 +1248,11 @@ export const myworkTr: Record<string, string> = {
   "Browse": "Göz at",
   "Work": "Çalış",
   "Skipped": "Atlandı",
+  "Want us to write your memories, too?": "Bellek kayıtlarınızı da biz yazalım mı?",
+  "With a hosted plan, cmem.ai writes them instead of your own provider.": "Barındırılan bir planla bunları kendi sağlayıcınız yerine cmem.ai yazar.",
+  "Plans start at $30/month in addition to Cloud Sync.": "Planlar, Cloud Sync ücretine ek olarak ayda 30 ABD dolarından başlar.",
+  "See plans and pricing": "Planları ve fiyatları görün",
+  "Try Cloud Sync free for {days} days": "Cloud Sync’i {days} gün ücretsiz deneyin",
+  "No card needed for your first trial.": "İlk denemeniz için kart gerekmez.",
+  "Run this in a terminal on this computer. Setup opens in your browser, where you can choose Cloud Sync.": "Bu komutu bu bilgisayardaki bir terminalde çalıştırın. Kurulum tarayıcınızda açılır; orada Cloud Sync’i seçebilirsiniz.",
 };

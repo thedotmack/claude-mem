@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'fs';
+import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { writeJsonFileAtomic } from './atomic-json.js';
 import { resolveDataDir } from './paths.js';
@@ -75,6 +75,22 @@ function reserveIssuance(path: string): void {
   }
 }
 
+/**
+ * The intent service's error codes that it sends only before anything was issued
+ * (claude-mem-pro src/app/api/installer/intent/handlers.ts): the burst limit and the
+ * daily-budget kill switch answer before the issuing transaction starts, and the
+ * per-network daily limit is thrown inside it, which rolls it back. Every other
+ * failure, the handler's catch-all `intent_install_unavailable` included, can follow
+ * a committed transaction, so it does not prove that nothing was issued.
+ */
+const NOTHING_ISSUED_ERRORS: ReadonlySet<string> = new Set(['rate_limited', 'anonymous_daily_budget_reached', 'intent_install_limit']);
+
+function isDefiniteRefusal(body: unknown): boolean {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+  const code = (body as { error?: unknown }).error;
+  return typeof code === 'string' && NOTHING_ISSUED_ERRORS.has(code);
+}
+
 async function issueCredentials(
   path: string,
   options: { origin: string; fetch?: typeof fetch },
@@ -111,8 +127,24 @@ async function issueCredentials(
     const message = typeof serverMessage === 'string' && serverMessage
       ? serverMessage
       : `Hosted intent credential request failed (HTTP ${response.status}).`;
-    // Retain only the controlled message, never a response body or credential.
-    // Even a rejected response is not permission to silently mint a new identity.
+    if (isDefiniteRefusal(result)) {
+      // The service refused before issuing anything (NOTHING_ISSUED_ERRORS):
+      // release the reservation so the next run asks again. This is not a
+      // retry; this run still fails.
+      try {
+        unlinkSync(path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw new Error(`${message} The credential reservation could not be cleared at ${path}.`);
+        }
+      }
+      throw new Error(message);
+    }
+    // Any other failed reply (a proxy or gateway page such as a timeout, or a
+    // service error that can follow a committed issuance) does not prove the
+    // service issued nothing. Retain only the controlled message,
+    // never a response body or credential, and keep the reservation so a later
+    // run cannot silently mint a second identity.
     try {
       writeJsonFileAtomic(path, { state: 'pending', message }, { mode: 0o600 });
     } catch {

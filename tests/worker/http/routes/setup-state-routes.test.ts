@@ -4,6 +4,7 @@ import type { Server } from 'node:http';
 import * as fs from 'node:fs';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { Database } from 'bun:sqlite';
 import { logger } from '../../../../src/utils/logger.js';
 import { defaultAutoRefresh, WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
 import { SetupScan } from '../../../../src/services/prompt-import/setup-scan.js';
@@ -22,9 +23,10 @@ let server: Server;
 let routes: WorkViewRoutes;
 let origin: string;
 
-async function start(autoRefresh: unknown = null, resumeSetup: () => Promise<void> = async () => {}, setupScan: SetupScan | null = null) {
+async function start(autoRefresh: unknown = null, resumeSetup: () => Promise<void> = async () => {}, setupScan: SetupScan | null = null,
+  databasePath = join(FIXTURE_HOME, 'no-work-state.db')) {
   routes = new WorkViewRoutes({
-    databasePath: join(FIXTURE_HOME, 'no-work-state.db'), reviewPath: ':memory:', pollIntervalMs: 20,
+    databasePath, reviewPath: ':memory:', pollIntervalMs: 20,
     humanCopy: null, ledgerDir: null, setupScan, setupStatePath: statePath, settingsPath, autoRefresh: autoRefresh as never, resumeSetup,
   });
   const app = express();
@@ -329,7 +331,7 @@ describe('setup state endpoints', () => {
 
   it('start pending on a machine that never finished setup, with nothing pre-selected', async () => {
     await start();
-    expect(await state()).toEqual({ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null, alreadyPro: false, history: { projects: 0, sessions: 0, observations: 0 }, historyImport: null, backgroundWorkRunning: [] });
+    expect(await state()).toEqual({ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null, alreadyPro: false, hostedObserver: false, history: { projects: 0, sessions: 0, observations: 0 }, memorySynced: false, historyImport: null, backgroundWorkRunning: [] });
     expect(existsSync(statePath)).toBe(false);
   });
 
@@ -467,6 +469,16 @@ describe('setup state endpoints', () => {
     } }));
     await start();
     expect((await state()).alreadyPro).toBe(true);
+    // Cloud Sync alone is not hosted memory writing: Work View may still offer that.
+    expect((await state()).hostedObserver).toBe(false);
+  });
+
+  it('report an observer that already writes memories on cmem.ai, so Work View does not offer hosted writing again', async () => {
+    writeFileSync(settingsPath, JSON.stringify({ env: {
+      CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_OPENROUTER_API_KEY: 'cm_pro_fixture', CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai/api/inference/v1',
+    } }));
+    await start();
+    expect(await state()).toMatchObject({ alreadyPro: true, hostedObserver: true });
   });
 
   it('accept only well-formed choices from the viewer page', async () => {
@@ -526,26 +538,20 @@ describe('setup state endpoints', () => {
     expect((await state()).checkout.requests).toBe(1);
   });
 
-  it('preserves the original token summary with the Cloud choice across worker restarts', async () => {
+  it('saves the Cloud choice without the scan\'s usage or prompts', async () => {
     const scan = new SetupScan({ getStore: () => { throw new Error('A saved choice must not start a scan'); } });
     const idle = scan.state();
-    const scanState = spyOn(scan, 'state').mockReturnValue({
+    spyOn(scan, 'state').mockReturnValue({
       ...idle, done: true, phase: 'done',
       recentPrompts: [{ agent: 'codex', at: '2026-11-23T18:00:00Z', text: 'Original private prompt' }],
       usage: { agents: [], windowDays: 30, windowStart: '2026-10-24', totalTokens: 12345, observations: 0, coverage: 'partial', persona: null, efficiencyPercent: null },
     });
     await start(null, undefined, scan);
-    const summary = { coverage: 'partial', periodLabel: 'Usage history is incomplete.', tokens: 12345, persona: null, efficiencyPercent: null };
     const plan = { branch: 'go', memoryBilling: 'existing', cloudSyncOffer: 'cloud_sync_monthly', openCheckout: true };
-    expect((await (await post('/api/setup/choice', plan)).json()).choice.usage).toEqual(summary);
+    const saved = (await (await post('/api/setup/choice', plan)).json()).choice;
+    expect(Object.keys(saved).sort()).toEqual(['branch', 'chosenAt', 'cloudSyncOffer', 'memoryBilling']);
     expect(readFileSync(statePath, 'utf8')).not.toContain('Original private prompt');
-    scanState.mockReturnValue(idle);
-    await stop();
-    await start();
-    expect((await state()).choice.usage).toEqual(summary);
-    expect((await (await post('/api/setup/choice', plan)).json()).choice.usage).toEqual(summary);
-    await post('/api/setup/installer', { stage: 'waiting-for-choice' });
-    expect((await (await post('/api/setup/choice', plan)).json()).choice.usage).toBeUndefined();
+    expect(readFileSync(statePath, 'utf8')).not.toContain('12345');
   });
 
   it('keeps a saved hosted choice as the legacy bundle, without silently adding a Cloud offer', async () => {
@@ -623,5 +629,38 @@ describe('setup state endpoints', () => {
   it('import history only on On The Go, and only with a history import on the worker', async () => {
     await start();
     expect((await post('/api/setup/import', {})).status).toBe(503);
+  });
+});
+
+describe('the first synced memory in the setup state', () => {
+  // The columns the setup view reads (readHistoryCounts, ownMemorySynced) and the v47 launch ledger, as SessionStore
+  // creates them; SessionStore itself is not loaded here.
+  function memoryDatabase(): string {
+    const path = join(dir, `memory-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    const db = new Database(path);
+    for (const table of ['observations', 'session_summaries']) {
+      db.run(`CREATE TABLE ${table} (id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT, memory_session_id TEXT,
+        synced_at INTEGER, origin_device_id TEXT, sync_rev TEXT NOT NULL DEFAULT '1')`);
+    }
+    db.run('CREATE TABLE sync_launch_exclusions (kind TEXT NOT NULL, origin_local_id TEXT NOT NULL, through_rev TEXT NOT NULL, PRIMARY KEY (kind, origin_local_id))');
+    // The pre-launch corpus: stamped by v47 without a hub acknowledgement, and recorded in the ledger.
+    db.run("INSERT INTO observations (project, memory_session_id, synced_at) VALUES ('p', 'm', 1790000000000)");
+    db.run("INSERT INTO sync_launch_exclusions (kind, origin_local_id, through_rev) VALUES ('observation', '1', '1')");
+    db.close();
+    return path;
+  }
+
+  it('reports a hub acknowledgement from the database, so it survives a worker restart', async () => {
+    const path = memoryDatabase();
+    await start(null, undefined, null, path);
+    expect((await state()).memorySynced).toBe(false);
+    const db = new Database(path);
+    db.run("INSERT INTO observations (project, memory_session_id, synced_at) VALUES ('p', 'm', 1790000060000)");
+    db.close();
+    expect(await state()).toMatchObject({ memorySynced: true, history: { observations: 2 } });
+    // A new worker has no in-memory acknowledgement counts; the database still says so.
+    await stop();
+    await start(null, undefined, null, path);
+    expect((await state()).memorySynced).toBe(true);
   });
 });

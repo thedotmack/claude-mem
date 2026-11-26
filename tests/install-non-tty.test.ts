@@ -72,13 +72,9 @@ function runInstaller(missingKey: boolean) {
       }));
       mock.module(at('services/telemetry/cli-telemetry.js'), () => ({ captureCliEvent: async (name, properties) => console.log('EVENT:' + name + ':' + JSON.stringify(properties)) }));
       mock.module(at('shared/intent-credentials.js'), () => ({ readIntentCredentials: () => ({}), intentCredentialHeaders: () => ({}) }));
-      globalThis.fetch = async (_url, options) => {
-        const request = JSON.parse(options.body);
-        if (request.source !== 'npx-installer-deferred') throw new Error('Unexpected network request');
-        const pairing = 'a'.repeat(32);
-        return new Response(JSON.stringify({ pairing_id: pairing, secret: 'b'.repeat(48), user_code: 'ABCD-EFGH',
-          authorization_url: 'https://cmem.ai/login?next=' + encodeURIComponent('/api/pro/trial/claim?pairing=' + pairing + '&login_only=1'),
-          checkout_url: 'https://cmem.ai/api/pro/trial/claim?pairing=' + pairing + '&trial=7' }));
+      globalThis.fetch = async (url) => {
+        console.log('NETWORK_REQUEST:' + String(url));
+        throw new Error('Unexpected network request');
       };
       const { runInstallCommand } = await import(at('npx-cli/commands/install.js'));
       await runInstallCommand(${missingKey ? "{ provider: 'gemini', noAutoStart: true }" : "{ noAutoStart: true }"});
@@ -102,16 +98,17 @@ describe('non-TTY installer', () => {
     expect(result.output).not.toContain('EVENT:install_completed');
   });
 
-  it('copies marketplace content and offers sign-in before completion', () => {
+  it('copies marketplace content and completes without starting a sign-in nobody can finish', () => {
     const result = runInstaller(false);
     if (result.exitCode !== 0) console.error(result.output);
     expect(result.exitCode).toBe(0);
     expect(result.output).not.toContain('PASSWORD_CALLED');
     expect(result.output).toContain('defaulting to your Anthropic plan');
-    const link = result.output.indexOf('Sign-in link: https://cmem.ai/login?');
-    const completion = result.output.indexOf('EVENT:install_completed:');
-    expect(link).toBeGreaterThan(-1);
-    expect(completion).toBeGreaterThan(link);
+    expect(result.output).toContain('EVENT:install_completed:');
+    // The old end-of-install link started a pairing that nothing polled, so it could never connect this device.
+    expect(result.output).not.toContain('Sign-in link:');
+    expect(result.output).not.toContain('/api/installer/oauth/start');
+    expect(result.output).not.toContain('EVENT:installer_oauth_deferred');
     expect(result.output).toContain('"runtime_mode":"worker"');
     const dependencies = result.output.indexOf('DEPENDENCIES_READY');
     const marker = result.output.indexOf('INSTALL_MARKER:');

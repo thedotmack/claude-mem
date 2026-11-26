@@ -1,8 +1,7 @@
 // Review fixtures for the funnel screens. Loaded only by a dynamic import when the page has `?source=sample`;
-// nothing else imports this file. Invented work for a made-up person; no real prompts, usage or history.
+// nothing else imports this file. Invented work for a made-up person; no real prompts or history.
 // `&sample=new` shows a new install (no claude-mem history: no efficiency percent, no import step).
 // `&scan=<percent>` holds the scan at that percent, for screenshots.
-// `&usage=partial|none` shows an incomplete or missing usage history (default: a complete 30-day window).
 // `&scan=consent|failed` stops the scan at the upload question or at a failure (each retry or answer then goes on).
 // `&fail=install|checkout|import|installer|choice|stop` makes that hand-off fail once, so its error can be seen; the retry
 // works. `choice` is the worker refusing the storage choice and `stop` is Stop import getting no answer (hand-off alerts);
@@ -12,7 +11,6 @@
 // first batch until the person stops it, for screenshots of Finish Setup's "An import is already running.".
 import { SetupRequestError, type HistoryImportProgress, type MemoryResult, type SetupChoice, type SetupData, type SetupSource } from './setup-data'
 import type { InstallerStage } from './setup-flow'
-import { toSetupUsage, type SetupScanUsage } from './setup-usage'
 import { SAMPLE_REQUESTS } from '../data'
 import { SAMPLE_FOCUS_AREAS } from '../data-goals'
 import { HISTORY_IMPORT_BATCH, historyImportRunning } from '../../../../shared/setup-funnel.ts'
@@ -61,7 +59,6 @@ const RECORDS: MemoryResult[] = [
   { id: 'm3', title: 'Feed stutter traced to image decoding', body: 'Large thumbnails were decoded on the main thread. Moving decoding off the main thread brought scrolling back to 60 fps on the test phone.', project: 'Mobile app', agent: 'Gemini CLI', session: 'Feed performance', date: '2026-10-14' },
 ]
 
-export type SampleUsage = 'complete' | 'partial' | 'none'
 /** Where `&scan=` stops the sample scan instead of finishing it. */
 export type SampleScanStop = 'consent' | 'failed'
 /** Which hand-off `&fail=` makes fail once. */
@@ -84,15 +81,6 @@ const NOTHING_TO_STOP = 'No import is running, so there is nothing to stop.'
 const appliedStage = (branch: SetupChoice['branch'], alreadyPro: boolean): InstallerStage =>
   branch === 'home' ? 'home-ready' : alreadyPro ? 'go-kept-existing-pro' : 'go-awaiting-checkout'
 
-function sampleUsage(kind: SampleUsage, newInstall: boolean): SetupScanUsage {
-  const agents = [
-    { id: 'claude-code', label: 'Claude Code', detected: true, recordsTokens: true, tokens: kind === 'none' ? 0 : 61_200_000 },
-    { id: 'codex', label: 'Codex', detected: true, recordsTokens: true, tokens: kind === 'none' ? 0 : 23_400_000 },
-  ]
-  const totalTokens = agents.reduce((sum, agent) => sum + agent.tokens, 0)
-  return { windowDays: 30, agents, totalTokens, coverage: kind, persona: kind === 'complete' ? 'Heavy AI User' : null, efficiencyPercent: newInstall ? null : 50 }
-}
-
 /** Invented prompts for the waiting-for-agent Reveal (`&agent=none`). */
 const RECENT_PROMPTS = [
   { agent: 'claude-code', at: '2026-10-21T17:42:00.000Z', text: 'make the signup screens use the new copy and keep the old layout' },
@@ -100,7 +88,7 @@ const RECENT_PROMPTS = [
   { agent: 'claude-code', at: '2026-10-14T09:30:00.000Z', text: 'the mobile list is slow on my old phone, find out why' },
 ]
 
-function sampleData(newInstall: boolean, usage: SampleUsage, waitingForAgent: boolean, fail: SampleFailure | undefined, installer: boolean): SetupData {
+function sampleData(newInstall: boolean, waitingForAgent: boolean, fail: SampleFailure | undefined, installer: boolean): SetupData {
   return {
     connectionError: null,
     connectionErrorKind: null,
@@ -132,7 +120,6 @@ function sampleData(newInstall: boolean, usage: SampleUsage, waitingForAgent: bo
     recentPrompts: RECENT_PROMPTS,
     checkout: null,
     installer: fail === 'installer' ? { stage: 'failed', error: SAMPLE_FAILURE_WORDS.installer } : installer ? { stage: 'waiting-for-choice', error: null } : null,
-    usage: toSetupUsage(sampleUsage(usage, newInstall)),
     alreadyPro: false,
     detectedTools: ['claude-code', 'codex', 'chatgpt'],
     history: newInstall ? null : { projects: 3, sessions: 24, observations: 128 },
@@ -148,9 +135,9 @@ function sampleData(newInstall: boolean, usage: SampleUsage, waitingForAgent: bo
 const SAMPLE_FAIL_AT_PERCENT = 40
 
 /** Plays the scan, then lands Goals, Work and Rules one after another, as the live screen will. */
-export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: number | null, usage: SampleUsage = 'complete', waitingForAgent = false,
+export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: number | null, waitingForAgent = false,
   { scanStop, fail, installer = false, importRunning = false }: { scanStop?: SampleScanStop; fail?: SampleFailure; installer?: boolean; importRunning?: boolean } = {}): SetupSource {
-  let data = sampleData(newInstall, usage, waitingForAgent, fail, installer)
+  let data = sampleData(newInstall, waitingForAgent, fail, installer)
   const listeners = new Set<(data: SetupData) => void>()
   const publish = (changes: Partial<SetupData>) => { data = { ...data, ...changes }; for (const listener of listeners) listener(data) }
   // The history upload, played the way the worker reports it (history-import.ts): whole batches of HISTORY_IMPORT_BATCH,

@@ -938,4 +938,30 @@ describe('setup page device code', () => {
     await until(() => latest.checkout?.userCode === 'K7QM-4XPT');
     stop();
   }, 10_000);
+
+  it('keeps asking however many reads fail, until the checkout no longer waits', async () => {
+    const app = fixture();
+    const reads = codeNetwork();
+    const stop = app.localSetupSource.subscribe(() => {});
+    // The page's wait between tries runs at once here, so the test does not sit through each one.
+    const realSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((run: () => void, ms?: number) => realSetTimeout(run, ms && ms >= 1000 ? 0 : ms)) as typeof setTimeout;
+    try {
+      Stream.latest.send('setup-state', waitingFrame);
+      // More failed reads than any small count of tries would allow: the page still asks again.
+      for (let failed = 0; failed < 8; failed++) {
+        await until(() => reads.length === failed + 1);
+        reads[failed].reject(new TypeError('Failed to fetch'));
+      }
+      await until(() => reads.length === 9);
+      // The checkout stopped waiting (the installer reported it failed): the failed read is not tried again.
+      Stream.latest.send('setup-state', { status: 'pending', alreadyPro: false, checkout: { state: 'failed', error: 'Checkout did not finish.' } });
+      reads[8].reject(new TypeError('Failed to fetch'));
+      await new Promise((resolve) => realSetTimeout(resolve, 100));
+      expect(reads.length).toBe(9);
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+      stop();
+    }
+  });
 });

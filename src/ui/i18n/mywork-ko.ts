@@ -1248,4 +1248,11 @@ export const myworkKo: Record<string, string> = {
   "Browse": "둘러보기",
   "Work": "작업",
   "Skipped": "건너뜀",
+  "Want us to write your memories, too?": "메모리 작성도 맡기시겠어요?",
+  "With a hosted plan, cmem.ai writes them instead of your own provider.": "호스팅 플랜을 사용하면 내 제공업체 대신 cmem.ai가 메모리를 작성합니다.",
+  "Plans start at $30/month in addition to Cloud Sync.": "플랜은 Cloud Sync 요금에 더해 월 $30부터 시작합니다.",
+  "See plans and pricing": "플랜 및 가격 보기",
+  "Try Cloud Sync free for {days} days": "Cloud Sync {days}일 무료 체험",
+  "No card needed for your first trial.": "첫 체험에는 카드가 필요하지 않습니다.",
+  "Run this in a terminal on this computer. Setup opens in your browser, where you can choose Cloud Sync.": "이 컴퓨터의 터미널에서 이 명령을 실행하세요. 브라우저에서 설정이 열리며, 거기서 Cloud Sync를 선택할 수 있습니다.",
 };
