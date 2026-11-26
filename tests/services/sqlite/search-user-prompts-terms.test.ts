@@ -14,7 +14,11 @@ describe('searchUserPrompts with several terms', () => {
     search = new SessionSearch(store.db);
     const sessionDbId = store.createSDKSession('content-1', 'proj', 'fix the bug in the auth module');
     store.ensureMemorySessionIdRegistered(sessionDbId, 'memory-1');
-    const prompts = ['fix the bug in the auth module', 'payload优先使用LLM', 'rename 100%_done flag'];
+    const prompts = [
+      'fix the bug in the auth module', 'payload优先使用LLM', 'rename 100%_done flag',
+      // An unescaped % or _ in the query would also match these two.
+      'rename 100abc_done flag', 'rename 100%xdone flag',
+    ];
     prompts.forEach((text, index) => {
       store.saveUserPrompt('content-1', index + 1, text);
       store.storeObservation('memory-1', 'proj', {
@@ -44,6 +48,5 @@ describe('searchUserPrompts with several terms', () => {
   it('still needs every term and still matches % and _ literally', () => {
     expect(promptTexts('auth missing')).toEqual([]);
     expect(promptTexts('100%_done')).toEqual(['rename 100%_done flag']);
-    expect(promptTexts('100%xdone')).toEqual([]);
   });
 });
