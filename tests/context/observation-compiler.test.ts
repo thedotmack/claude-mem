@@ -67,6 +67,7 @@ describe('buildTimeline', () => {
   it.each([
     ['combines both kinds', [{ id: 1, created_at_epoch: 1000 }], [{ id: 1, displayEpoch: 2000 }], ['observation:1', 'summary:1']],
     ['sorts chronologically', [{ id: 1, created_at_epoch: 3000 }, { id: 2, created_at_epoch: 1000 }], [{ id: 1, displayEpoch: 2000 }], ['observation:2', 'summary:1', 'observation:1']],
+    ['keeps one turn in stored order', [{ id: 3, created_at_epoch: 1000 }, { id: 2, created_at_epoch: 1000 }, { id: 1, created_at_epoch: 1000 }], [{ id: 1, displayEpoch: 1000 }], ['observation:1', 'observation:2', 'observation:3', 'summary:1']],
     ['no observations', [], [{ id: 1, displayEpoch: 1000 }], ['summary:1']],
     ['no summaries', [{ id: 1, created_at_epoch: 1000 }], [], ['observation:1']],
     ['both empty', [], [], []],
@@ -77,6 +78,31 @@ describe('buildTimeline', () => {
     expect(timeline.map(item => `${item.type}:${item.data.id}`)).toEqual(expected);
     for (const item of timeline) {
       expect(item.data).toHaveProperty(item.type === 'observation' ? 'narrative' : 'request');
+    }
+  });
+});
+
+describe('timeline of turns that stored several observations', () => {
+  it('lists each turn oldest first, as the turns themselves are', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      const sessionDbId = store.createSDKSession('content-turns', 'turn-order', 'prompt');
+      store.ensureMemorySessionIdRegistered(sessionDbId, 'memory-turns');
+      const observation = (title: string) => ({
+        type: 'discovery', title, subtitle: null, facts: [], narrative: title,
+        concepts: ['turn-order'], files_read: [], files_modified: [],
+      });
+      // One observer response per turn; storeObservations stamps each turn once.
+      const first = store.storeObservations('memory-turns', 'turn-order',
+        [observation('read the config'), observation('found the bug'), observation('fixed the bug')], null, 1, 0, 1_700_000_000_000);
+      const second = store.storeObservations('memory-turns', 'turn-order',
+        [observation('wrote the test'), observation('ran the test')], null, 2, 0, 1_700_000_060_000);
+
+      const rows = queryObservationsMulti(store, ['turn-order'], config('turn-order'));
+      expect(buildTimeline(rows, []).map(item => item.data.id))
+        .toEqual([...first.observationIds, ...second.observationIds]);
+    } finally {
+      store.close();
     }
   });
 });

@@ -401,7 +401,10 @@ export function buildTimeline(
   summaries: SummaryTimelineItem[]
 ): TimelineItem[] {
   const timeline: TimelineItem[] = [
-    ...observations.map(obs => ({ type: 'observation' as const, data: obs })),
+    // Observations arrive newest first, and storeObservations() stamps one
+    // turn's rows with a single epoch. Start from the oldest, so the sort
+    // below (stable, by epoch alone) keeps a turn's rows in stored order.
+    ...[...observations].reverse().map(obs => ({ type: 'observation' as const, data: obs })),
     ...summaries.map(summary => ({ type: 'summary' as const, data: summary }))
   ];
 
