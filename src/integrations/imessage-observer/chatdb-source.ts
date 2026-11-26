@@ -140,7 +140,9 @@ export class ChatDbSource implements MessageSource {
         try {
           batch = this.poll();
         } catch (error) {
-          // Busy or mid-checkpoint: read again on the next change or tick.
+          // Busy or mid-checkpoint: read again on the next change or tick,
+          // never straight away, so a lasting error can't spin.
+          this.morePending = false;
           this.options.log?.warn(`Could not read the Messages database: ${error instanceof Error ? error.message : String(error)}`);
         }
         for (const event of batch) yield event;

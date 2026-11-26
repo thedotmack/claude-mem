@@ -262,6 +262,7 @@ final class AppModel: ObservableObject {
 
     func stopListening() {
         userStopped = true
+        restartAfterStop = false
         running?.stop()
     }
 
@@ -290,7 +291,7 @@ final class AppModel: ObservableObject {
 
     private func listenerExited(_ status: Int32) {
         running = nil
-        if restartAfterStop {
+        if restartAfterStop, !userStopped {
             restartAfterStop = false
             listener = .stopped
             startListening()

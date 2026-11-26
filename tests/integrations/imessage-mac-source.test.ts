@@ -165,6 +165,26 @@ describe('ChatDbSource', () => {
     expect(Date.now() - started).toBeLessThan(5_000);
   });
 
+  it('waits before reading again after a read error, even right after a full page', async () => {
+    const warnings: string[] = [];
+    const src = new ChatDbSource({ dbPath: fake.path, label, isObserved: guid => guid === GROUP, watch: false, pollMs: 100, log: { info: () => {}, warn: message => warnings.push(message) } });
+    src.start();
+    for (let i = 0; i < 500; i += 1) fake.message({ chat: OTHER_GROUP, guid: `o${i}`, at: T0 + i, text: 'not picked', from: CAL });
+    const realPoll = src.poll.bind(src);
+    let calls = 0;
+    src.poll = () => {
+      calls += 1;
+      if (calls === 1) return realPoll();
+      throw new Error('database is locked');
+    };
+    const reading = (async () => { for await (const _ of src.events()) { /* nothing is picked */ } })();
+    await new Promise(resolve => setTimeout(resolve, 350));
+    await src.stop();
+    await reading;
+    expect(calls).toBeLessThan(10);
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+
   it('lists chats newest first, names unnamed chats from members, never shows a whole phone number', () => {
     fake.message({ chat: DIRECT, guid: 'd1', at: T0 + 5 * MIN, text: 'hey', from: CAL });
     fake.message({ chat: GROUP, guid: 'g1', at: T0, text: 'hi', from: ANA });
