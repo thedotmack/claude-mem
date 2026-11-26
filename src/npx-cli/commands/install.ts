@@ -474,14 +474,16 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
         title: 'ZCode: installing hooks + MCP',
         task: async (message) => {
           message('Loading ZCode installer…');
-          const { installZCode } = await import('../../services/integrations/ZCodeHooksInstaller.js');
+          const { installZCode, readZCodeStatus } = await import('../../services/integrations/ZCodeHooksInstaller.js');
           message('Installing ZCode hooks + MCP…');
           const { result, output } = await bufferConsole(async () => installZCode());
           if (result !== 0) {
             recordFailure('ZCode: hooks + MCP installation failed', output);
             return `ZCode: hooks + MCP installation failed ${styleText('red', 'FAIL')}`;
           }
-          if (output.includes('hooks.enabled is false')) {
+          // Ask the status function, not the printed text: a run without a
+          // terminal buffers no output, so a phrase match never fires there.
+          if (readZCodeStatus().status === 'disabled') {
             installerError(ErrorSeverity.WARN_CONTINUE, {
               component: 'zcode',
               ide: 'zcode',
