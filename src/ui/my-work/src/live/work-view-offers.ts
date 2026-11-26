@@ -14,7 +14,7 @@ export type WorkViewOffer = (typeof WORK_VIEW_OFFERS)[number]
 
 /** How long after choosing "This computer" the Cloud Sync offer waits: three days. */
 export const CLOUD_SYNC_OFFER_DELAY_MS = 3 * 24 * 60 * 60 * 1000
-/** While only the first synced memory is missing for the hosted offer, look again this often (each look asks the hub). */
+/** While only the first synced memory is missing for the hosted offer, look again this often (a local read of GET /api/setup/state). */
 export const FIRST_SYNC_RECHECK_MS = 60_000
 
 /** The storage choice setup kept, with what the offers need to know about this computer's plan. */
@@ -82,7 +82,7 @@ export function workViewOffer(facts: WorkViewOfferFacts, dismissed: ReadonlySet<
   return WORK_VIEW_OFFERS.find((offer) => !dismissed.has(offer) && OFFER_DUE[offer](facts)) ?? null
 }
 
-/** Whether the hosted offer still waits on the first synced memory, which only GET /api/sync/status can show. */
+/** Whether the hosted offer still waits on the first synced memory (GET /api/setup/state `memorySynced`). */
 export function waitingForFirstSync(facts: Omit<WorkViewOfferFacts, 'now'>, dismissed: ReadonlySet<WorkViewOffer>): boolean {
   return !dismissed.has('hosted') && hostedOfferPossible(facts.choice) && !facts.memorySynced && facts.cloudSyncConfigured !== false
 }
@@ -116,18 +116,13 @@ export function cloudSyncConfiguredIn(sync: Pick<SyncPresentation, 'state' | 'de
 }
 
 /**
- * Whether GET /api/sync/status says the hub acknowledged a memory (an observation or a summary) from this computer.
- * The worker counts acknowledgements since it last started (CloudSync `queue.progress`), so the page also remembers
- * that it saw one (use-work-view-offer.ts). The hub's `headSeq` would survive a restart, but it counts every change
- * from every device of the account, prompts included, so it does not say that this computer's first memory synced.
+ * Whether GET /api/setup/state says the hub has acknowledged a memory (an observation or a summary) from this computer.
+ * The worker reads it from the database (ownMemorySynced: a non-baseline row with `synced_at` set), so a sync that
+ * happened while Work View was closed, or before the worker last restarted, still counts. An older worker that does
+ * not send `memorySynced` reads as not synced.
  */
-export function memorySyncedIn(status: unknown): boolean {
-  if (!status || typeof status !== 'object') return false
-  const progress = (status as { queue?: { progress?: Record<string, { acknowledged?: unknown } | undefined> } }).queue?.progress
-  return ['observation', 'summary'].some((kind) => {
-    const acknowledged = progress?.[kind]?.acknowledged
-    return typeof acknowledged === 'number' && acknowledged > 0
-  })
+export function memorySyncedIn(state: unknown): boolean {
+  return !!state && typeof state === 'object' && (state as { memorySynced?: unknown }).memorySynced === true
 }
 
 /** The setup choice in GET /api/setup/state, when it has the fields the offers read. */

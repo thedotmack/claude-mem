@@ -63,6 +63,12 @@ export interface SetupStateView extends Omit<SetupStateFile, 'checkout'> {
   hostedObserver?: boolean;
   /** This machine's own observation history (Finish Setup's import offer); null when the worker cannot read it. */
   history?: { projects: number; sessions: number; observations: number } | null;
+  /**
+   * The sync hub has acknowledged at least one observation or summary written on this computer, after the launch
+   * baseline (ownMemorySynced). Read from the database, so it survives worker restarts; Work View's hosted offer waits
+   * on it. Older workers do not send it.
+   */
+  memorySynced?: boolean;
   /** The running or last history import (worker memory only). */
   historyImport?: unknown;
   /** Long work this worker is doing now that a restart would kill: the extraction run (the automatic refresh) and the

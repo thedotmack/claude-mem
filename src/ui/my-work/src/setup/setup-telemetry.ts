@@ -109,31 +109,3 @@ export async function sendSetupEvent(event: SetupEvent): Promise<void> {
   })
   if (!response.ok) throw new Error('Setup telemetry delivery was not acknowledged.')
 }
-
-/**
- * Work View's hosted offer (work-view-offer-banner.tsx) reports its "See plans and pricing" click as the savings
- * screen's action did: one `view_hosted_plans` action on the `savings` step, in a visit of its own. It carries the
- * same closed, content-free fields as every setup event (parseSetupEvent), and the plan the person chose, if any.
- */
-export function hostedPlansEvent(context: SetupTelemetryContext, offer: SetupCloudSyncOffer | undefined,
-  options: { uuid?: () => string; now?: () => number } = {}): SetupEvent {
-  const uuid = options.uuid ?? (() => crypto.randomUUID())
-  return {
-    event: 'setup_step_action', event_id: uuid(), setup_flow_id: context.setup_flow_id, setup_funnel_version: SETUP_FUNNEL_VERSION,
-    visit_id: uuid(), step: 'savings', branch: 'go', already_pro: context.already_pro, branch_confirmed: true,
-    occurred_at: (options.now ?? Date.now)(), action: 'view_hosted_plans', ...(offer ? { cloud_sync_offer: offer } : {}),
-  }
-}
-
-/**
- * Sends hostedPlansEvent through the setup telemetry path. The worker takes setup events only while the installer's
- * session is live and telemetry is on, so with no context (opted out, or no installer running) nothing is sent. A
- * failure is dropped: the link opens either way.
- */
-export async function reportHostedPlansViewed(offer: SetupCloudSyncOffer | undefined,
-  read = readSetupTelemetryContext, send = sendSetupEvent): Promise<void> {
-  try {
-    const context = await read()
-    if (context) await send(hostedPlansEvent(context, offer))
-  } catch { /* Telemetry never holds up the link. */ }
-}

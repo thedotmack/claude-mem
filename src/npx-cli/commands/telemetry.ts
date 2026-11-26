@@ -112,6 +112,7 @@ const EVENT_NAMES = [
   'hook_failed',
   'work_view_opened',
   'work_view_switched',
+  'work_view_hosted_plans_viewed',
   'setup_step_viewed',
   'setup_step_transitioned',
   'setup_step_action',

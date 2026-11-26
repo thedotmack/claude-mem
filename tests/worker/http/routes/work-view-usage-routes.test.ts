@@ -91,10 +91,32 @@ describe('My Work usage telemetry', () => {
     expect(captured()).toHaveLength(0);
   });
 
+  it('counts the hosted offer\'s plans click after setup, with only the kept Cloud Sync plan', async () => {
+    // No installer setup session exists here (setup-session.json is absent), as after the installer has exited.
+    expect((await report({ event: 'view_hosted_plans', cloudSyncOffer: 'cloud_sync_monthly' })).status).toBe(204);
+    expect((await report({ event: 'view_hosted_plans' })).status).toBe(204);
+    const [withPlan, plain] = captured();
+    expect(withPlan.event).toBe('work_view_hosted_plans_viewed');
+    expect(withPlan.properties.cloud_sync_offer).toBe('cloud_sync_monthly');
+    expect(withPlan.properties.viewer_host).toBe('local');
+    expect(withPlan.properties.$process_person_profile).toBe(false);
+    expect(plain.event).toBe('work_view_hosted_plans_viewed');
+    expect(plain.properties.cloud_sync_offer).toBeUndefined();
+    expect(captured()).toHaveLength(2);
+  });
+
+  it('refuses a plans click with an unknown plan or any extra field', async () => {
+    expect((await report({ event: 'view_hosted_plans', cloudSyncOffer: 'lifetime' })).status).toBe(400);
+    expect((await report({ event: 'view_hosted_plans', setup_flow_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' })).status).toBe(400);
+    expect((await report({ event: 'view_hosted_plans', price: '$20' })).status).toBe(400);
+    expect(captured()).toHaveLength(0);
+  });
+
   it('sends nothing with telemetry off, and still answers the page', async () => {
     process.env.CLAUDE_MEM_TELEMETRY = '0';
     __resetTelemetryForTests();
     expect((await report({ event: 'opened', view: 'rules' })).status).toBe(204);
+    expect((await report({ event: 'view_hosted_plans', cloudSyncOffer: 'cloud_sync_annual' })).status).toBe(204);
     expect(captured()).toHaveLength(0);
   });
 });

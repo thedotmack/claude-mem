@@ -49,6 +49,7 @@ export { isReportedReadyForCheck } from '../../../work-view/review-readiness.js'
 import { configuredFocusJudge } from '../../../work-view/focus-judge.mjs';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
+import { ownMemorySynced } from '../../../sync/own-memory-synced.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { validateBody } from '../middleware/validateBody.js';
 import type { SetupScan, SetupScanState } from '../../../prompt-import/setup-scan.js';
@@ -249,9 +250,13 @@ const suggestionBody = z.object({
 
 // The viewer's page ids (src/ui/my-work/src/live/usage.ts `UsageView`: setup plus App.tsx `View`): a closed list, so a
 // usage report can carry nothing else. A focus area is My Work filtered to that area, so it counts as `work`, never by name.
+// `view_hosted_plans` is the "See plans and pricing" click on Work View's hosted offer, with the Cloud Sync plan setup
+// kept, if any (the same closed values the setup funnel's action carries). It comes after setup, when the installer's
+// setup session (and so the setup event route) is gone, so it is counted here.
 const usageBody = z.discriminatedUnion('event', [
   z.object({ event: z.literal('opened'), view: z.enum(WORK_VIEW_USAGE_VIEWS) }).strict(),
   z.object({ event: z.literal('switched'), view: z.enum(WORK_VIEW_USAGE_VIEWS), previousView: z.enum(WORK_VIEW_USAGE_VIEWS) }).strict(),
+  z.object({ event: z.literal('view_hosted_plans'), cloudSyncOffer: z.enum(SETUP_CLOUD_SYNC_OFFERS).optional() }).strict(),
 ]);
 
 /** The line that makes Claude Code load the approved rules with the owner's user-level instructions.
@@ -993,7 +998,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private setupStateView(state: SetupStateFile = readSetupState(this.setupStatePath)): SetupStateView {
     const settings = SettingsDefaultsManager.loadFromFile(this.settingsPath, true, { readOnly: true }) as unknown as Record<string, unknown>;
     const historyImport = this.historyImport?.state() ?? null;
-    return { ...state, install: redactSetupInstall(state.install), checkout: redactSetupCheckout(state.checkout), alreadyPro: hasProConfiguration(settings), hostedObserver: hasHostedObserver(settings), history: this.historyCounts(), historyImport, backgroundWorkRunning: this.backgroundWorkRunning({ countScanWaitingForUploadAnswer: true, failOnUnreadableRefresh: false }) };
+    const { history, memorySynced } = this.localMemoryFacts();
+    return { ...state, install: redactSetupInstall(state.install), checkout: redactSetupCheckout(state.checkout), alreadyPro: hasProConfiguration(settings), hostedObserver: hasHostedObserver(settings), history, memorySynced, historyImport, backgroundWorkRunning: this.backgroundWorkRunning({ countScanWaitingForUploadAnswer: true, failOnUnreadableRefresh: false }) };
   }
 
   /**
@@ -1037,11 +1043,13 @@ export class WorkViewRoutes extends BaseRouteHandler {
     return this.humanCopy?.status().generating ?? 0;
   }
 
-  /** This machine's own observations, for the import offer. A missing database is a new install: nothing to import. */
-  private historyCounts(): { projects: number; sessions: number; observations: number } | null {
-    if (!existsSync(this.databasePath)) return { projects: 0, sessions: 0, observations: 0 };
+  /** This machine's own observations (Finish Setup's import offer) and whether the sync hub has ever acknowledged one of
+   * its memories (Work View's hosted offer, ownMemorySynced), from one read-only open of the database. A missing
+   * database is a new install: nothing to import, nothing synced. */
+  private localMemoryFacts(): { history: { projects: number; sessions: number; observations: number } | null; memorySynced: boolean } {
+    if (!existsSync(this.databasePath)) return { history: { projects: 0, sessions: 0, observations: 0 }, memorySynced: false };
     const database = new Database(this.databasePath, { readonly: true, create: false });
-    try { return readHistoryCounts(database); }
+    try { return { history: readHistoryCounts(database), memorySynced: ownMemorySynced(database) }; }
     finally { database.close(); }
   }
 
@@ -1648,8 +1656,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
    * finished before the SubagentStop hook existed). Saved like a hook stop, with
    * its own source, so a later tool call from the agent still reopens it.
    */
-  /** Counts the viewer opening on a page, or switching page, through the worker's own consent-gated, whitelist-scrubbed
-   * telemetry (telemetry.ts), so the page loads no analytics SDK. The report names the page only — never what it showed. */
+  /** Counts the viewer opening on a page, switching page, or opening the hosted offer's plans, through the worker's own
+   * consent-gated, whitelist-scrubbed telemetry (telemetry.ts), so the page loads no analytics SDK. The report names the
+   * page (or the plan setup kept) only — never what it showed. */
   private viewerHostname(req: Request): string {
     const host = (req.hostname || '').trim().toLowerCase();
     return /^[a-z0-9.-]{1,253}$/.test(host) ? host : 'unknown';
@@ -1659,7 +1668,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const report = req.body as z.infer<typeof usageBody>;
     const where = { viewer_host: 'local', hostname: this.viewerHostname(req) };
     if (report.event === 'opened') captureEvent('work_view_opened', { view: report.view, ...where });
-    else captureEvent('work_view_switched', { view: report.view, previous_view: report.previousView, ...where });
+    else if (report.event === 'switched') captureEvent('work_view_switched', { view: report.view, previous_view: report.previousView, ...where });
+    else captureEvent('work_view_hosted_plans_viewed', { ...(report.cloudSyncOffer ? { cloud_sync_offer: report.cloudSyncOffer } : {}), ...where });
     res.status(204).end();
   };
 

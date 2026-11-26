@@ -245,6 +245,10 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // plus a hostname (no path, no user). Local is the worker; hosted is work.cmem.ai.
   'viewer_host',
   'hostname',
+  // work_view_hosted_plans_viewed — the Cloud Sync plan setup kept, as the setup
+  // funnel's closed enum (cloud_sync_monthly | cloud_sync_annual). Never a price,
+  // an account, or a checkout link.
+  'cloud_sync_offer',
   // auto_update_applied / auto_update_failed (src/services/auto-update/auto-update-apply.ts):
   // from_version and to_version are claude-mem release versions, failure_stage
   // and restore_result the supervisor's own closed enums

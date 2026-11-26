@@ -71,17 +71,16 @@ describe('the one offer shown', () => {
 })
 
 describe('reading the worker', () => {
-  it('counts a hub acknowledgement of an observation or a summary as a synced memory', () => {
-    const status = (observation: number, summary: number, prompt = 0) => ({ configured: true, queue: { progress: {
-      observation: { acknowledged: observation, lastAcknowledgedAt: null }, summary: { acknowledged: summary, lastAcknowledgedAt: null },
-      prompt: { acknowledged: prompt, lastAcknowledgedAt: null },
-    } } })
-    assert.equal(memorySyncedIn(status(1, 0)), true)
-    assert.equal(memorySyncedIn(status(0, 2)), true)
-    assert.equal(memorySyncedIn(status(0, 0, 5)), false)
-    assert.equal(memorySyncedIn({ configured: false }), false)
+  it('takes the first synced memory from the worker\'s durable answer in the setup state', () => {
+    assert.equal(memorySyncedIn({ status: 'complete', choice: null, memorySynced: true }), true)
+    assert.equal(memorySyncedIn({ status: 'complete', choice: null, memorySynced: false }), false)
+    // An older worker that does not send it, and anything that is not a plain true, read as not synced.
+    assert.equal(memorySyncedIn({ status: 'complete', choice: null }), false)
+    assert.equal(memorySyncedIn({ memorySynced: 'true' }), false)
+    assert.equal(memorySyncedIn({ memorySynced: 1 }), false)
+    // The old in-memory acknowledgement counts (GET /api/sync/status) are not read any more.
+    assert.equal(memorySyncedIn({ configured: true, queue: { progress: { observation: { acknowledged: 3 } } } }), false)
     assert.equal(memorySyncedIn(null), false)
-    assert.equal(memorySyncedIn({ queue: { progress: { observation: { acknowledged: '3' } } } }), false)
   })
   it('takes the setup choice only with a known branch, billing and choice time', () => {
     assert.deepEqual(offerChoiceIn({ status: 'complete', choice: { branch: 'home', memoryBilling: 'existing', chosenAt, usage: {} } }),

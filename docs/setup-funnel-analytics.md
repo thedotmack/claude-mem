@@ -27,6 +27,9 @@ to Finish Setup. Existing configurations can continue with their current plan.
 - Version 2 shows `savings` after standalone Cloud Sync activation. It displays
   the original scan's usage and records `action = view_hosted_plans` when
   someone opens the optional hosted generation plans.
+  Later installers no longer show `savings`: the hosted offer moved to My
+  Work, which counts its plans click as the usage event
+  `work_view_hosted_plans_viewed`, not as a setup event.
 - Version 1 placed `choice → savings → checkout` after Reveal and committed
   the choice on Savings. Compare releases using the version on local setup
   events. Attribute server checkout and Stripe trial outcomes by

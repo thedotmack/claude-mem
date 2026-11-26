@@ -1,8 +1,8 @@
 /**
  * Closed, content-free contract for the local installer's screens. `savings` (the hosted upsell) is no longer a setup
  * screen: the page never routes to it (setup-flow.ts RoutedSetupStep). It stays in this list because the worker's
- * event check below takes the list from here, events already sent name it, and Work View's hosted offer reports its
- * "See plans and pricing" click under it (setup-telemetry.ts hostedPlansEvent).
+ * event check below takes the list from here and events already sent name it. Work View's hosted offer comes after
+ * setup, so it counts its "See plans and pricing" click as a usage event instead (usage.ts sendHostedPlansViewed).
  */
 export const SETUP_STEPS = ['install', 'scan', 'reveal', 'choice', 'checkout', 'savings', 'finish-setup', 'import', 'launch', 'workspace'] as const;
 export type SetupStep = (typeof SETUP_STEPS)[number];
@@ -106,7 +106,8 @@ export const HISTORY_IMPORT_BATCH = 100;
  * 1M-context call. Cloud enforces this against both compressed and uncompressed bytes, plus its offline 400k-token
  * budget. One definition for the worker's refusal (hosted-intent.ts) and the consent step's warning. */
 export const INTENT_MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
-/** `view_hosted_plans`: a click on "See plans and pricing", once on the savings screen and now on Work View's hosted offer. */
+/** `view_hosted_plans`: a click on "See plans and pricing" on the savings screen, which setup no longer shows; events
+ * already sent name it. Work View's hosted offer counts the same click as `work_view_hosted_plans_viewed` (usage.ts). */
 export const SETUP_ACTIONS = ['choose_memory', 'choice_committed', 'open_checkout', 'view_hosted_plans', 'start_import', 'skip_import', 'retry_scan', 'upload_allowed', 'upload_skipped'] as const;
 export type SetupAction = (typeof SETUP_ACTIONS)[number];
 export const SETUP_ERRORS = ['scan_failed', 'scan_retry_failed', 'upload_consent_failed', 'upload_too_large', 'usage_preference_failed', 'choice_failed', 'checkout_failed', 'installer_failed', 'import_failed', 'complete_failed'] as const;
