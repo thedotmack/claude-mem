@@ -60,7 +60,7 @@ describe('ingestObservation — CLAUDE_MEM_SKIP_BASH_PATTERNS', () => {
   it('keeps ambiguous shell syntax in opt-in mode', async () => {
     process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = '^(ls|cat|pwd)\\b';
     process.env.CLAUDE_MEM_SKIP_BASH_COMPOUND = 'true';
-    for (const command of ['ls $(touch x)', 'ls "$(touch x)"', 'ls > out', 'cat <(echo x)', 'ls `touch x`', 'ls "unterminated', 'ls \\', 'ls # comment', 'ls %VAR%', 'ls ^& rm', "ls '%VAR%'", "ls 'a & rm'", 'ls "a\nrm"']) {
+    for (const command of ['ls $(touch x)', 'ls "$(touch x)"', 'ls > out', 'cat <(echo x)', 'ls `touch x`', 'ls "unterminated', 'ls \\', 'ls # comment', 'ls %VAR%', 'ls ^& rm', "ls '%VAR%'", "ls 'a & rm'", "ls ' >out'", "ls ' <in'", 'ls "a\nrm"']) {
       await expect(bash(command)).rejects.toThrow();
     }
   });

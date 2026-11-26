@@ -93,9 +93,9 @@ function simpleCommandSegments(command: string): string[] | null {
     // specific meanings. Without the actual shell, don't guess their effect.
     if ('%^!'.includes(char)) return null;
     if (quote === "'") {
-      // cmd.exe does not treat single quotes as quoting. A separator or a
-      // double quote here could change its command boundaries.
-      if ('&|;\n\r"'.includes(char)) return null;
+      // cmd.exe does not treat single quotes as quoting. Shell operators or
+      // a double quote here could change command boundaries or redirect IO.
+      if ('&|;\n\r"<>(){}'.includes(char)) return null;
       if (char === "'") quote = null;
       continue;
     }
