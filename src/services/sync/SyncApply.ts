@@ -189,7 +189,7 @@ import { parseStringListField } from './string-list-field.js';
 import { getRedactionConfig, redactJsonStrings, redactSensitive, type RedactionConfig } from '../../utils/redaction.js';
 import { redactSyncDiagnostic } from './diagnostic-redaction.js';
 import { isSharedWorkList } from '../work-view/shared-records.mjs';
-import { redactSharedInboundRow, saveSharedRedactionReceipt } from '../work-view/shared-redaction.mjs';
+import { redactSharedInboundRow, repairReplayedReviewCard, saveSharedRedactionReceipt } from '../work-view/shared-redaction.mjs';
 import { scheduleChromaRowCleanup, type IndexedRowKind } from './chroma-row-cleanup.js';
 
 /** sync_state key: replaySetAsideWorkState has run on this database. */
@@ -1001,6 +1001,18 @@ export class SyncApply {
           // other copy. The first accepted copy stays, matching the cloud
           // projector's cross-epoch rule; applyOps sets this op aside.
           throw invalidOp(op, `same entity revision has a different canonical operation hash (kept local ${head.operation_sha256}, hub sent ${op.operation_sha256})`);
+        }
+        if (op.kind === 'work_state' && !op.deleted) {
+          const row = this.parseBody(op);
+          try {
+            if (typeof row.list_name === 'string' && repairReplayedReviewCard(this.db, this.deviceId, {
+              project: typeof row.project === 'string' ? row.project : undefined, list_name: row.list_name, fields: String(row.fields),
+              origin_device_id: op.origin_device, origin_local_id: op.origin_id, sync_rev: op.rev,
+            })) return 'applied';
+          } catch (error) {
+            if (error instanceof TypeError || error instanceof SyntaxError) throw invalidOp(op, error.message);
+            throw error;
+          }
         }
         return 'stale';
       }

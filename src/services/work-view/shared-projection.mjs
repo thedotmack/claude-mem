@@ -7,6 +7,8 @@ import { syncablePromptSql } from '../prompt-import/transcript-origin.mjs';
 import { isIP } from 'node:net';
 import { basename } from 'node:path';
 import { isSharedReviewValue } from './shared-review-value.mjs';
+import { isReviewStackKind } from '../../shared/review-stack.js';
+import { isReviewStackValue } from './review-stack-schema.js';
 
 const TABLES = { observation: 'observations', summary: 'session_summaries', prompt: 'user_prompts', 'work-state': 'work_state_entries' };
 const SOURCE_KINDS = { 'user-prompt': 'prompt', 'session-summary-request': 'summary', 'session-summary': 'summary', 'session-initial-request': 'session', 'work-state': 'work-state', observation: 'observation' };
@@ -98,6 +100,7 @@ const sharedProduct = value => object(value) && string(value.kind, 80) && string
 
 /** Invalid domain values reject the complete batch before it becomes visible. */
 export function isSharedProjectionValue(kind, key, value, deleted = false, writer = undefined) {
+  if (isReviewStackKind(kind)) return isReviewStackValue(kind, key, value, deleted);
   if (kind === 'review') return isSharedReviewValue(kind, key, value, deleted);
   const groupKey = /^g_[a-f0-9]{12}$/.test(key);
   const knownKey = kind === 'group' || kind === 'progress' ? groupKey
@@ -450,7 +453,8 @@ export function applySharedProjection(database, shared, { ledger = null, records
   const copyEntries = new Map();
   const excludedOpenings = new Set();
   const merged = { ...records, sessions: [...(records.sessions ?? [])], sharedAttributions: new Map(), sharedProducts: [], agentLaunches: [...(records.agentLaunches ?? [])], agentToolActivity: [...(records.agentToolActivity ?? [])] };
-  const ordered = values(shared).sort((a, b) => {
+  // The reviewer reads its own asset and feedback rows. Keep them outside the ordinary work ledger.
+  const ordered = values(shared).filter(record => !isReviewStackKind(record.kind)).sort((a, b) => {
     const left = BigInt(a.revision ?? '0'), right = BigInt(b.revision ?? '0');
     return left < right ? -1 : left > right ? 1 : binaryOrder(String(a.writer), String(b.writer))
       || binaryOrder(a.kind, b.kind) || binaryOrder(a.key, b.key);
@@ -472,7 +476,7 @@ export function applySharedProjection(database, shared, { ledger = null, records
     selectedGroup: records.at(-1).key,
   })).sort((left, right) => binaryOrder(left.key, right.key));
   const diagnostics = { ...(shared?.diagnostics ?? { pending: 0, invalid: 0, unsupported: 0, conflicts: [] }),
-    conflicts: [...(shared?.diagnostics?.conflicts ?? []), ...membershipConflicts], membershipConflicts };
+    conflicts: [...(shared?.diagnostics?.conflicts ?? []).filter(item => !isReviewStackKind(item.kind)), ...membershipConflicts], membershipConflicts };
   for (const record of ordered) {
     const value = localWorkValue(database, record.value, deviceId);
     if (record.kind === 'group') {

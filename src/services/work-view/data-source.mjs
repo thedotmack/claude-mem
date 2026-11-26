@@ -139,7 +139,7 @@ export class WorkStateSource {
       this.readTitleCache();
       this.readLedger();
       this.readWorkStateLabels();
-      if (!this.sharedState || signature !== this.signature) this.sharedState = readSharedRecords(database, { deviceId: this.localDeviceId, validateValue: isSharedProjectionValue });
+      if (!this.sharedState || signature !== this.signature) this.sharedState = readSharedRecords(database, { deviceId: this.localDeviceId, validateValue: isSharedProjectionValue, reviewStack: 'exclude' });
       const now = Date.now();
       // Only background polling opts into this window. Direct reads (including
       // review writes) must still notice evidence edits that retain row IDs.
@@ -233,7 +233,7 @@ export class WorkStateSource {
         try { story = JSON.parse(readFileSync(join(this.ledgerDir, 'story.json'), 'utf8')); }
         catch (error) { if (error.code !== 'ENOENT') storyError = error; }
       }
-      const shared = readSharedRecords(database, { deviceId: this.localDeviceId, validateValue: isSharedProjectionValue });
+      const shared = readSharedRecords(database, { deviceId: this.localDeviceId, validateValue: isSharedProjectionValue, reviewStack: 'exclude' });
       if (storyError && ![...shared.records.values()].some(record => record.kind === 'story' && record.key === 'current')) throw storyError;
       story = applySharedProjection(database, shared, { ledger: { story }, deviceId: this.localDeviceId }).ledger.story;
       const state = reduceWorkState(entries, { localDeviceId: this.localDeviceId });
