@@ -914,4 +914,21 @@ describe('setup page device code', () => {
     expect(latest.checkout).toMatchObject({ state: 'waiting', userCode: null, expiresAt: null });
     stop();
   });
+
+  it('tries the read again while the checkout waits and no code is shown yet', async () => {
+    const app = fixture();
+    const reads = codeNetwork();
+    let latest: any;
+    const stop = app.localSetupSource.subscribe((data: any) => { latest = data; });
+    Stream.latest.send('setup-state', waitingFrame);
+    await until(() => reads.length === 1);
+    reads[0].reject(new TypeError('Failed to fetch'));
+    // No new frame arrives; the page asks again on its own after a short wait.
+    const deadline = Date.now() + 5000;
+    while (reads.length < 2 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(reads.length).toBe(2);
+    reads[1].resolve(Response.json({ userCode: 'K7QM-4XPT', expiresAt: null }));
+    await until(() => latest.checkout?.userCode === 'K7QM-4XPT');
+    stop();
+  }, 10_000);
 });

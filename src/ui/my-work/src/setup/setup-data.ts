@@ -306,18 +306,24 @@ export const localSetupSource: SetupSource = {
     // The device code of the pairing the open checkout waits on. The setup state only says one waits (any localhost
     // page can read it), so the code comes from the guarded route; only the newest read counts.
     let deviceCodeRevision = 0
-    const readDeviceCode = async () => {
-      const revision = ++deviceCodeRevision
+    const DEVICE_CODE_READ_TRIES = 5
+    const DEVICE_CODE_RETRY_MS = 2_000
+    const readDeviceCode = async (attempt = 1, revision = ++deviceCodeRevision) => {
       try {
         const { userCode, expiresAt } = await workerJson<{ userCode: string; expiresAt: string | null }>('/api/setup/checkout/device-code')
         if (closed || revision !== deviceCodeRevision || data.checkout?.state !== 'waiting') return
         publish({ checkout: { ...data.checkout, userCode, expiresAt } })
       } catch (error) {
-        // A refusal (404) means no code waits any more, so the shown one goes. Unreachable keeps it: the terminal still
-        // has the code, and the next setup-state frame reads it again.
-        if (!(error instanceof SetupRequestError) || error.kind !== 'refused') return
         if (closed || revision !== deviceCodeRevision || data.checkout?.state !== 'waiting') return
-        publish({ checkout: { ...data.checkout, userCode: null, expiresAt: null } })
+        // A refusal (404) means no code waits any more, so the shown one goes.
+        if (error instanceof SetupRequestError && error.kind === 'refused') {
+          publish({ checkout: { ...data.checkout, userCode: null, expiresAt: null } })
+          return
+        }
+        // Unreachable keeps the shown code. Frames only come on state changes, so a page still without a code tries a
+        // few more times while the checkout waits; a newer read or a new frame cancels these tries.
+        if (data.checkout.userCode || attempt >= DEVICE_CODE_READ_TRIES) return
+        setTimeout(() => { void readDeviceCode(attempt + 1, revision) }, DEVICE_CODE_RETRY_MS)
       }
     }
     const applyState = (state: WorkerSetupState) => {
