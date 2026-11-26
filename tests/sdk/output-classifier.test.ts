@@ -196,6 +196,16 @@ describe('isQuotaLimitedObserverOutput (continued)', () => {
   it('does not treat ordinary observer prose as quota prose', () => {
     expect(isQuotaLimitedObserverOutput('No observations to record.')).toBe(false);
   });
+
+  it('does not treat prose that mentions a session limit or credits as quota prose', () => {
+    expect(isQuotaLimitedObserverOutput('The application session limit is configurable.')).toBe(false);
+    expect(
+      isQuotaLimitedObserverOutput('Nothing to record: the test wallet ran out of credits by design.'),
+    ).toBe(false);
+    // The notices themselves still match.
+    expect(isQuotaLimitedObserverOutput('Session limit reached ∙ resets 5pm')).toBe(true);
+    expect(isQuotaLimitedObserverOutput("You're out of credits.")).toBe(true);
+  });
 });
 
 describe('isAuthFailureObserverOutput', () => {
