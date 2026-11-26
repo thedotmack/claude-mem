@@ -26779,6 +26779,7 @@ var time3 = safeInt.max(864e13);
 var text5 = (max) => external_exports.string().trim().min(1).max(max).refine((s) => !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/u.test(s), "Use readable text.");
 var words = (min, max, charLimit, label) => text5(charLimit).transform((s) => s.split(/\s+/u).join(" ")).refine((s) => s.split(" ").length >= min && s.split(" ").length <= max, label + " needs " + min + "\u2013" + max + " words.");
 var focus = text5(64).transform((s) => s.split(/\s+/u).join(" "));
+var focusId = external_exports.string().regex(/^focus-[a-f0-9]{64}$/);
 var url2 = external_exports.string().trim().max(4096).refine((s) => {
   if (!s.startsWith("https://") || /[\s\x00-\x1f\x7f\\]/u.test(s)) return false;
   try {
@@ -26808,9 +26809,11 @@ var storedCard = external_exports.strictObject({
   // Word counts guide authored copy. A recipient's redaction marker can replace
   // one word with two without changing the identity of a previously valid card.
   ...metadata,
+  focus: focus.or(redactedCopy()),
   title: metadata.title.or(redactedCopy()),
   what: metadata.what.or(redactedCopy()),
   context: metadata.context.or(redactedCopy()),
+  focusId: focusId.optional(),
   contentId: digest,
   createdAt: time3,
   excerptParts: safeInt.max(MAX_EXCERPT_PARTS),
@@ -26827,11 +26830,19 @@ var actionSchemas = [
   external_exports.strictObject({ action: external_exports.literal("bookmark"), cardId: asset, saved: external_exports.boolean(), revision: safeInt }),
   external_exports.strictObject({ action: external_exports.literal("follow-up"), cardId: asset, body: text5(4e3) }),
   external_exports.strictObject({ action: external_exports.literal("set-follow-up"), cardId: asset, followUpId: uuid3, closed: external_exports.boolean(), revision: safeInt }),
-  external_exports.strictObject({ action: external_exports.literal("seen-group"), focus }),
+  external_exports.strictObject({ action: external_exports.literal("seen-group"), focus: focus.or(redactedCopy()), cardId: asset.optional() }),
   external_exports.strictObject({ action: external_exports.literal("undo-group"), groupId: uuid3 })
 ];
 var actionBody = external_exports.discriminatedUnion("action", actionSchemas);
-var event = external_exports.strictObject({ input: actionBody, fingerprint: digest, createdAt: time3, order: safeInt.min(1), parts: safeInt.max(511) }).refine((e) => e.parts === 0 || e.input.action === "seen-group");
+var storedAction = actionBody.or(external_exports.strictObject({ action: external_exports.literal("follow-up"), cardId: asset, body: redactedCopy() }));
+var event = external_exports.strictObject({
+  input: storedAction,
+  fingerprint: digest,
+  createdAt: time3,
+  order: safeInt.min(1),
+  parts: safeInt.max(511),
+  focusId: focusId.optional()
+}).refine((e) => e.parts === 0 && e.focusId === void 0 || e.input.action === "seen-group");
 var members2 = external_exports.array(external_exports.strictObject({ cardId: asset, previous: uuid3.nullable() })).min(1).max(GROUP_CHUNK);
 var receipt = external_exports.strictObject({ fingerprint: digest, added: safeInt, existing: safeInt, firstId: asset });
 var partKey = /^(weekly-[a-f0-9]{64}):[a-f0-9]{64}:(excerpt|image):([0-6])$/;
