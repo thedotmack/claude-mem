@@ -31,7 +31,7 @@ import {
 import { resolveContextWindowTokens, observationFieldMaxChars, resolveObserverMaxOutputTokens } from './context-window.js';
 import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration, observesBarePrompts } from './session/recycle-conversation.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt, type CompressedField } from './field-optimizer.js';
-import { resolveFieldOptimizeTimeoutMs } from './retry.js';
+import { resolveFieldCondenseEnabled, resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
 import { freezeResponseMedia, type PreparedTurnMedia, type TurnImageRequest } from '../media/inference.js';
 import { isObserverCaptureEnabled } from '../../shared/observer-capture.js';
@@ -588,6 +588,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       resolveFieldOptimizeTimeoutMs,
       session.observerContextWindowTokens,
       () => this.fieldCompressionMaxOutputTokens(),
+      resolveFieldCondenseEnabled,
     );
     // A cancelled field pass falls back to its raw value. Its ended session
     // must not turn that fallback into another paid observation request.
