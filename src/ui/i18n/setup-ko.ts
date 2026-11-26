@@ -406,4 +406,11 @@ export const setupKo: Record<string, string> = {
   'This import added {imported} of {sent} memories to your CMEM account · Ready to search.': '이번 가져오기로 메모리 {sent}개 중 {imported}개를 CMEM 계정에 추가했습니다 · 이제 검색할 수 있습니다.',
   'The other 1 was already there, or cmem.ai couldn’t read it.': '나머지 1개는 이미 계정에 있었거나 cmem.ai가 읽을 수 없었습니다.',
   'The other {count} were already there, or cmem.ai couldn’t read them.': '나머지 {count}개는 이미 계정에 있었거나 cmem.ai가 읽을 수 없었습니다.',
+  // Checkout's device code, shown while the checkout waits
+  'Your device code': '내 기기 코드',
+  'Copy code': '코드 복사',
+  'cmem.ai asks for this code after you start your free trial.': '무료 체험을 시작하면 cmem.ai에서 이 코드를 묻습니다.',
+  'cmem.ai asks for this code after checkout.': '결제가 끝나면 cmem.ai에서 이 코드를 묻습니다.',
+  'Code copied.': '코드를 복사했습니다.',
+  'Select and copy the code above.': '위 코드를 선택해 복사하세요.',
 };

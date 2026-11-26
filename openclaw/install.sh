@@ -866,8 +866,9 @@ configure_memory_slot() {
     if (!config.plugins.slots) config.plugins.slots = {};
     if (!config.plugins.entries) config.plugins.entries = {};
 
-    // Set memory slot to claude-mem
-    config.plugins.slots.memory = 'claude-mem';
+    // Remember who owned the memory slot before install takes it; uninstall
+    // restores it instead of leaving the slot permanently reassigned.
+    const previousMemorySlot = config.plugins.slots.memory;
 
     // Ensure claude-mem entry exists and is enabled
     if (!config.plugins.entries['claude-mem']) {
@@ -888,6 +889,21 @@ configure_memory_slot() {
         }
       }
     }
+
+    // Written only when another plugin really owned the slot (fresh installs
+    // keep the plain config shape) and never overwritten (a reinstall cannot
+    // erase the original owner). previousMemorySlot is declared in
+    // openclaw.plugin.json configSchema, which rejects undeclared keys.
+    const displacedAnotherOwner = typeof previousMemorySlot === 'string'
+      && previousMemorySlot.length > 0 && previousMemorySlot !== 'claude-mem';
+    if (displacedAnotherOwner) {
+      const entryConfig = config.plugins.entries['claude-mem'].config
+        || (config.plugins.entries['claude-mem'].config = {});
+      if (entryConfig.previousMemorySlot === undefined) {
+        entryConfig.previousMemorySlot = previousMemorySlot;
+      }
+    }
+    config.plugins.slots.memory = 'claude-mem';
 
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
   "
