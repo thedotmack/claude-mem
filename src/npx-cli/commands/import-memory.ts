@@ -8,6 +8,7 @@ import { CONTENT_BODY_MAX_BYTES, ORIGIN_DEVICE_ID_MAX_BYTES } from '../../shared
 import { isMemorySaveRefusalReason, type MemorySaveRefusalReason } from '../../shared/memory-save-refusal.js';
 import { LOOKUP_ONLY_ALTERNATIVE_FINGERPRINT_KEY } from '../../shared/memory-save-replay.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { isAbsoluteFilesystemPath, normalizeExplicitProject } from '../../utils/project-name.js';
 
 export const IMPORT_PROVIDERS = ['mem0', 'supermemory'] as const;
 export type ImportProvider = typeof IMPORT_PROVIDERS[number];
@@ -84,9 +85,14 @@ const RESUME = 'Run the same command again to resume; confirmed records will not
  * behind it changes, so none of these tells the user to run the same command again.
  */
 const SAVE_REFUSALS: Record<MemorySaveRefusalReason, string> = {
-  project_excluded: 'The worker refused to save from this folder because it matches CLAUDE_MEM_EXCLUDED_PROJECTS. '
-    + 'Running the same command here will be refused again. Run it from a folder that is not excluded '
-    + '(the memories still go to --project), or remove this folder from that setting.',
+  // One reason, two causes (src/shared/memory-save-refusal.ts): the folder the command
+  // ran from, or an absolute --project path. The worker does not say which, so the words
+  // cover both; advice for only one would send the other case into a repeat.
+  project_excluded: 'The worker refused to save because the folder this command ran from, or the --project path, '
+    + 'matches CLAUDE_MEM_EXCLUDED_PROJECTS. Running the same command here will be refused again. '
+    + 'If this folder matches, run the command from a folder that is not excluded (the memories still go to --project). '
+    + 'If the --project path matches, name a project that is not excluded. '
+    + 'Or remove the matching entry from that setting.',
 };
 /**
  * An HTTP 413 also comes back on every run: planImport already keeps every save request
@@ -152,13 +158,14 @@ const LONGEST_SYNC_DECIMAL = '18446744073709551615';
  */
 export function observationSyncBodyBound(note: ImportNote): Row {
   const platform = normalizePlatformSource(typeof note.metadata.platformSource === 'string' ? note.metadata.platformSource : undefined);
+  const storedProject = isAbsoluteFilesystemPath(note.project) ? normalizeExplicitProject(note.project) : note.project;
   return {
     body_schema_version: 1, deleted: false, deleted_at: null, entity_rev: LONGEST_SYNC_DECIMAL,
     id: `observation:${'0'.repeat(43)}`, kind: 'observation', mutation: null,
     origin_device_id: '\u0000'.repeat(ORIGIN_DEVICE_ID_MAX_BYTES), origin_local_id: LONGEST_SYNC_DECIMAL,
     payload: {
-      memory_session_id: `manual-${note.project}-${platform}-${'0'.repeat(36)}`,
-      project: note.project, text: null, type: 'discovery', title: note.title, subtitle: 'Manual memory',
+      memory_session_id: `manual-${storedProject}-${platform}-${'0'.repeat(36)}`,
+      project: storedProject, text: null, type: 'discovery', title: note.title, subtitle: 'Manual memory',
       facts: [], narrative: note.text, concepts: [], files_read: [], files_modified: [],
       prompt_number: LONGEST_SYNC_DECIMAL, discovery_tokens: LONGEST_SYNC_DECIMAL,
       content_hash: `details-${'0'.repeat(64)}`, generated_by_model: null, agent_type: null, agent_id: null,
@@ -335,7 +342,8 @@ export async function applyImport(plan: ImportPlan, save: (note: ImportNote) => 
       throw stopped(message === 'HTTP 413' ? SAVE_REQUEST_TOO_LARGE : `${message} ${RESUME}`);
     }
     if (result.success === false && isMemorySaveRefusalReason(result.reason)) throw stopped(SAVE_REFUSALS[result.reason]);
-    if (result.success !== true || !Number.isSafeInteger(result.id) || (result.id as number) <= 0 || result.project !== note.project) {
+    const expectedProject = isAbsoluteFilesystemPath(note.project) ? normalizeExplicitProject(note.project) : note.project;
+    if (result.success !== true || !Number.isSafeInteger(result.id) || (result.id as number) <= 0 || result.project !== expectedProject) {
       throw stopped(`Worker did not confirm the saved memory in the selected project. ${RESUME}`);
     }
     if (result.duplicate === true) existing++; else imported++;
