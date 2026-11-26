@@ -892,7 +892,7 @@ describe('setup page device code', () => {
     stop();
   });
 
-  it('takes the code away when the route answers that none waits, and keeps it when the worker is unreachable', async () => {
+  it('takes the code away only when the route answers that none waits, and keeps it on any other failure', async () => {
     const app = fixture();
     const reads = codeNetwork();
     let latest: any;
@@ -907,9 +907,16 @@ describe('setup page device code', () => {
     await settle();
     await settle();
     expect(latest.checkout.userCode).toBe('K7QM-4XPT');
+    // Any other refusal (a 500 or 403) keeps the shown code too; only a 404 says none waits.
     Stream.latest.send('setup-state', waitingFrame);
     await until(() => reads.length === 3);
-    reads[2].resolve(Response.json({ error: 'No device code is waiting.' }, { status: 404 }));
+    reads[2].resolve(Response.json({ error: 'Something broke.' }, { status: 500 }));
+    await settle();
+    await settle();
+    expect(latest.checkout.userCode).toBe('K7QM-4XPT');
+    Stream.latest.send('setup-state', waitingFrame);
+    await until(() => reads.length === 4);
+    reads[3].resolve(Response.json({ error: 'No device code is waiting.' }, { status: 404 }));
     await until(() => latest.checkout?.userCode === null);
     expect(latest.checkout).toMatchObject({ state: 'waiting', userCode: null, expiresAt: null });
     stop();

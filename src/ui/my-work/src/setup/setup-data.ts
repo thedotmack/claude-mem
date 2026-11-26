@@ -84,10 +84,13 @@ export type SetupFailureKind = 'unreachable' | 'refused' | 'page'
 /** A failed request whose kind is known. `message` keeps the browser's or the worker's own words, for the Details fold. */
 export class SetupRequestError extends Error {
   kind: SetupFailureKind
-  constructor(kind: SetupFailureKind, message: string) {
+  /** The worker's HTTP status when it answered and refused. */
+  status?: number
+  constructor(kind: SetupFailureKind, message: string, status?: number) {
     super(message)
     this.name = 'SetupRequestError'
     this.kind = kind
+    this.status = status
   }
 }
 
@@ -240,7 +243,7 @@ async function workerJson<T>(url: string, init?: RequestInit): Promise<T> {
   try { answer = await response.json() } catch { /* A body that isn't JSON leaves only the status to report. */ }
   if (!response.ok) {
     const reason = (answer as { error?: unknown } | null)?.error
-    throw new SetupRequestError('refused', typeof reason === 'string' ? reason : `The worker answered ${response.status} for ${url}.`)
+    throw new SetupRequestError('refused', typeof reason === 'string' ? reason : `The worker answered ${response.status} for ${url}.`, response.status)
   }
   return answer as T
 }
@@ -315,12 +318,12 @@ export const localSetupSource: SetupSource = {
         publish({ checkout: { ...data.checkout, userCode, expiresAt } })
       } catch (error) {
         if (closed || revision !== deviceCodeRevision || data.checkout?.state !== 'waiting') return
-        // A refusal (404) means no code waits any more, so the shown one goes.
-        if (error instanceof SetupRequestError && error.kind === 'refused') {
+        // Only a 404 means no code waits any more, so the shown one goes. Any other failure keeps it.
+        if (error instanceof SetupRequestError && error.kind === 'refused' && error.status === 404) {
           publish({ checkout: { ...data.checkout, userCode: null, expiresAt: null } })
           return
         }
-        // Unreachable keeps the shown code. Frames only come on state changes, so a page still without a code tries a
+        // Frames only come on state changes, so a page still without a code tries a
         // few more times while the checkout waits; a newer read or a new frame cancels these tries.
         if (data.checkout.userCode || attempt >= DEVICE_CODE_READ_TRIES) return
         setTimeout(() => { void readDeviceCode(attempt + 1, revision) }, DEVICE_CODE_RETRY_MS)
