@@ -107,6 +107,8 @@ export class ChatDbSource implements MessageSource {
   private columns = new Set<string>();
   private lastRowId = 0;
   private lastChangeMs = 0;
+  /** The last read filled a page, so more rows may be waiting. */
+  private morePending = false;
   /** Edits already passed on at `lastChangeMs`, so equal stamps are not repeated. Bounded. */
   private seenChanges = new Set<string>();
   private stopped = false;
@@ -143,8 +145,9 @@ export class ChatDbSource implements MessageSource {
         }
         for (const event of batch) yield event;
         if (this.stopped) break;
-        // A full page means more rows are waiting: read on straight away.
-        if (batch.length < PAGE) await this.nextChange();
+        // A full page of rows (counted before unpicked chats are skipped) means
+        // more are waiting: read on straight away.
+        if (!this.morePending) await this.nextChange();
       }
     } finally {
       this.closeWatcher();
@@ -157,6 +160,7 @@ export class ChatDbSource implements MessageSource {
     if (!db) throw new Error('ChatDbSource.start() was not called');
     const events: ObserverEvent[] = [];
     const rows = db.all<MessageRow>(`${this.selectSql()} WHERE m.ROWID > ? ORDER BY m.ROWID LIMIT ${PAGE}`, this.lastRowId);
+    this.morePending = rows.length === PAGE;
     for (const row of rows) {
       this.lastRowId = Math.max(this.lastRowId, row.rowid);
       if (!this.options.isObserved(row.chat_guid)) continue;
@@ -172,7 +176,7 @@ export class ChatDbSource implements MessageSource {
     const changed = this.changedMsSql();
     const rows = db.all<ChangeRow>(
       `SELECT * FROM (${this.selectSql(`, ${changed} AS changed_ms, ${this.col('date_retracted', appleDateMs('m.date_retracted'), '0')} AS retracted_ms`)}`
-      + ` WHERE m.ROWID > ? AND m.ROWID <= ?) WHERE changed_ms >= ? ORDER BY changed_ms LIMIT ${PAGE}`,
+      + ` WHERE m.ROWID > ? AND m.ROWID <= ?) WHERE changed_ms > 0 AND changed_ms >= ? ORDER BY changed_ms LIMIT ${PAGE}`,
       Math.max(0, this.lastRowId - EDIT_LOOKBACK_ROWS), this.lastRowId, this.lastChangeMs,
     );
     const events: ObserverEvent[] = [];

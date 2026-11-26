@@ -165,21 +165,26 @@ async function pick(args: string[]): Promise<number> {
     allowPositionals: true,
     strict: true,
   });
-  const { MacSelection, writeSelection, MAX_FOCUS_CHARS } = await import('../../integrations/imessage-observer/mac-selection.js');
+  const { MacSelection, writeSelection, withSelectionLock, MAX_FOCUS_CHARS } = await import('../../integrations/imessage-observer/mac-selection.js');
   const path = macSelectionPath();
-  const file = new MacSelection(path).file;
   const guid = positionals[0];
-  if (values['default-focus'] !== undefined) file.defaultFocus = values['default-focus'].slice(0, MAX_FOCUS_CHARS);
-  if (guid) {
-    const current = file.chats[guid] ?? { observe: false };
-    const observe = values.off ? false : values.on ? true : current.observe;
-    const focus = values.focus !== undefined ? values.focus.slice(0, MAX_FOCUS_CHARS) : current.focus;
-    file.chats[guid] = { observe, ...(focus ? { focus } : {}) };
-  } else if (values['default-focus'] === undefined) {
+  if (!guid && values['default-focus'] === undefined) {
     console.error(USAGE);
     return 1;
   }
-  writeSelection(path, file);
+  // Read, change and write under one lock, so overlapping saves keep each other's choices.
+  const file = await withSelectionLock(path, () => {
+    const current = new MacSelection(path).file;
+    if (values['default-focus'] !== undefined) current.defaultFocus = values['default-focus'].slice(0, MAX_FOCUS_CHARS);
+    if (guid) {
+      const choice = current.chats[guid] ?? { observe: false };
+      const observe = values.off ? false : values.on ? true : choice.observe;
+      const focus = values.focus !== undefined ? values.focus.slice(0, MAX_FOCUS_CHARS) : choice.focus;
+      current.chats[guid] = { observe, ...(focus ? { focus } : {}) };
+    }
+    writeSelection(path, current);
+    return current;
+  });
   if (values.json) emitter(true).event({ type: 'picked', guid: guid ?? null, choice: guid ? file.chats[guid] : null });
   else if (guid) console.log(`${file.chats[guid]!.observe ? 'Observing' : 'Not observing'} ${guid}${file.chats[guid]!.focus ? ` (watching for: ${file.chats[guid]!.focus})` : ''}`);
   return 0;

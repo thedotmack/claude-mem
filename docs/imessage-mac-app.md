@@ -24,9 +24,11 @@ If you don't have it yet, in Terminal:
 npx claude-mem install
 ```
 
-The app runs the `claude-mem` command and finds it on your normal Terminal
-PATH (Homebrew, nvm, Bun and the usual folders). If it can't, paste the full
-path to `claude-mem` into the setup screen.
+The app runs Claude-Mem's command line through `npx claude-mem@latest`, so it
+needs Node, found on your normal Terminal PATH (Homebrew, nvm and the usual
+folders). The `claude-mem` launcher that install puts in `~/.local/bin` only
+runs hooks, so the app doesn't use it. If the app can't find Node, paste the
+full path to a `claude-mem` command into the setup screen.
 
 ### 2. Get the app
 

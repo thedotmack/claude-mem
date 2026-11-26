@@ -51,10 +51,19 @@ public enum CommandLocator {
         return folders.joined(separator: ":")
     }
 
-    /// Picks how to run claude-mem: a path the person set, else claude-mem on the PATH, else npx.
+    /// The npm package that carries the `imessage mac` commands. `@latest`, so
+    /// an older copy left in npx's cache is never used.
+    public static let package = "claude-mem@latest"
+
+    /// Picks how to run claude-mem: a path the person set, else npx, else a
+    /// claude-mem on the PATH that is not the hook launcher.
+    ///
+    /// The launcher Claude-Mem installs in ~/.local/bin only forwards hook and
+    /// worker commands, so it can't run `imessage mac`; npx runs the full CLI.
     public static func resolve(
         override: String?,
         searchPath: String,
+        home: String = FileManager.default.homeDirectoryForCurrentUser.path,
         isExecutable: (String) -> Bool
     ) -> CommandLaunch? {
         if let override, !override.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -63,12 +72,13 @@ public enum CommandLocator {
         }
         let folders = searchPath.split(separator: ":").map(String.init)
         for folder in folders {
+            let npx = "\(folder)/npx"
+            if isExecutable(npx) { return CommandLaunch(executable: npx, prefix: ["--yes", package], path: searchPath) }
+        }
+        let launcherFolder = "\(home)/.local/bin"
+        for folder in folders where folder != launcherFolder {
             let candidate = "\(folder)/claude-mem"
             if isExecutable(candidate) { return CommandLaunch(executable: candidate, prefix: [], path: searchPath) }
-        }
-        for folder in folders {
-            let npx = "\(folder)/npx"
-            if isExecutable(npx) { return CommandLaunch(executable: npx, prefix: ["--yes", "claude-mem"], path: searchPath) }
         }
         return nil
     }

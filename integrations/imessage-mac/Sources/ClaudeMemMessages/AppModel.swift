@@ -60,6 +60,8 @@ final class AppModel: ObservableObject {
     private var running: RunningCommand?
     private var userStopped = false
     private var focusSaves: [String: Task<Void, Never>] = [:]
+    private var lastSave: Task<Void, Never>?
+    private var restartAfterStop = false
 
     var needsSetup: Bool { access != .granted || launch == nil }
 
@@ -191,19 +193,30 @@ final class AppModel: ObservableObject {
         focusSaves["__default__"]?.cancel()
         focusSaves["__default__"] = Task {
             try? await Task.sleep(for: .milliseconds(700))
-            guard !Task.isCancelled, let runner else { return }
-            _ = try? await runner.run(["imessage", "mac", "pick", "--default-focus", text, "--json"])
+            guard !Task.isCancelled else { return }
+            await self.save(["imessage", "mac", "pick", "--default-focus", text, "--json"])
         }
     }
 
     private func pick(_ guid: String, _ flags: [String]) async {
-        guard let runner else { return }
-        do {
-            let result = try await runner.run(["imessage", "mac", "pick", guid] + flags + ["--json"])
-            if result.status != 0 { append("warn", result.errorText.isEmpty ? "Could not save the choice." : result.errorText) }
-        } catch {
-            append("warn", "Could not save the choice: \(error.localizedDescription)")
+        await save(["imessage", "mac", "pick", guid] + flags + ["--json"])
+    }
+
+    /// Saves run one after another, so a tick and a focus edit never race.
+    private func save(_ arguments: [String]) async {
+        let previous = lastSave
+        let next = Task { [weak self] in
+            await previous?.value
+            guard let self, let runner = self.runner else { return }
+            do {
+                let result = try await runner.run(arguments)
+                if result.status != 0 { self.append("warn", result.errorText.isEmpty ? "Could not save the choice." : result.errorText) }
+            } catch {
+                self.append("warn", "Could not save the choice: \(error.localizedDescription)")
+            }
         }
+        lastSave = next
+        await next.value
     }
 
     func importContacts() async {
@@ -219,6 +232,11 @@ final class AppModel: ObservableObject {
             append(result.status == 0 ? "info" : "warn",
                    result.status == 0 ? "Using \(book.count) names from Contacts." : result.errorText)
             await loadChats()
+            // The listener reads names when it starts, so restart it to use the new ones.
+            if result.status == 0, running != nil {
+                restartAfterStop = true
+                running?.stop()
+            }
         } catch {
             append("warn", "Could not read Contacts: \(error.localizedDescription)")
         }
@@ -272,6 +290,12 @@ final class AppModel: ObservableObject {
 
     private func listenerExited(_ status: Int32) {
         running = nil
+        if restartAfterStop {
+            restartAfterStop = false
+            listener = .stopped
+            startListening()
+            return
+        }
         if case .failed = listener { return }
         listener = .stopped
         if status != 0 && !userStopped {

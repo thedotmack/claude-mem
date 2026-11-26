@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attributedBodyFor, textFromAttributedBody } from '../../src/integrations/imessage-observer/attributed-body';
 import { checkChatDbAccess } from '../../src/integrations/imessage-observer/chatdb';
 import { ChatDbSource } from '../../src/integrations/imessage-observer/chatdb-source';
-import { MacSelection, parseSelection, writeSelection } from '../../src/integrations/imessage-observer/mac-selection';
+import { MacSelection, parseSelection, withSelectionLock, writeSelection } from '../../src/integrations/imessage-observer/mac-selection';
 import { GroupChatObserver } from '../../src/integrations/imessage-observer/observer';
 import { conversationPrompt, personLabel } from '../../src/integrations/imessage-observer/transcript';
 import type { ObserverEvent } from '../../src/integrations/imessage-observer/types';
@@ -138,6 +138,33 @@ describe('ChatDbSource', () => {
     expect(src.poll()).toEqual([]);
   });
 
+  it('still finds a new edit when hundreds of recent messages were never edited', () => {
+    const src = source();
+    src.start();
+    for (let i = 0; i < 600; i += 1) fake.message({ chat: GROUP, guid: `u${i}`, at: T0 + i, text: `message ${i}`, from: ANA });
+    let read = 0;
+    for (let batch = src.poll(); batch.length > 0; batch = src.poll()) read += batch.length;
+    expect(read).toBe(600);
+    fake.edit('u10', 'message 10, edited', T0 + 10 * MIN);
+    expect(src.poll()).toEqual([
+      { type: 'edited', chatGuid: GROUP, messageGuid: 'u10', text: 'message 10, edited', occurredAt: new Date(T0 + 10 * MIN) },
+    ]);
+  });
+
+  it('reads on at once after a full page of unpicked messages, without waiting for the timer', async () => {
+    const src = new ChatDbSource({ dbPath: fake.path, label, isObserved: guid => guid === GROUP, watch: false, pollMs: 60_000 });
+    src.start();
+    for (let i = 0; i < 500; i += 1) fake.message({ chat: OTHER_GROUP, guid: `o${i}`, at: T0 + i, text: 'not picked', from: CAL });
+    fake.message({ chat: GROUP, guid: 'g-after', at: T0 + MIN, text: 'picked', from: ANA });
+    const started = Date.now();
+    for await (const event of src.events()) {
+      expect((event as { messageGuid: string }).messageGuid).toBe('g-after');
+      break;
+    }
+    await src.stop();
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
   it('lists chats newest first, names unnamed chats from members, never shows a whole phone number', () => {
     fake.message({ chat: DIRECT, guid: 'd1', at: T0 + 5 * MIN, text: 'hey', from: CAL });
     fake.message({ chat: GROUP, guid: 'g1', at: T0, text: 'hi', from: ANA });
@@ -190,6 +217,24 @@ describe('MacSelection', () => {
     expect(selection.isObserved(GROUP)).toBe(false);
     writeFileSync(path, '{ broken');
     expect(selection.isObserved(GROUP)).toBe(false);
+  });
+
+  it('saves one at a time under a lock, and clears a lock left by a crash', async () => {
+    const path = join(dir, 'mac.json');
+    writeFileSync(`${path}.lock`, '');
+    let saved = false;
+    const waiting = withSelectionLock(path, () => { saved = true; });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(saved).toBe(false);
+    rmSync(`${path}.lock`);
+    await waiting;
+    expect(saved).toBe(true);
+    expect(existsSync(`${path}.lock`)).toBe(false);
+
+    writeFileSync(`${path}.lock`, '');
+    const old = (Date.now() - 60_000) / 1000;
+    utimesSync(`${path}.lock`, old, old);
+    expect(await withSelectionLock(path, () => 'done')).toBe('done');
   });
 
   it('cleans what it is given', () => {
@@ -258,6 +303,42 @@ describe('Mac observer end to end', () => {
     expect(observer.droppedWindows).toBe(1);
     // Nothing sent to Claude-Mem carries a chat id with a phone number in it.
     expect(JSON.stringify(posts)).not.toContain('5551230003');
+  });
+
+  it('drops a waiting window when its chat is unticked before the worker takes it', async () => {
+    const picked = new Set([GROUP, DIRECT]);
+    const src = new ChatDbSource({ dbPath: fake.path, label, isObserved: guid => picked.has(guid), watch: false });
+    src.start();
+    fake.message({ chat: GROUP, guid: 'g1', at: T0, text: 'Cabin is $1,200', from: ANA });
+    fake.message({ chat: DIRECT, guid: 'd1', at: T0 + MIN, text: 'waiting while unticked', from: CAL });
+    const events = src.poll();
+    const posts: Array<{ route: string; body: Record<string, unknown> }> = [];
+    let first = true;
+    const observer = new GroupChatObserver({
+      source: { name: 'test', async *events() { yield* events; }, chat: (guid: string) => src.chat(guid), stop: async () => {} },
+      post: async (route, body) => {
+        if (first) {
+          // While the first hand-over is with the worker, the person unticks the other chat.
+          first = false;
+          const sending = JSON.stringify(body).includes('tahoe') ? GROUP : DIRECT;
+          picked.delete(sending === GROUP ? DIRECT : GROUP);
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        posts.push({ route, body: body as Record<string, unknown> });
+        return { status: 'ok' };
+      },
+      log: silent,
+      statePath: join(dir, 'chats.json'),
+      contacts: { [ANA]: 'Ana' },
+      meLabel: 'Me',
+      via: 'mac',
+      isObserved: guid => picked.has(guid),
+      clock: 'event',
+    });
+    await observer.run();
+    const sent = JSON.stringify(posts);
+    expect(sent.includes('Cabin is $1,200') !== sent.includes('waiting while unticked')).toBe(true);
+    expect(observer.droppedWindows).toBe(1);
   });
 
   it('keeps the Photon line prompt unchanged and names a direct chat as a conversation', () => {

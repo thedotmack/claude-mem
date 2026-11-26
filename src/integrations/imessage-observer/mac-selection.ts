@@ -17,8 +17,9 @@
  * nothing from it is sent. The file holds chat ids and the person's own
  * notes, never messages.
  */
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { randomBytes } from 'node:crypto';
 
 /** What the person wrote for "observe for"; kept short so it cannot crowd out the chat. */
 export const MAX_FOCUS_CHARS = 500;
@@ -55,9 +56,44 @@ export function parseSelection(raw: unknown): MacSelectionFile {
 
 export function writeSelection(path: string, selection: MacSelectionFile): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temp = `${path}.tmp`;
+  // One temporary file per writer, so two saves at once cannot collide on the rename.
+  const temp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
   writeFileSync(temp, JSON.stringify(selection, null, 2) + '\n', { mode: 0o600 });
   renameSync(temp, path);
+}
+
+const LOCK_WAIT_MS = 5_000;
+const LOCK_STALE_MS = 10_000;
+
+/**
+ * Runs a read-change-write of the selection file while holding `<path>.lock`,
+ * so two saves started at once (a tick and a focus edit) cannot undo each
+ * other. A lock older than 10 seconds is left over from a crash and removed.
+ */
+export async function withSelectionLock<T>(path: string, change: () => T): Promise<T> {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const lockPath = `${path}.lock`;
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      closeSync(openSync(lockPath, 'wx', 0o600));
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) rmSync(lockPath, { force: true });
+      } catch {
+        // Removed by its owner meanwhile: try again.
+      }
+      if (Date.now() > deadline) throw new Error(`Another save of ${path} is still running.`);
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+  }
+  try {
+    return change();
+  } finally {
+    rmSync(lockPath, { force: true });
+  }
 }
 
 /** The selection as it is on disk now, re-read when the file changes. */

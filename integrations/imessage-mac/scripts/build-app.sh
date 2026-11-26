@@ -8,8 +8,16 @@ cd "$(dirname "$0")/.."
 VERSION="${1:-$(node -p "require('../../package.json').version" 2>/dev/null || echo 0.0.0)}"
 APP="build/Claude-Mem Messages.app"
 
-swift build -c release --arch arm64 --arch x86_64 2>/dev/null || swift build -c release
-BIN="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path 2>/dev/null || swift build -c release --show-bin-path)"
+# A universal (Apple silicon + Intel) build needs Xcode; the plain toolchain
+# builds for this Mac only. Whichever build works, its own output is packaged.
+BUILD_ARGS=(-c release --arch arm64 --arch x86_64)
+if ! swift build "${BUILD_ARGS[@]}"; then
+  echo "Universal build failed; building for this Mac only."
+  BUILD_ARGS=(-c release)
+  swift build "${BUILD_ARGS[@]}"
+fi
+BIN="$(swift build "${BUILD_ARGS[@]}" --show-bin-path)"
+test -x "$BIN/ClaudeMemMessages" || { echo "No ClaudeMemMessages binary in $BIN" >&2; exit 1; }
 
 rm -rf build && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN/ClaudeMemMessages" "$APP/Contents/MacOS/ClaudeMemMessages"

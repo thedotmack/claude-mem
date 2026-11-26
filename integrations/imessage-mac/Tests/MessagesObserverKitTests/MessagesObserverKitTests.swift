@@ -51,13 +51,17 @@ final class CommandLocatorTests: XCTestCase {
         XCTAssertTrue(parts.contains("/Users/a/.bun/bin"))
     }
 
-    func testPrefersClaudeMemThenNpx() {
-        let path = "/a:/b"
-        XCTAssertEqual(CommandLocator.resolve(override: nil, searchPath: path) { $0 == "/b/claude-mem" || $0 == "/a/npx" }?.executable, "/b/claude-mem")
-        let npx = CommandLocator.resolve(override: nil, searchPath: path) { $0 == "/a/npx" }
-        XCTAssertEqual(npx?.executable, "/a/npx")
-        XCTAssertEqual(npx?.prefix, ["--yes", "claude-mem"])
-        XCTAssertNil(CommandLocator.resolve(override: nil, searchPath: path) { _ in false })
+    func testPrefersNpxAndNeverTheHookLauncher() {
+        let path = "/Users/a/.local/bin:/a:/b"
+        let npx = CommandLocator.resolve(override: nil, searchPath: path, home: "/Users/a") { $0 == "/b/npx" || $0 == "/a/claude-mem" }
+        XCTAssertEqual(npx?.executable, "/b/npx")
+        XCTAssertEqual(npx?.prefix, ["--yes", "claude-mem@latest"])
+        // Without npx, a claude-mem elsewhere on the PATH is used, but not the launcher in ~/.local/bin.
+        XCTAssertEqual(CommandLocator.resolve(override: nil, searchPath: path, home: "/Users/a") {
+            $0 == "/Users/a/.local/bin/claude-mem" || $0 == "/a/claude-mem"
+        }?.executable, "/a/claude-mem")
+        XCTAssertNil(CommandLocator.resolve(override: nil, searchPath: path, home: "/Users/a") { $0 == "/Users/a/.local/bin/claude-mem" })
+        XCTAssertNil(CommandLocator.resolve(override: nil, searchPath: path, home: "/Users/a") { _ in false })
         XCTAssertEqual(CommandLocator.resolve(override: "/x/claude-mem", searchPath: path) { $0 == "/x/claude-mem" }?.executable, "/x/claude-mem")
         XCTAssertNil(CommandLocator.resolve(override: "/x/missing", searchPath: path) { _ in false })
     }

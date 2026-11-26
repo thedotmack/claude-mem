@@ -273,6 +273,12 @@ export class GroupChatObserver {
           return;
         }
         if (this.excluded(project, chat)) return;
+        // Checked again here: the chat may have been unticked while this waited.
+        if (action.kind === 'window' && this.options.isObserved && !this.options.isObserved(action.chatGuid)) {
+          this.droppedWindows += 1;
+          this.options.log.info(`Dropped ${action.entries.length} messages from "${chat.displayName}": it is no longer observed.`);
+          return;
+        }
         if (action.kind === 'window' && !this.eventClock && Date.now() - enqueuedAt > STALE_QUEUE_MS) {
           this.droppedWindows += 1;
           this.options.log.warn(`Skipped ${action.entries.length} messages from "${chat.displayName}": they waited too long for the worker.`);
