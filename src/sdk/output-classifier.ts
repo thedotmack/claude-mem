@@ -168,8 +168,10 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
     //   'API Error: 400 {"error":{…,"message":"Your credit balance is too low…"}}'
     /^(?:your )?credit balance is too low\b/.test(text) ||
     /^api error: 400\b.*\bcredit balance is too low\b/.test(text) ||
-    /\bsession limit\b/.test(text) ||
-    /\bout of (?:usage )?credits\b/.test(text) ||
+    // Anchored for the same reason: "The application session limit is
+    // configurable." is a normal reply, and a match pauses capture.
+    /^session limit reached\b/.test(text) ||
+    /^you'?re out of (?:usage )?credits\b/.test(text) ||
     /\/usage-credits\b/.test(text) ||
     /\bclaude\b.*\busage\b.*\blimit\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text) ||
     /\b(reached|exceeded|exhausted)\b.*\bclaude\b.*\busage\b.*\blimit\b/.test(text) ||
