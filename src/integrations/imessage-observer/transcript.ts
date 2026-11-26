@@ -103,17 +103,36 @@ export function participantLabels(chat: ChatInfo, book: PeopleBook): string[] {
   return chat.participants.map(person => personLabel(person.address, book));
 }
 
+/** How the chat reaches Claude-Mem, which changes what the observer is told. */
+export type ChatVia = 'line' | 'mac';
+
+export interface PromptOptions {
+  /** 'line': a Photon line in the group (default). 'mac': read from the owner's own Mac. */
+  via?: ChatVia;
+  /** What the owner asked to watch for in this chat, in their words. */
+  focus?: string;
+}
+
 /**
  * The turn the observer is told it is watching. The worker's observer reads
  * this as the request, so it says plainly that this is a chat, not code.
  */
-export function conversationPrompt(chat: ChatInfo, book: PeopleBook): string {
+export function conversationPrompt(chat: ChatInfo, book: PeopleBook, options: PromptOptions = {}): string {
   const people = participantLabels(chat, book);
   const roster = people.length > 0 ? ` Members: ${people.join(', ')}.` : '';
-  return `Observe the iMessage group chat "${cleanMessageText(chat.displayName)}".${roster}`
-    + ' The account owner added their Claude-Mem note-taking line to this group as a visible member,'
-    + ' so the group\'s plans are kept in the owner\'s own memory.'
-    + ' This is a group conversation between people, not a coding session.'
-    + ' Record what the group decided, planned, asked for, promised, scheduled and shared,'
-    + ' saying who said what and when. Skip small talk that changes nothing.';
+  const kind = chat.isGroup ? 'group chat' : 'conversation';
+  const how = options.via === 'mac'
+    ? ` The account owner chose to keep notes on this ${kind} from the Messages app on their own Mac;`
+      + ` their own messages are labelled "${cleanMessageText(book.meLabel)}".`
+    : ' The account owner added their Claude-Mem note-taking line to this group as a visible member,'
+      + ' so the group\'s plans are kept in the owner\'s own memory.';
+  const focus = options.focus?.trim()
+    ? ` The owner asked to watch this chat for: ${cleanMessageText(options.focus.trim())}. Give that the most attention.`
+    : '';
+  return `Observe the iMessage ${kind} "${cleanMessageText(chat.displayName)}".${roster}`
+    + how
+    + ` This is a ${chat.isGroup ? 'group conversation between people' : 'conversation between people'}, not a coding session.`
+    + ` Record what ${chat.isGroup ? 'the group' : 'they'} decided, planned, asked for, promised, scheduled and shared,`
+    + ' saying who said what and when. Skip small talk that changes nothing.'
+    + focus;
 }

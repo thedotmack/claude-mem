@@ -1,0 +1,34 @@
+name: iMessage Mac app
+
+on:
+  pull_request:
+    paths: ['integrations/imessage-mac/**', '.github/workflows/imessage-mac-app.yml']
+  push:
+    branches: [main]
+    paths: ['integrations/imessage-mac/**', '.github/workflows/imessage-mac-app.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: integrations/imessage-mac
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test
+      - name: Build the app
+        run: scripts/build-app.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Claude-Mem-Messages
+          path: integrations/imessage-mac/build/Claude-Mem-Messages.zip
+          retention-days: 14
