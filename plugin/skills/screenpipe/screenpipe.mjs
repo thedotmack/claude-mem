@@ -31,10 +31,15 @@ function dataFolder(env, platform = process.platform) {
 }
 
 // The local worker's URL, resolved the way claude-mem does: environment first,
-// then ~/.claude-mem/settings.json, then the per-user default port.
+// then ~/.claude-mem/settings.json, then the per-user default port. settings.json is read the way
+// the worker reads it (src/shared/install-port.ts): a leading BOM is dropped, and its keys sit
+// under `env` when that block holds CLAUDE_MEM_* keys, else at the root.
 function readSettings(env) {
   try {
-    return JSON.parse(readFileSync(join(dataFolder(env), 'settings.json'), 'utf8')) || {};
+    const doc = JSON.parse(readFileSync(join(dataFolder(env), 'settings.json'), 'utf8').replace(/^﻿/, '')) || {};
+    const nested = doc.env;
+    return nested && typeof nested === 'object' && !Array.isArray(nested)
+      && Object.keys(nested).some(key => key.startsWith('CLAUDE_MEM_')) ? nested : doc;
   } catch { return {}; /* no settings file: use defaults */ }
 }
 

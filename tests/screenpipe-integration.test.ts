@@ -135,6 +135,16 @@ describe('packaged Screenpipe integration', () => {
       .toBe('http://127.0.0.1:37777');
   });
 
+  it('reads a saved port from an env-nested or BOM-prefixed settings.json, as the worker does', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'screenpipe-settings-shape-'));
+    dirs.push(dir);
+    const windows = { platform: 'win32' as const, uid: null };
+    await writeFile(join(dir, 'settings.json'), JSON.stringify({ theme: 'dark', env: { CLAUDE_MEM_WORKER_PORT: '37777' } }));
+    expect(defaultWorkerUrl({ CLAUDE_MEM_DATA_DIR: dir }, windows)).toBe('http://127.0.0.1:37777');
+    await writeFile(join(dir, 'settings.json'), `﻿${JSON.stringify({ CLAUDE_MEM_WORKER_PORT: '37777' })}`);
+    expect(defaultWorkerUrl({ CLAUDE_MEM_DATA_DIR: dir }, windows)).toBe('http://127.0.0.1:37777');
+  });
+
   it('finds the local worker from settings.json and reads the note from stdin', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'screenpipe-settings-'));
     dirs.push(dir);
