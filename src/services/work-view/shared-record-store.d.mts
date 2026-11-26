@@ -3,6 +3,8 @@ export interface SharedRecord {
   kind: string; key: string; value: unknown; deleted: boolean; revision: string;
   writer: string; hash: string; batchId: string; base: string | null;
   valueHash: string;
+  sourceId?: number | string;
+  valueOmitted?: true;
 }
 export interface SharedRecordState {
   records: Map<string, SharedRecord>;
@@ -17,7 +19,8 @@ export interface SharedWorkRow {
   list_name: string; fields: string | Record<string, unknown>; origin_device_id?: string | null;
   origin_local_id?: string | number | null; id?: string | number;
 }
-export function readSharedRecords(db: Database, options: { deviceId: string; validateValue?: SharedValueValidator; rows?: SharedWorkRow[]; includeHistory?: boolean }): SharedRecordState;
+export function readSharedRecords(db: Database, options: { deviceId: string; validateValue?: SharedValueValidator; rows?: SharedWorkRow[]; includeHistory?: boolean; reviewStack?: 'full' | 'metadata' | 'exclude' }): SharedRecordState;
+export function readSharedRecordValue(db: Database, deviceId: string, head: Pick<SharedRecord, 'kind' | 'key' | 'hash' | 'revision' | 'value' | 'valueOmitted' | 'sourceId'> & Partial<SharedRecord>): unknown;
 export function publishSharedRecords(db: Database, options: {
   deviceId: string; project: string;
   updates: Array<{ kind: string; key: string; value?: unknown; deleted?: boolean; expectedHash?: string | null }>;
@@ -27,7 +30,7 @@ export function publishSharedRecords(db: Database, options: {
   reader?: SharedRecordReader;
 }): { changed: number; rowIds: number[]; batchId: string | null };
 export type SharedRecordReader = () => SharedRecordState;
-export function createSharedRecordReader(db: Database, options: { deviceId: string; validateValue?: SharedValueValidator; includeHistory?: boolean }): SharedRecordReader;
+export function createSharedRecordReader(db: Database, options: { deviceId: string; validateValue?: SharedValueValidator; includeHistory?: boolean; reviewStack?: 'full' | 'metadata' | 'exclude' }): SharedRecordReader;
 /** count:highest id:summed sync_rev of the work_state_entries rows matching the SQL condition `where`. */
 export function workStateRowsRevision(db: Database, options?: { where?: string; syncRev?: boolean }): string;
 /** Validate a batch without a device-local SQLite reader. */

@@ -40,6 +40,8 @@ const bytes = value => Buffer.byteLength(value, 'utf8');
 // Only parseSharedRow can attach this receipt after binding it to a local DB
 // row. A field in a remote record can never opt into redaction verification.
 const verifiedRedactionReference = Symbol('verified-redaction-reference');
+const verifiedReviewCard = Symbol('verified-review-card');
+export const hasVerifiedReviewCardDisclosure = (value, key) => value?.[verifiedReviewCard] === key;
 const exact = (value, keys) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)
     || Object.keys(value).length !== keys.length || keys.some(key => !Object.hasOwn(value, key))) fail('invalid fields');
@@ -123,11 +125,20 @@ export function parseSharedRow(row, localDeviceId, { redactionReceipt = null } =
         || String(row.origin_local_id) !== receipt.origin_local_id
         || String(row.sync_rev) !== receipt.sync_rev
         || sha256Base64Url(canonicalJson(fields)) !== receipt.stored_fields_hash) fail('entry hash mismatch');
-      const ref = JSON.parse(receipt.original_ref_json);
+      const evidence = JSON.parse(receipt.original_ref_json);
+      const validatedCard = evidence?.domain === 'stack-card-v1';
+      if (validatedCard) {
+        exact(evidence, ['domain', 'ref']);
+        if (fields.kind !== 'stack-card' || fields.deleted || !value || typeof value !== 'object' || Array.isArray(value)) fail('invalid card disclosure');
+      }
+      const ref = validatedCard ? evidence.ref : evidence;
       exact(ref, ['kind', 'key', 'revision', 'hash', 'entryHash']);
       hash(ref.hash); hash(ref.entryHash);
       if (ref.kind !== fields.kind || ref.key !== fields.key || ref.revision !== fields.revision || ref.hash !== fields.hash) fail('redaction receipt does not match entry');
       Object.defineProperty(result, verifiedRedactionReference, { value: ref });
+      // Origin rows cannot supply this symbol. Only the bound local receipt
+      // proves that this card's original key and links passed their domain schema.
+      if (validatedCard) Object.defineProperty(value, verifiedReviewCard, { value: fields.key });
     }
     return result;
   }

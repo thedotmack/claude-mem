@@ -12,6 +12,7 @@ import { observationMediaFromMetadata } from '../media/feed.js';
 import { applySharedProjection, decorateSharedView, isSharedProjectionValue, sharedPublishedUrl } from './shared-projection.mjs';
 import { foldPortableSharedRows } from './shared-record-store.mjs';
 import { sharedRecordKey } from './shared-records.mjs';
+import { isReviewStackKind } from '../../shared/review-stack.js';
 import { requestEvidenceRefs } from './request-evidence-refs.mjs';
 import { sharedReviewDescriptor, readSharedReview, sharedSuggestionDescriptor, sharedConflictSuggestions } from './shared-reviews.mjs';
 import { createHumanCopyInput, humanCopyFingerprint, validateHumanCopy } from './human-copy.mjs';
@@ -176,7 +177,7 @@ function sharedCopyFor(request) {
 }
 
 export function renderCloudWorkView({ now, revision, documents = [], sessions = [], sharedHeads = [], diagnostics = {} }) {
-  const shared = sharedState(sharedHeads, diagnostics, String(revision));
+  const shared = sharedState(sharedHeads.filter(head => !isReviewStackKind(head.kind)), diagnostics, String(revision));
   const { records, lookup, evidence, registerSession, unsupported } = cloudInput(documents, sessions, shared);
   shared.diagnostics.unsupported += unsupported;
   const state = reduceWorkState(records.workState, { currentProject: '', localDeviceId: cloudDevice });

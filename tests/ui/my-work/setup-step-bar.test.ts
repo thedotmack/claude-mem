@@ -252,6 +252,47 @@ describe('setup checkout', () => {
     expect(buttons(fresh)).toContain('Open Cloud Sync setup');
   });
 
+  it('shows the device code cmem.ai asks for beside the wait, with a way to copy it, only while checkout waits', () => {
+    const waiting = app.renderCheckout({ state: 'waiting', error: null, userCode: 'K7QM-4XPT' }, true);
+    expect(waiting).toContain('Waiting for this device to connect…');
+    expect(waiting).toContain('Your device code');
+    // The code itself follows its label.
+    expect(waiting.indexOf('Your device code')).toBeGreaterThan(-1);
+    expect(waiting.indexOf('K7QM-4XPT')).toBeGreaterThan(waiting.indexOf('Your device code'));
+    expect(waiting).toContain('cmem.ai asks for this code after you start your free trial.');
+    // The copy button draws every state's words at once (StatefulButton); at rest it reads Copy code.
+    const copy = waiting.match(/<button[^>]*data-save-state="[^"]*"[^>]*>/g) ?? [];
+    expect(copy).toHaveLength(1);
+    expect(buttons(waiting).some(text => text.startsWith('Copy code'))).toBe(true);
+    // The code's copy button is not the screen's way on.
+    expect(navyButtons(waiting)).not.toContain(copy[0]);
+    expect(buttons(waiting)).toContain('Reopen Cloud Sync setup');
+    // The annual plan has no trial: the line says when cmem.ai asks instead.
+    const annual = app.renderCheckout({ state: 'waiting', error: null, userCode: 'K7QM-4XPT' }, true, { cloudSyncOffer: 'cloud_sync_annual' });
+    expect(annual).toContain('K7QM-4XPT');
+    expect(annual).toContain('cmem.ai asks for this code after checkout.');
+    expect(annual).not.toContain('free trial.');
+    // No code yet (an older installer, or a new pairing on its way), or no longer waiting: no code block at all.
+    for (const checkout of [{ state: 'waiting', error: null }, { state: 'waiting', error: null, userCode: null },
+      { state: 'requested', error: null, userCode: 'K7QM-4XPT' }, { state: 'paid', error: null, userCode: 'K7QM-4XPT' },
+      { state: 'failed', error: 'Checkout did not finish.', userCode: 'K7QM-4XPT' }]) {
+      const html = app.renderCheckout(checkout, true);
+      expect(html).not.toContain('Your device code');
+      expect(html).not.toContain('K7QM-4XPT');
+    }
+    // The installer stopped: nothing waits on that pairing, so its code is not offered.
+    const stopped = app.renderCheckout({ state: 'waiting', error: null, userCode: 'K7QM-4XPT' }, true, { installerStopped: true });
+    expect(stopped).not.toContain('Your device code');
+    expect(stopped).not.toContain('K7QM-4XPT');
+    // A code past its expiry no longer connects this device: the wait shows, the dead code does not.
+    const expired = app.renderCheckout({ state: 'waiting', error: null, userCode: 'K7QM-4XPT', expiresAt: new Date(Date.now() - 1_000).toISOString() }, true);
+    expect(expired).toContain('Waiting for this device to connect…');
+    expect(expired).not.toContain('Your device code');
+    expect(expired).not.toContain('K7QM-4XPT');
+    const live = app.renderCheckout({ state: 'waiting', error: null, userCode: 'K7QM-4XPT', expiresAt: new Date(Date.now() + 600_000).toISOString() }, true);
+    expect(live).toContain('K7QM-4XPT');
+  });
+
   it('goes on from a paid checkout without asking for checkout again', () => {
     const paid = app.renderCheckout({ state: 'paid', error: null }, true);
     expect(paid).toContain('Cloud Sync connected.');

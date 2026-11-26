@@ -46,15 +46,54 @@ your own request. The Python owner-goals export uses the same normalization.
 - **Ready to check** means the parent request was explicitly reported complete.
   A finished subtask or a closed agent session does not finish its parent.
 - **Checked** means you pressed **Mark checked** for that version of the result.
-  It records your review locally; it does not certify correctness or change the
-  agent's source status. **Undo** is available on a checked card.
+  It records your review of the request. **Undo** is available on a checked card.
 - **No recent update** means no newer activity has been recorded for six hours.
 
 A new substantive source update invalidates an older check. If the request is
 still reported complete, it returns to **Ready to check**. If it has reopened,
-the recorded work status is shown instead. Review notes live in the private
-`work-view-reviews.db` sidecar in the claude-mem data directory and are not
-uploaded by cloud sync.
+the recorded work status is shown instead. For local-only My Work, Checked
+markers live in the private `work-view-reviews.db` sidecar in the claude-mem
+data directory. With shared Work View enabled, the versioned check can sync
+through your account's work state.
+
+## Review Stack
+
+Choose **Review Stack** in My Work on your local worker, or **Review** in the
+mobile navigation. Cloud Sync users can open the same view in their signed-in
+account. [Open remote Review Stack](https://cmem.ai/work?view=review-stack).
+
+Use **Browse** to flip through every card. Switch to **Work** to mark a card
+**Seen**, **Save** it, leave a **Follow up**, or skip it for later. Hold **Seen**
+for three seconds to mark a whole focus area. **History** lets you revisit cards
+and undo a review.
+
+Choose **Import** to bring in an existing `cards.json` and any images it names
+with a relative `imageFile`. An agent can send the same card list to
+`import_review_cards` in batches of 1–12. Give each original or variant a stable
+`key`, a `focus`, a 3–5 word `title` and 10–15 words each for `what` and
+`context`. Include an original HTTPS `source`, an HTTPS image `preview`, an exact
+`excerpt` or a base64 data URL in `imageData` for a PNG, JPEG or WebP thumbnail
+of up to 160 KiB. This example imports one text card.
+
+```json
+{
+  "cards": [{
+    "key": "mac-download-checklist",
+    "focus": "Release",
+    "title": "Mac download checklist",
+    "what": "This checklist records the steps for verifying a published Mac download.",
+    "context": "A release owner uses these checks before sharing the app with testers.",
+    "excerpt": "Open the release ZIP. Verify its version and checksum."
+  }]
+}
+```
+
+Ask your agent to call `get_review_stack` for the link and current card count.
+With a paired Cloud Sync device and shared Work View enabled, cards, Seen
+decisions, bookmarks and follow-ups sync to your account. To keep new local
+decisions on that computer, use local-only setup or set
+`CLAUDE_MEM_WORK_VIEW_SHARED_STATE=false`. Changes you make in the hosted viewer
+save to the account you signed in with. [Cloud Sync settings](/cloud-sync).
 
 ## Live updates
 
@@ -81,6 +120,10 @@ Records without a proven human request remain under **work records need a linked
 human request**. The live view loads a bounded recent slice; use **Memory &
 settings** for the full saved history. Search and the time filter scope the cards,
 state counts and **Your next move** together. When several projects are loaded, use the project selector to narrow that same view. **Other states** includes blocked, queued, quiet and unknown work; each card retains its recorded state label.
+
+For iMessage group conversations, Claude-Mem Messages can save new notes in a
+project for each chat using Messages on your Mac or an authorized Photon line.
+[Download and set up the Mac observer](https://github.com/thedotmack/claude-mem/blob/main/docs/imessage-mac-app.md).
 
 ## Deliverables
 

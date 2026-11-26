@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { publicationState, requestRelease, unreleasedNotes } from '../../scripts/github-tagged-release.mjs';
+import { publicationState, requestRelease, taggedPublicationState, unreleasedNotes } from '../../scripts/github-tagged-release.mjs';
 
 const tag = 'v16.1.0';
 const version = '16.1.0';
@@ -64,6 +64,18 @@ describe('owner-requested GitHub releases', () => {
     await expect(publicationState(version, sha, async ref => ref === 'latest' ? { version: '16.10.0' } : null)).rejects.toThrow('newer');
   });
 
+  test('publisher retries recognize immutable versions even after latest has advanced', async () => {
+    const calls: string[] = [];
+    const exact = { version, gitHead: sha };
+    const read = async (ref: string) => { calls.push(ref); return exact; };
+    expect(await taggedPublicationState(version, sha, read)).toBe('published');
+    expect(calls).toEqual([version]);
+    await expect(taggedPublicationState(version, previousSha, read)).rejects.toThrow('different source commit');
+    expect(await taggedPublicationState(version, sha, async ref => ref === 'latest' ? { version: '16.0.4' } : null)).toBe('unpublished');
+    await expect(taggedPublicationState(version, sha, async ref => ref === 'latest' ? { version: '17.0.0' } : null)).rejects.toThrow('newer');
+    expect(await taggedPublicationState('17.0.0-beta.1', sha, async () => null)).toBe('unpublished');
+  });
+
   test('creates an annotated tag for the requested main commit and dispatches npm on that tag', async () => {
     const { api, writes } = releaseApi();
     await requestRelease({ tag, sha }, api, async () => 'unpublished');
@@ -95,6 +107,24 @@ describe('owner-requested GitHub releases', () => {
     expect(writes).toHaveLength(0);
     responses.set(`git/tags/${annotationSha}`, { tag, object: { type: 'commit', sha: previousSha } });
     await expect(requestRelease({ tag, sha }, api, async () => 'unpublished')).rejects.toThrow('different release');
+    expect(writes).toHaveLength(0);
+  });
+
+  test('an owner retry repairs a missing Mac download and preserves an already complete release', async () => {
+    const { api, responses, writes } = releaseApi();
+    await requestRelease({ tag, sha }, api, async () => 'unpublished');
+    writes.length = 0;
+    responses.set(`contents/docs/CHANGELOG.md?ref=${sha}`, '# Changelog\n## [16.1.0]\nDated notes.');
+    responses.set(`actions/workflows/npm-publish.yml/runs?branch=${tag}&head_sha=${sha}&per_page=100`, {
+      workflow_runs: [{ event: 'push', head_sha: sha, status: 'completed', conclusion: 'success', html_url: 'https://github.com/actions' }],
+    });
+    await requestRelease({ tag, sha }, api, async () => 'published');
+    expect(writes.map(write => write.path)).toEqual(['actions/workflows/npm-publish.yml/dispatches']);
+    writes.length = 0;
+    responses.set(`releases/tags/${tag}`, { draft: false, prerelease: false, assets: [{
+      name: 'Claude-Mem-Messages.zip', label: `Claude-Mem Messages (${sha})`, state: 'uploaded', digest: `sha256:${'1'.repeat(64)}`,
+    }] });
+    expect(await requestRelease({ tag, sha }, api, async () => 'published')).toContain('already published');
     expect(writes).toHaveLength(0);
   });
 });

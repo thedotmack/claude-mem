@@ -2,7 +2,7 @@
 const RETRIEVAL_TOOLS = new Set([
   'dumb_search', 'claude_mem_search', 'claude_mem_timeline', 'claude_mem_get_observations', 'mem_search', 'search', 'timeline', 'get_observations', 'get_summaries',
   'get_tool_uses', 'session_start_context', 'observation_search', 'observation_context',
-  'memory_search', 'memory_context',
+  'memory_search', 'memory_context', 'get_review_stack', 'import_review_cards',
 ]);
 
 function claudeMemToolName(name: string): string | null {
@@ -21,6 +21,8 @@ export function isRecursiveMemoryTool(toolName: string): boolean {
   if (toolName.startsWith('memory_')) return true;
   if (toolName === 'claude_mem_search' || toolName === 'claude_mem_timeline' || toolName === 'claude_mem_get_observations') return true;
   if (toolName === 'dumb_search' || toolName === 'mem_search' || toolName === 'get_summaries') return true;
+  // These return or store the owner's review data directly; neither their source images nor notes need another observation.
+  if (toolName === 'get_review_stack' || toolName === 'import_review_cards') return true;
   const tool = claudeMemToolName(toolName);
   return tool !== null && RETRIEVAL_TOOLS.has(tool);
 }

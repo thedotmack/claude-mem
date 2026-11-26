@@ -204,6 +204,7 @@ import { HistoryImport } from './setup/history-import.js';
 import { cmemProOrigin } from '../shared/cmem-gateway.js';
 import { Database as BunDatabase } from 'bun:sqlite';
 import { WorkViewRoutes } from './worker/http/routes/WorkViewRoutes.js';
+import { ReviewStackRoutes } from './worker/http/routes/ReviewStackRoutes.js';
 import { ConversationContinuationRunner } from './work-view/conversation-continuation-runner.js';
 import { detectUsableAgent } from './agent-runner/detect.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
@@ -1240,6 +1241,13 @@ export class WorkerService implements WorkerRef {
         conversationContinuationRunner: this.conversationContinuationRunner,
       });
       this.server.registerRoutes(this.workViewRoutes);
+      this.server.registerRoutes(new ReviewStackRoutes(
+        this.dbManager.getConnection(), this.dbManager.getSessionStore().getLocalSyncDeviceId(),
+        () => {
+          this.workViewRoutes?.publishReviewStackChanged();
+          this.dbManager.getCloudSync()?.notify();
+        },
+      ));
       this.initPhaseTracker.setInitPhase('db_ready');
 
       // Write hooks never wait on the worker: they spool one file per event.

@@ -60,6 +60,12 @@ scripts/build-app.sh
 open build
 ```
 
+For maintainers publishing a version tag, the release workflow attaches the Mac ZIP
+and verifies its public download before publishing to npm. If the tag has no GitHub
+Release, the workflow creates one using the tagged changelog's **Unreleased** section.
+You can keep or edit those notes on GitHub. Retries preserve the existing release
+title, notes, and attached ZIP.
+
 ## How messages become memory
 
 The same as the [group chat observer](imessage-group-observer.md#how-messages-become-memory):

@@ -45,6 +45,7 @@ class FakeStream {
   handlers = new Map<string, (event: { data: string }) => void>()
   addEventListener(type: string, listener: (event: { data: string }) => void) { this.handlers.set(type, listener) }
   emit(type: string, value: unknown) { this.handlers.get(type)?.({ data: JSON.stringify(value) }) }
+  emitRaw(type: string, raw: string) { this.handlers.get(type)?.({ data: raw }) }
   close() { this.closed = true; this.readyState = 2 }
 }
 /** A page that can be unloaded: it fires 'pagehide' to its listeners, as `window` does on a reload or a closed tab. */
@@ -67,6 +68,34 @@ function harness(fetcher: typeof fetch, bootstrapTimeoutMs = 100, page: Pick<Loc
 }
 
 describe('compact local source', () => {
+  it('delivers review hints from the current local or owner-pinned stream and recovers missed changes on reconnect', () => {
+    for (const sharedOwner of [undefined, 'alice']) {
+      const { local, streams, urls } = harness(async () => json(overview()), 100, { sharedOwner })
+      let notices = 0
+      const stopReview = local.subscribeToReviewStackChanges!(() => { notices++ })
+      const stop = local.subscribeToLiveUpdates(() => {}, () => {})
+      const mark = sharedOwner ? 'work-view-changed' : 'review-stack-changed'
+      try {
+        assert.equal(streams.length, 1)
+        if (sharedOwner) assert.ok(urls[0].includes('session=alice'))
+        streams[0].onopen?.()
+        streams[0].emit(sharedOwner ? 'review-stack-changed' : 'work-view-changed', {})
+        assert.equal(notices, 0)
+        streams[0].emit(mark, {})
+        streams[0].onopen?.()
+        assert.equal(notices, 2)
+        stopReview()
+        streams[0].emit(mark, {})
+        assert.equal(notices, 2)
+        const stopAgain = local.subscribeToReviewStackChanges!(() => { notices++ })
+        stop()
+        streams[0].emit(mark, {})
+        assert.equal(notices, 2)
+        stopAgain()
+      } finally { stopReview(); stop() }
+    }
+  })
+
   it('reuses unchanged compact requests while renewing connection health', async () => {
     const { local, streams } = harness(async () => json(overview()))
     const shown: WorkModel[] = []
@@ -1186,4 +1215,41 @@ it('shared streams deliver private work only through fresh owner-checked reads a
     assert.equal(reads, 3)
     assert.equal(shown.length, 2)
   } finally { stop() }
+})
+
+describe('unreadable event frames', () => {
+  it('warns about a frame it cannot read, and keeps the last good model, on every stream listener', async () => {
+    const { local, streams } = harness(async () => json(overview()))
+    const shown: WorkModel[] = []
+    const warnings: string[] = []
+    const originalWarn = console.warn
+    const stop = local.subscribeToLiveUpdates(model => shown.push(model), () => {})
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')) }
+    try {
+      await settle()
+      streams[0].emit('work-view-overview', overview(SECOND))
+      const applied = shown.length
+
+      // A proxy that rewrites the stream, or a future producer, can send a frame that is not JSON.
+      streams[0].emitRaw('work-view-overview', '{not json')
+      streams[0].emitRaw('work-view', '{not json')
+      streams[0].emitRaw('heartbeat', '{not json')
+      streams[0].emitRaw('sync_status', '{not json')
+      await settle()
+
+      // The frame changes nothing...
+      assert.equal(shown.length, applied, 'an unreadable frame applies no model')
+      // ...and every listener names itself, so a dropped frame is no longer silent. Matching the whole
+      // message keeps `work-view` from being satisfied by the longer `work-view-overview` warning.
+      const unreadable = warnings.filter(warning => warning.includes('frame that is not JSON'))
+      assert.equal(unreadable.length, 4, 'one warning per unreadable frame')
+      for (const type of ['work-view', 'work-view-overview', 'heartbeat', 'sync_status']) {
+        assert.ok(unreadable.some(warning => warning.includes(`Ignoring a ${type} frame that is not JSON`)),
+          `the warning for an unreadable ${type} frame names its type`)
+      }
+    } finally {
+      console.warn = originalWarn
+      stop()
+    }
+  })
 })
