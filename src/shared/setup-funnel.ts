@@ -46,6 +46,12 @@ export type SetupInstallerStage = (typeof SETUP_INSTALLER_STAGES)[number];
  */
 export type SetupCheckoutState = 'requested' | 'waiting' | 'paid' | 'failed';
 
+/**
+ * The device code cmem.ai issues with a pairing: XXXX-XXXX from ABCDEFGHJKMNPQRSTVWXYZ23456789. One definition for
+ * the installer's check of cmem.ai's answer and the worker's check of what the installer reports.
+ */
+export const SETUP_DEVICE_CODE_PATTERN = /^[A-HJ-KM-NP-TV-Z2-9]{4}-[A-HJ-KM-NP-TV-Z2-9]{4}$/;
+
 /** The funnel shows until `complete`, for new installs and upgrades alike. */
 export type SetupStatus = 'pending' | 'complete';
 

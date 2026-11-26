@@ -43,8 +43,12 @@ export interface SetupScanView {
 /** The owner's newest typed prompts, quoted as typed (SetupScanState.recentPrompts). */
 export interface SetupRecentPrompt { agent: string; at: string; text: string }
 /** The worker's subsidized hosted setup extraction. */
-/** On The Go checkout, mirrored from the installer that runs it (`null` until the page asks). */
-export interface SetupCheckoutView { state: SetupCheckoutState; error: string | null }
+/**
+ * On The Go checkout, mirrored from the installer that runs it (`null` until the page asks). `userCode` is the
+ * device code cmem.ai asks for while the checkout waits: a resumed installer runs hidden, so the page shows it.
+ * `expiresAt` (ISO, or null without one) is when that code stops working; the page hides the code from then on.
+ */
+export interface SetupCheckoutView { state: SetupCheckoutState; error: string | null; userCode?: string | null; expiresAt?: string | null }
 /** What the installer did with the choice. A failed handoff can be retried from the setup page. */
 export interface SetupInstallerView { stage: InstallerStage; error: string | null }
 export type SetupExtraction = Pick<WorkerExtraction, 'state' | 'step'>
@@ -205,7 +209,9 @@ interface WorkerHistoryImport { state: HistoryImportRunState; percent: number; i
 interface WorkerSetupState {
   choice?: SetupData['choice']
   install?: SetupInstallState | null
-  status: SetupStatus; alreadyPro: boolean; checkout?: SetupCheckoutView | null
+  status: SetupStatus; alreadyPro: boolean
+  /** `deviceCodeWaiting`: the code itself is read from the origin-guarded route (readDeviceCode). */
+  checkout?: { state: SetupCheckoutState; error: string | null; deviceCodeWaiting?: true } | null
   installer?: SetupInstallerView | null
   history?: SetupHistory | null; historyImport?: WorkerHistoryImport | null
 }
@@ -297,8 +303,32 @@ export const localSetupSource: SetupSource = {
         detectedTools: scan.agents.filter((agent) => agent.detected).map((agent) => agent.id).filter((id) => SETUP_TOOLS.some((tool) => tool.id === id)),
       })
     }
+    // The device code of the pairing the open checkout waits on. The setup state only says one waits (any localhost
+    // page can read it), so the code comes from the guarded route; only the newest read counts.
+    let deviceCodeRevision = 0
+    const readDeviceCode = async () => {
+      const revision = ++deviceCodeRevision
+      try {
+        const { userCode, expiresAt } = await workerJson<{ userCode: string; expiresAt: string | null }>('/api/setup/checkout/device-code')
+        if (closed || revision !== deviceCodeRevision || data.checkout?.state !== 'waiting') return
+        publish({ checkout: { ...data.checkout, userCode, expiresAt } })
+      } catch (error) {
+        // A refusal (404) means no code waits any more, so the shown one goes. Unreachable keeps it: the terminal still
+        // has the code, and the next setup-state frame reads it again.
+        if (!(error instanceof SetupRequestError) || error.kind !== 'refused') return
+        if (closed || revision !== deviceCodeRevision || data.checkout?.state !== 'waiting') return
+        publish({ checkout: { ...data.checkout, userCode: null, expiresAt: null } })
+      }
+    }
     const applyState = (state: WorkerSetupState) => {
       stateRevision++
+      const codeWaiting = state.checkout?.state === 'waiting' && state.checkout.deviceCodeWaiting === true
+      // Until the read answers, a waiting checkout keeps the code it showed, so the page does not flicker on each frame.
+      const shown = codeWaiting && data.checkout?.state === 'waiting' ? data.checkout : null
+      const userCode = shown?.userCode ?? null
+      const expiresAt = shown?.expiresAt ?? null
+      if (codeWaiting) void readDeviceCode()
+      else deviceCodeRevision++
       publish({
       connectionError: null,
       connectionErrorKind: null,
@@ -306,7 +336,7 @@ export const localSetupSource: SetupSource = {
       usage: state.choice?.usage ?? liveUsage,
       install: state.install ?? null,
       alreadyPro: state.alreadyPro,
-      checkout: state.checkout ? { state: state.checkout.state, error: state.checkout.error } : null,
+      checkout: state.checkout ? { state: state.checkout.state, error: state.checkout.error, userCode, expiresAt } : null,
       installer: state.installer ? { stage: state.installer.stage, error: state.installer.error } : null,
       // Nothing to bring along on a new install: the import offer stays hidden.
       history: state.history && state.history.observations > 0 ? state.history : null,
