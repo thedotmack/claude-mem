@@ -19,6 +19,7 @@ const DAY_WORDS: Partial<Record<Locale, Record<'Today' | 'Yesterday', string>>> 
   tr: { Today: 'Bugün', Yesterday: 'Dün' },
   fr: { Today: 'Aujourd’hui', Yesterday: 'Hier' },
   'pt-BR': { Today: 'Hoje', Yesterday: 'Ontem' },
+  ru: { Today: 'Сегодня', Yesterday: 'Вчера' },
 }
 
 /** A day as the reader writes it short: "Nov 14", with the year when it is not this year's (`withYear`). */
@@ -26,9 +27,9 @@ function dayWords(date: Date, locale: Locale, withYear = false): string {
   return new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', ...(withYear ? { year: 'numeric' } : {}) }).format(date)
 }
 
-/** French and Brazilian Portuguese use a 24-hour clock. English writes am/pm in lower case. */
+/** French, Brazilian Portuguese and Russian use a 24-hour clock. English writes am/pm in lower case. */
 function clockWords(date: Date, locale: Locale): string {
-  const use24HourClock = locale === 'fr' || locale === 'pt-BR'
+  const use24HourClock = locale === 'fr' || locale === 'pt-BR' || locale === 'ru'
   const clock = new Intl.DateTimeFormat(locale, { hour: use24HourClock ? '2-digit' : 'numeric', minute: '2-digit', hour12: !use24HourClock }).format(date)
   return locale === 'en' ? clock.replace(/\s?(AM|PM)$/, (_, half: string) => ` ${half.toLowerCase()}`) : clock
 }

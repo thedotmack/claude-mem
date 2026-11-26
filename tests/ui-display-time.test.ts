@@ -76,6 +76,17 @@ describe('displayTime', () => {
     expect(displayTime('Yesterday 9:05am')).toBe('Ontem 09:05');
     expect(displayTime('Nov 3, 3:45 pm')).toBe('3 de nov., às 15:45');
   });
+
+  it('shows Russian day labels and a 24-hour clock in My Work', () => {
+    setLocale('ru');
+    expect(displayTime('Today 3:45 pm')).toBe('Сегодня 15:45');
+    expect(displayTime('Yesterday 9:05am')).toBe('Вчера 09:05');
+    expect(displayTime('Nov 3')).toBe('3 нояб.');
+    // An ISO time reads as clockTime words it: the day and the clock joined by the catalog's "{date}, {time}".
+    const date = new Date(2026, 10, 3, 15, 45);
+    expect(displayTime(date.toISOString())).toBe('3 нояб., 15:45');
+    expect(displayTime(date.toISOString())).toBe(clockTime(date.toISOString())!.short);
+  });
 });
 
 // G9 and plan rule 9: a recorded instant reads in the person's own clock, short, with the full stamp for its tooltip.

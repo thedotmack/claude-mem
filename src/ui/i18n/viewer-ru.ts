@@ -1,7 +1,7 @@
 export const viewerRu: Record<string, string> = {
   'A gift for Claude-Mem users': 'Подарок для пользователей Claude-Mem',
   'Check Claude’s latest fix from your phone. Get 30 free days of Cloud Sync and the remote Work Viewer. No credit card required.': 'Проверяйте последнее исправление Claude со своего телефона. 30 бесплатных дней Cloud Sync и удалённого Work Viewer. Без кредитной карты.',
-  'Dismiss the Cloud Sync offer': 'Скрыть предложение Cloud Sync',
+  'Dismiss the Cloud Sync offer': 'Отклонить предложение Cloud Sync',
   'Language': 'Язык',
   'Could not load sessions: {error}': 'Не удалось загрузить сессии: {error}',
   'Unknown error': 'Неизвестная ошибка',
@@ -263,7 +263,7 @@ export const viewerRu: Record<string, string> = {
   'All': 'Все',
   'Cancel': 'Отмена',
   'Copied': 'Скопировано',
-  'Dismiss': 'Скрыть',
+  'Dismiss': 'Отклонить',
   'Facts': 'Факты',
   'Narrative': 'Повествование',
   'Show all {count}': 'Показать все {count}',
