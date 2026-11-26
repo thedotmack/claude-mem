@@ -264,7 +264,7 @@ async function pressAt(page: DevToolsPage, x: number, y: number) {
       const gift = document.querySelector('.timeline-gift');
       const firstCard = document.querySelector('.card');
       return {
-        links: [...document.querySelectorAll('a[href="https://cmem.ai/sync"]')].map(link => ({
+        links: [...document.querySelectorAll('a[href="https://cmem.ai/sync?utm_source=timeline_gift&utm_campaign=holiday_cloud_sync"]')].map(link => ({
           inGift: gift.contains(link), opensIn: link.target,
         })),
         firstObservation: firstCard.querySelector('.card-title').textContent,
