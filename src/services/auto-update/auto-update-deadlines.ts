@@ -20,6 +20,7 @@ import { DEFAULT_INSTALL_TIMEOUT_MS, INSTALL_TIMEOUT_MS } from '../../npx-cli/in
 import { HOOK_TIMEOUTS, readWedgedWorkerUptimeSeconds } from '../../shared/hook-constants.js';
 import { SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-gate.js';
 import { getPlatformTimeout, WORKER_BOOT_BIND_DEADLINE_MS } from '../infrastructure/ProcessManager.js';
+import { WORKER_EXIT_WAIT_MS } from '../install/shutdown-helper.js';
 
 /**
  * Steps of `npx --yes --no-workspaces --package=claude-mem@<version>
@@ -47,10 +48,11 @@ const INSTALL_TIMEOUT_BUDGETED_STEPS = 6;
 const INSTALLER_TREE_SITTER_CLI_BUDGET_MS = 2 * 60 * 1000;
 /** install.ts INSTALL_SPAWN_LOCK_WAIT_MS: waiting out a launcher that holds the spawn lock before the worker is stopped. */
 const INSTALLER_SPAWN_LOCK_WAIT_MS = SPAWN_LOCK_STALE_MS + 5_000;
-/** install.ts requireWorkerStopped: stopWorker(port, 10000), the budget of one worker stop. */
-const INSTALLER_WORKER_STOP_BUDGET_MS = 10_000;
 /**
- * A non-interactive update stops the worker twice, each with that budget:
+ * A non-interactive update stops the worker twice, each time waiting up to
+ * WORKER_EXIT_WAIT_MS for it to exit (install.ts requireWorkerStopped). That
+ * budget is imported, not copied: it lives in the stop helper
+ * (install/shutdown-helper.ts), which is small enough to bundle.
  *  1. before it overwrites the plugin files: overwriteWithWorkerStopped →
  *     requireWorkerStopped(port, 'pre-overwrite') (install.ts:2606);
  *  2. in its final "Starting worker daemon" task, which stops any worker that
@@ -148,8 +150,9 @@ export const AUTO_UPDATE_FETCH_TIMEOUT_MS = 10_000;
  * fixed install.ts steps (both worker stops included), and the wait for the
  * restarted worker to report ready (getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT),
  * worker-spawner.ts). With the 5-minute default:
- * 6 × 5 min + 2 min + 95 s + 2 × 10 s + 30 s = 34 min 25 s
- * (34 min 55 s on Windows, where platform timeouts double).
+ * 6 × 5 min + 2 min + 95 s + 2 × 25.5 s + 30 s = 34 min 56 s
+ * (35 min 46 s on Windows, where platform timeouts double: a 35.5 s worker stop
+ * and a 60 s readiness wait).
  *
  * CLAUDE_MEM_INSTALL_TIMEOUT_MS=0 turns the installer's own timers off. The
  * deadline must stay finite, so it counts the default per step then.
@@ -159,7 +162,7 @@ export function autoUpdateInstallerDeadlineMs(installTimeoutMs: number = INSTALL
   return INSTALL_TIMEOUT_BUDGETED_STEPS * perStepBudgetMs
     + INSTALLER_TREE_SITTER_CLI_BUDGET_MS
     + INSTALLER_SPAWN_LOCK_WAIT_MS
-    + INSTALLER_WORKER_STOPS_ON_THE_UPDATE_PATH * INSTALLER_WORKER_STOP_BUDGET_MS
+    + INSTALLER_WORKER_STOPS_ON_THE_UPDATE_PATH * WORKER_EXIT_WAIT_MS
     + getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT);
 }
 
@@ -190,8 +193,8 @@ function workerStartBeforeProofBudgetMs(): number {
  * waits for nothing. Every other path runs fewer or shorter steps: one blocked
  * by the database's schema waits for the target's worker twice but runs one
  * installer. With the defaults:
- * 2 × (2 s + 34 min 25 s + 1 s + 2 s + 30 s + 6 min) + 4 × 5 s + 10 s = 82 min 30 s
- * (84 min 30 s on Windows).
+ * 2 × (2 s + 34 min 56 s + 1 s + 2 s + 30 s + 6 min) + 4 × 5 s + 10 s = 83 min 32 s
+ * (86 min 12 s on Windows).
  */
 export function autoUpdateSupervisorDeadlineMs(
   installerDeadlineMs: number = autoUpdateInstallerDeadlineMs(),

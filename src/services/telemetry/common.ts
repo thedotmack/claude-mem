@@ -20,6 +20,14 @@ export const TELEMETRY_PUBLIC_KEY = 'phc_BKJAeNbpj932N9qEiU6qhutZEiu6LLfRpXfTbLM
 
 export const DEFAULT_TELEMETRY_HOST = 'https://us.i.posthog.com';
 
+/**
+ * How long the worker's shutdown waits for its telemetry client to flush (telemetry.ts flushClientWithTimeout), so a
+ * slow or unreachable ingestion host can never hang a worker stop. It lives here, not in telemetry.ts, because a caller
+ * that waits for the worker to exit counts it (WORKER_EXIT_WAIT_MS, services/install/shutdown-helper.ts) and runs in
+ * the CLI, which does not bundle the worker's posthog-node client.
+ */
+export const TELEMETRY_SHUTDOWN_FLUSH_TIMEOUT_MS = 3000;
+
 export function getTelemetryApiKey(): string {
   return process.env.CLAUDE_MEM_TELEMETRY_KEY || TELEMETRY_PUBLIC_KEY;
 }
