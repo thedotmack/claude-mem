@@ -11,6 +11,7 @@ import { ActivePill, ClassicViewerLink, DeviceFreshness, LiveIndicator, ReadAfte
 import { AppBrand, ShellGrid, ShellLoading, ShellReadError } from '@/components/app-shell'
 import { HeaderMenu } from '@/components/header-menu'
 import { CloudTrialBanner } from '@/components/cloud-trial-banner'
+import { WorkViewOfferBanner } from '@/components/work-view-offer-banner'
 import { CloudTrialGuide } from '@/components/cloud-trial-guide'
 import { sharedViewerOwner } from '@/live/shared-viewer-session'
 import { useCloudTrial } from '@/live/use-cloud-trial'
@@ -27,6 +28,8 @@ import { ACTIVE_SOURCE, useStore, useWorkModel, useWorkspace, type FocusSelectio
 import { shownFocusAreaId, themeChoiceInUse } from '@/store/slices/view-slice'
 import { focusSharesAreADemonstration, useFocusSharesLoader } from '@/live/focus-shares'
 import { isServedFromCloud } from '@/live/served-from'
+import { useWorkViewOffer } from '@/live/use-work-view-offer'
+import { cloudSyncConfiguredIn } from '@/live/work-view-offers'
 import { MediaSourceContext } from '@/components/observation-media/ObsMedia'
 import { SAMPLE_MEDIA_SOURCE } from '@/components/observation-media/sample-media'
 import { workerMediaSource } from '@/components/observation-media/worker-media-source'
@@ -183,6 +186,10 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
   const sample = sourceKind === 'sample'
   const owner = sharedViewerOwner()
   const trial = useCloudTrial(sourceKind === 'cloud' && !!owner)
+  // The Cloud Sync and hosted offers are for this computer's own Work View, never the cloud viewer or the sample.
+  // Whether Cloud Sync runs comes from the live feed the page already reads, so the offer asks the worker no more for it.
+  const cloudSyncConfigured = useStore((state) => cloudSyncConfiguredIn(state.work.connection?.sync))
+  const workViewOffer = useWorkViewOffer(sourceKind === 'local' && !isServedFromCloud(window.location.hostname), cloudSyncConfigured)
   const view = useStore((state) => state.view.section)
   const focusChoice = useStore((state) => state.view.focusChoice)
   const openRequest = useStore((state) => state.view.openRequest)
@@ -235,6 +242,7 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
                 {t('Skip to content')}
               </a>
               {owner && trial.trialEndsAt && <CloudTrialBanner owner={owner} trialEndsAt={trial.trialEndsAt} />}
+              {workViewOffer.offer && <WorkViewOfferBanner offer={workViewOffer.offer} onDismiss={workViewOffer.dismiss} onViewPlans={workViewOffer.viewPlans} />}
               {/* The demonstration strip and its At home / On the go switch belong to the sample workspace. */}
               {sample && (
                 <StickyBanner hideOnScroll className="min-h-0 flex-wrap justify-start gap-x-3 gap-y-1.5 border-b border-border/70 bg-card/85 px-4 py-1.5 pr-12 text-xs whitespace-nowrap backdrop-blur-md md:px-6 md:pr-10">

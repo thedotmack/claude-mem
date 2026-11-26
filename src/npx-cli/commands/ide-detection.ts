@@ -108,6 +108,12 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'hooks integration',
     },
     {
+      id: 'zcode',
+      label: 'ZCode',
+      detected: existsSync(join(home, '.zcode')),
+      hint: 'hooks + MCP integration',
+    },
+    {
       id: 'cursor',
       label: 'Cursor',
       detected: existsSync(join(home, '.cursor')),

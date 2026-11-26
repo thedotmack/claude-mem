@@ -15,7 +15,7 @@ import {
   redactHomeDir,
   redactAbsolutePaths,
 } from './error-scrub.js';
-import { getTelemetryApiKey, getTelemetryHost, buildBaseProperties, buildPersonSet } from './common.js';
+import { getTelemetryApiKey, getTelemetryHost, buildBaseProperties, buildPersonSet, TELEMETRY_SHUTDOWN_FLUSH_TIMEOUT_MS } from './common.js';
 import { telemetryBuffer } from './buffer.js';
 import { parseSetupEvent, type SetupEvent } from '../../shared/setup-funnel.js';
 // logger.warn ONLY in this module — logger.error routes through the error sink
@@ -705,7 +705,7 @@ async function flushClientWithTimeout(current: PostHog): Promise<void> {
     await Promise.race([
       current.shutdown(),
       new Promise<void>(resolve => {
-        timer = setTimeout(resolve, 3000);
+        timer = setTimeout(resolve, TELEMETRY_SHUTDOWN_FLUSH_TIMEOUT_MS);
       }),
     ]);
   } finally {

@@ -85,6 +85,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem aider install|status|uninstall|sync')}   Manage Aider file-based context
   ${styleText('cyan', 'npx claude-mem gemini install|status|uninstall')}   Manage Gemini CLI capture hooks
   ${styleText('cyan', 'npx claude-mem devin install|status|uninstall')}   Manage Devin CLI / Devin Desktop hooks + MCP
+  ${styleText('cyan', 'npx claude-mem zcode install|status|uninstall')}   Manage ZCode hooks + MCP
   ${styleText('cyan', 'npx claude-mem t3code status|uninstall [--settings <path>]')}   Inspect or disable T3 Code provider plugins
   ${styleText('cyan', 'npx claude-mem pi install|status|uninstall')}   Manage the native Pi extension
   ${styleText('cyan', 'npx claude-mem grok install|status|uninstall')}   Load recalled memory into Grok Build sessions (current folder)
@@ -104,7 +105,7 @@ ${styleText('bold', 'Claude Code Hooks')}:
 ${styleText('bold', 'Agent IDs')} (for --ide):
   claude-code, cursor, grok-bot, opencode, openclaw, omp, hermes, pi, dsh,
   windsurf, codex-cli, t3code (aliases: t3, t3-code), kimi, devin, copilot-cli, copilot-vscode, antigravity, goose,
-  roo-code, warp, zed
+  roo-code, warp, zed, zcode
 `);
 }
 
@@ -182,7 +183,7 @@ const HELP_AWARE_COMMANDS = new Set([
   'start', 'stop', 'restart', 'status', 'doctor', 'mcp', 'hook',
   'adopt', 'cleanup',
   'memory', 'import', 'telemetry', 'project', 'backup', 'restore', 'server', 'worker', 'transcript',
-  'gemini', 'kimi', 'hermes', 'imessage', 'aider', 'devin', 'antigravity-cli', 'pi', 't3code', 't3-code', 't3', 'grok',
+  'gemini', 'kimi', 'hermes', 'imessage', 'aider', 'devin', 'zcode', 'antigravity-cli', 'pi', 't3code', 't3-code', 't3', 'grok',
 ]);
 
 async function main(): Promise<void> {
@@ -361,6 +362,10 @@ async function main(): Promise<void> {
     case 'devin': {
       const { handleDevinCommand } = await import('../services/integrations/DevinHooksInstaller.js');
       process.exit(await handleDevinCommand(args[1]?.toLowerCase(), args.slice(2)));
+    }
+    case 'zcode': {
+      const { handleZCodeCommand } = await import('../services/integrations/ZCodeHooksInstaller.js');
+      process.exit(await handleZCodeCommand(args[1]?.toLowerCase(), args.slice(2)));
     }
 
     case 'grok': {

@@ -1,6 +1,6 @@
 import { CheckIcon } from 'lucide-react'
 import { interpolate, useI18n } from '@/lib/i18n'
-import { PROGRESS_STEP_OF_SCREEN, PROGRESS_STEP_WORDS, SETUP_PROGRESS_STEPS, progressStepState, type SetupFlowState, type SetupProgressState, type SetupStep } from '../setup-flow'
+import { PROGRESS_STEP_OF_SCREEN, PROGRESS_STEP_WORDS, SETUP_PROGRESS_STEPS, progressStepState, type SetupFlowState, type RoutedSetupStep, type SetupProgressState } from '../setup-flow'
 
 /**
  * Read after a bar step's name, so its state never rests on the mark alone. The current step says so through
@@ -13,7 +13,7 @@ const PROGRESS_STATE_WORDS: Record<SetupProgressState, string | null> = { done: 
  * after the person has done it. Phones (setup.css, up to 560px wide) show the five marks and "Step N of 5" under them;
  * the step names are hidden there except to screen readers, which still hear every name and its state.
  */
-export function SetupStepBar({ step, flow }: { step: SetupStep; flow: SetupFlowState }) {
+export function SetupStepBar({ step, flow }: { step: RoutedSetupStep; flow: SetupFlowState }) {
   const { t } = useI18n()
   const currentIndex = SETUP_PROGRESS_STEPS.indexOf(PROGRESS_STEP_OF_SCREEN[step])
   return (

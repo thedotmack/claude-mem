@@ -11,7 +11,8 @@ import { settingsTarget, type SettingsDocument } from '../../shared/settings-doc
 // Every request here goes to the local worker on loopback, and these routes answer from a small local JSON file
 // (WorkViewRoutes setup-state handlers), so 5 s only trips on a stalled connection, never on a slow answer. Same
 // budget as READ_TIMEOUT_MS in usage-summary.ts for the installer's other loopback reads.
-const WORKER_REQUEST_TIMEOUT_MS = 5_000;
+/** How long one request to the local worker may take. */
+export const WORKER_REQUEST_TIMEOUT_MS = 5_000;
 
 /**
  * Puts the code of the pairing the open checkout waits on beside "Waiting for this device to connect…" on the setup
@@ -408,29 +409,43 @@ export const BACKGROUND_WORK_LABELS: Record<NonNullable<SetupStateView['backgrou
 };
 
 /**
- * Waits, with no time limit, until the worker runs no extraction or history import, so a restart cannot kill one.
+ * Waits until the worker runs no extraction or history import, so a restart cannot kill one. With no `maxWaitMs` it
+ * waits however long that work takes; with one it gives up after that long and throws, leaving the worker running.
+ * `headers` go with every read: in local API token mode (#5141) GET /api/setup/state needs the token.
  * A read that hits the per-request deadline is a busy worker, not a finished one: poll again. Losing contact
  * (a refused connection), a refusal or malformed state cannot prove work finished: fail visibly and leave the
  * worker running.
  */
-export async function waitForBackgroundWorkToFinish(deps: Pick<BrowserSetupDeps, 'workerBaseUrl' | 'log' | 'fetch' | 'sleep' | 'pollIntervalMs'>): Promise<void> {
+export async function waitForBackgroundWorkToFinish(deps: Pick<BrowserSetupDeps, 'workerBaseUrl' | 'log' | 'fetch' | 'sleep' | 'pollIntervalMs'> & {
+  headers?: Record<string, string>;
+  maxWaitMs?: number;
+  now?: () => number;
+}): Promise<void> {
   const request = deps.fetch ?? fetch;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const now = deps.now ?? Date.now;
+  const deadline = deps.maxWaitMs === undefined ? null : now() + deps.maxWaitMs;
+  const headers = deps.headers && Object.keys(deps.headers).length > 0 ? { headers: deps.headers } : {};
   let announced = '';
   let slowNoted = false;
   const readFailed = (error: unknown) =>
     new Error(`Could not read the worker's background work state: ${error instanceof Error ? error.message : String(error)}`);
+  const stopAtDeadline = (doing: string): void => {
+    if (deadline === null || now() < deadline) return;
+    throw new Error(`The worker was still ${doing || 'not answering'} after ${Math.ceil(deps.maxWaitMs! / 1000)}s.`);
+  };
   // A late answer means the worker is busy (goal extraction, history import), not that its work finished.
   const waitForSlowWorker = async () => {
     if (!slowNoted) deps.log.warn('Waiting for the worker to answer…');
     slowNoted = true;
+    stopAtDeadline(announced);
     await sleep(deps.pollIntervalMs ?? 1000);
   };
   for (;;) {
     const signal = AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS);
     let response: Response;
     try {
-      response = await request(`${deps.workerBaseUrl}/api/setup/state`, { cache: 'no-store', signal });
+      response = await request(`${deps.workerBaseUrl}/api/setup/state`, { cache: 'no-store', signal, ...headers });
     } catch (error) {
       if (signal.aborted) { await waitForSlowWorker(); continue; }
       throw readFailed(error);
@@ -451,6 +466,7 @@ export async function waitForBackgroundWorkToFinish(deps: Pick<BrowserSetupDeps,
       deps.log.info(`Setup is complete. The worker restarts to apply your settings once it finishes ${doing}; that work keeps going until then.`);
       announced = doing;
     }
+    stopAtDeadline(doing);
     await sleep(deps.pollIntervalMs ?? 1000);
   }
 }

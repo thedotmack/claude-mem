@@ -9,10 +9,13 @@ export const StickyBanner = ({
   className,
   children,
   hideOnScroll = false,
+  onDismiss,
 }: {
   className?: string;
   children: React.ReactNode;
   hideOnScroll?: boolean;
+  /** Called when the person closes the strip, so a caller can keep it closed on later visits. */
+  onDismiss?: () => void;
 }) => {
   const { t } = useI18n();
   const [open, setOpen] = useState(true);
@@ -39,6 +42,7 @@ export const StickyBanner = ({
     const banner = bannerRef.current;
     if (banner?.contains(document.activeElement)) tabStopAfter(banner)?.focus();
     setDismissed(true);
+    onDismiss?.();
   };
 
   if (dismissed) return null;

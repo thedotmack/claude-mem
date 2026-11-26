@@ -29,6 +29,12 @@ export interface ShutdownCascadeOptions {
  */
 const GRACE_WINDOW_AFTER_SIGTERM_MS = 5000;
 const WAIT_AFTER_SIGKILL_MS = 1000;
+/**
+ * The longest one run of terminateThenForceKill or terminateThenForceKillProcessGroups waits: both windows above. For a
+ * caller that waits for the worker itself to exit and so has to count each such run in its shutdown (WORKER_EXIT_WAIT_MS,
+ * services/install/shutdown-helper.ts).
+ */
+export const TERMINATE_THEN_FORCE_KILL_WAIT_MS = GRACE_WINDOW_AFTER_SIGTERM_MS + WAIT_AFTER_SIGKILL_MS;
 
 export async function runShutdownCascade(options: ShutdownCascadeOptions): Promise<void> {
   const currentPid = options.currentPid ?? process.pid;

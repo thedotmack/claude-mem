@@ -125,3 +125,54 @@ describe('ensureLocalBinOnShellPath writes the rc atomically', () => {
     );
   });
 });
+
+describe('ensureLocalBinOnShellPath recognizes every common spelling of the directory', () => {
+  let home: string;
+
+  beforeAll(() => {
+    mkdirSync(scratchParentDirectory, { recursive: true });
+  });
+
+  beforeEach(() => {
+    home = makeScratchHome();
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const alreadyConfiguredSpellings = [
+    'export PATH=~/.local/bin:$PATH',
+    'export PATH="${HOME}/.local/bin:$PATH"',
+  ];
+
+  for (const line of alreadyConfiguredSpellings) {
+    it(`leaves an rc containing ${line} untouched`, () => {
+      const zshrc = path.join(home, '.zshrc');
+      writeFileSync(zshrc, `${line}\n`, 'utf-8');
+
+      const outcome = ensureLocalBinOnShellPath({
+        purposeLabel: 'claude-mem',
+        logger: recordingLogger(),
+        host: posixHost(home),
+      });
+
+      expect(outcome).toBe('rc-file-already-configured');
+      expect(readFileSync(zshrc, 'utf-8')).toBe(`${line}\n`);
+    });
+  }
+
+  it('reports already-on-path when PATH names the directory with a trailing slash', () => {
+    const outcome = ensureLocalBinOnShellPath({
+      purposeLabel: 'claude-mem',
+      logger: recordingLogger(),
+      host: {
+        ...posixHost(home),
+        environmentVariables: { PATH: `/usr/bin:${home}/.local/bin/:/bin`, SHELL: '/bin/zsh' },
+      },
+    });
+
+    expect(outcome).toBe('already-on-path');
+    expect(existsSync(path.join(home, '.zshrc'))).toBe(false);
+  });
+});

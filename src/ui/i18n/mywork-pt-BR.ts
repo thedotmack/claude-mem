@@ -1238,4 +1238,11 @@ export const myworkPtBr: Record<string, string> = {
   "Browse": "Explorar",
   "Work": "Trabalho",
   "Skipped": "Pulado",
+  "Want us to write your memories, too?": "Quer que a gente gere suas memórias também?",
+  "With a hosted plan, cmem.ai writes them instead of your own provider.": "Com um plano hospedado, o cmem.ai gera as memórias no lugar do seu próprio provedor.",
+  "Plans start at $30/month in addition to Cloud Sync.": "Os planos custam a partir de US$ 30/mês, além do valor do Cloud Sync.",
+  "See plans and pricing": "Ver planos e preços",
+  "Try Cloud Sync free for {days} days": "Experimentar o Cloud Sync grátis por {days} dias",
+  "No card needed for your first trial.": "O primeiro período de teste não exige cartão.",
+  "Run this in a terminal on this computer. Setup opens in your browser, where you can choose Cloud Sync.": "Execute este comando em um terminal neste computador. A configuração abre no navegador, onde você pode escolher o Cloud Sync.",
 };

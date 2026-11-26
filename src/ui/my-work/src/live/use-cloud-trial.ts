@@ -1,47 +1,26 @@
-import { useEffect, useState } from 'react'
-import { NO_VIEWER_TRIAL, viewerTrialStatus } from './cloud-trial-status'
+import { NO_VIEWER_TRIAL, viewerTrialStatus, type ViewerTrialStatus } from './cloud-trial-status'
 import { nextTrialGuideStepAt } from './cloud-trial-guide'
+import { useVisibleRefresh } from './use-visible-refresh'
 
-/** One owner-scoped read serves both the billing notice and the guide. Local and sample work never read it. */
-export function useCloudTrial(isPrivateViewer: boolean) {
-  const [status, setStatus] = useState(NO_VIEWER_TRIAL)
-  useEffect(() => {
-    if (!isPrivateViewer) return
-    let pending: AbortController | undefined
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const refresh = async () => {
-      if (document.visibilityState === 'hidden') return
-      pending?.abort()
-      clearTimeout(timer)
-      const controller = new AbortController()
-      pending = controller
-      try {
-        const response = await fetch('/api/cloud-sync/renewal-status', { signal: controller.signal, cache: 'no-store' })
-        const data = response.ok ? await response.json() : null
-        if (controller.signal.aborted) return
-        const now = Date.now()
-        const next = viewerTrialStatus(data, now)
-        setStatus(next)
-        const boundaries = [
-          next.trialEndsAt && Date.parse(next.trialEndsAt),
-          next.onboarding && Date.parse(next.onboarding.endsAt),
-          next.onboarding && nextTrialGuideStepAt(next.onboarding.startedAt, now),
-        ].filter((at): at is number => typeof at === 'number' && at > now)
-        if (boundaries.length > 0) timer = setTimeout(refresh, Math.min(Math.min(...boundaries) - now, 2_147_483_647))
-      } catch {
-        if (!controller.signal.aborted) setStatus(NO_VIEWER_TRIAL)
-      }
-    }
-    void refresh()
-    const onPageShow = (event: PageTransitionEvent) => { if (event.persisted) void refresh() }
-    window.addEventListener('pageshow', onPageShow)
-    document.addEventListener('visibilitychange', refresh)
-    return () => {
-      pending?.abort()
-      clearTimeout(timer)
-      window.removeEventListener('pageshow', onPageShow)
-      document.removeEventListener('visibilitychange', refresh)
-    }
-  }, [isPrivateViewer])
-  return isPrivateViewer ? status : NO_VIEWER_TRIAL
+async function readTrialStatus(signal: AbortSignal): Promise<ViewerTrialStatus> {
+  const response = await fetch('/api/cloud-sync/renewal-status', { signal, cache: 'no-store' })
+  return viewerTrialStatus(response.ok ? await response.json() : null, Date.now())
+}
+
+/** Read again at the next boundary the status names: the trial's end, the guide's end, or the guide's next step. */
+function nextTrialCheckAt(status: ViewerTrialStatus, now: number): number | null {
+  const boundaries = [
+    status.trialEndsAt && Date.parse(status.trialEndsAt),
+    status.onboarding && Date.parse(status.onboarding.endsAt),
+    status.onboarding && nextTrialGuideStepAt(status.onboarding.startedAt, now),
+  ].filter((at): at is number => typeof at === 'number' && at > now)
+  return boundaries.length > 0 ? Math.min(...boundaries) : null
+}
+
+/**
+ * One owner-scoped read serves both the billing notice and the guide. Local and sample work never read it. A read
+ * that fails keeps the status already shown and tries again (useVisibleRefresh).
+ */
+export function useCloudTrial(isPrivateViewer: boolean): ViewerTrialStatus {
+  return useVisibleRefresh(isPrivateViewer, readTrialStatus, nextTrialCheckAt) ?? NO_VIEWER_TRIAL
 }

@@ -42,6 +42,8 @@ import {
   type TeamBrainTeamRef,
 } from '../../shared/teambrain.js';
 import { workerHttpRequest } from '../../shared/worker-utils.js';
+import { WORKER_REQUEST_TIMEOUT_MS } from '../install/browser-setup.js';
+import { readWorkerJson, restartWorkerForSyncChange } from '../install/worker-sync-restart.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import {
@@ -63,10 +65,6 @@ const CLI_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAU
 const isInteractive = process.stdin.isTTY === true;
 
 const TEAMBRAIN_REQUEST_TIMEOUT_MS = 15_000;
-const WORKER_REQUEST_TIMEOUT_MS = 5_000;
-/** How long `join` and `leave` wait for the restarted worker to report its sync state. */
-const WORKER_RESTART_WAIT_MS = 30_000;
-const WORKER_RESTART_POLL_MS = 1_000;
 const MAX_LISTED_PROJECTS = 40;
 const SHARE_ALL_OPTION = '__teambrain_all_projects__';
 
@@ -330,22 +328,6 @@ function checkoutProjects(): string[] {
   return getProjectContext(cwd).allProjects;
 }
 
-type WorkerJson = { ok: true; value: Record<string, unknown> } | { ok: false; reason: string };
-
-async function readWorkerJson(response: Response, what: string): Promise<WorkerJson> {
-  let value: unknown;
-  try {
-    value = await response.json();
-  } catch (error: unknown) {
-    const cause = error instanceof Error ? error : new Error(String(error));
-    logger.warn('SYSTEM', `The worker's ${what} answer is not JSON`, { status: response.status }, cause);
-    return { ok: false, reason: `the worker's ${what} answer is not JSON` };
-  }
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? { ok: true, value: value as Record<string, unknown> }
-    : { ok: false, reason: `the worker's ${what} answer is not a JSON object` };
-}
-
 async function listLocalProjects(): Promise<{ ok: true; projects: string[] } | { ok: false; reason: string }> {
   let response: Response;
   try {
@@ -404,103 +386,6 @@ async function applyShareChoice(connection: TeamBrainConnection, team: TeamBrain
     ? `Not sharing any projects with ${team.name}.`
     : `Sharing ${describeChoice(choice)} with ${team.name}.`);
   return true;
-}
-
-type WorkerHealth =
-  | { state: 'running'; pid: number | null }
-  | { state: 'not_running' }
-  | { state: 'unknown'; reason: string };
-
-/** Whether the worker answers its health check: a refused connection means it is not running. */
-async function workerHealth(): Promise<WorkerHealth> {
-  let response: Response;
-  try {
-    response = await workerHttpRequest('/api/health', { timeoutMs: WORKER_REQUEST_TIMEOUT_MS });
-  } catch (error: unknown) {
-    if (isConnectionRefusedError(error)) return { state: 'not_running' };
-    const cause = error instanceof Error ? error : new Error(String(error));
-    logger.warn('SYSTEM', 'Worker health check failed', {}, cause);
-    return { state: 'unknown', reason: printable(cause.message) || cause.name };
-  }
-  // 503 is a degraded worker, which still reports its pid.
-  if (!response.ok && response.status !== 503) {
-    logger.warn('SYSTEM', 'Worker health check answered with an error status', { status: response.status });
-    return { state: 'unknown', reason: `the worker answered its health check with HTTP ${response.status}` };
-  }
-  const body = await readWorkerJson(response, 'health');
-  if (!body.ok) return { state: 'unknown', reason: body.reason };
-  return { state: 'running', pid: typeof body.value.pid === 'number' ? body.value.pid : null };
-}
-
-async function workerSyncStatus(): Promise<{ configured: boolean; hubError: string | null } | null> {
-  let response: Response;
-  try {
-    response = await workerHttpRequest('/api/sync/status', { timeoutMs: WORKER_REQUEST_TIMEOUT_MS });
-  } catch (error: unknown) {
-    // Expected while the worker restarts; the caller asks again.
-    logger.debug('SYSTEM', 'Sync status not answered yet', {}, error instanceof Error ? error : new Error(String(error)));
-    return null;
-  }
-  if (!response.ok) return null;
-  const body = await readWorkerJson(response, 'sync status');
-  if (!body.ok) return null;
-  const hub = body.value.hub as { reachable?: unknown; error?: unknown } | undefined;
-  const hubError = hub && hub.reachable === false
-    ? (typeof hub.error === 'string' && hub.error ? printable(hub.error) : 'unreachable')
-    : null;
-  return { configured: body.value.configured === true, hubError };
-}
-
-async function requestWorkerRestart(): Promise<string | null> {
-  let response: Response;
-  try {
-    response = await workerHttpRequest('/api/admin/restart', { method: 'POST', timeoutMs: WORKER_REQUEST_TIMEOUT_MS });
-  } catch (error: unknown) {
-    const cause = error instanceof Error ? error : new Error(String(error));
-    logger.warn('SYSTEM', 'Worker restart request failed', {}, cause);
-    return printable(cause.message) || cause.name;
-  }
-  return response.ok ? null : `HTTP ${response.status}`;
-}
-
-/**
- * The worker reads the sync connection when it starts, so a changed one needs
- * a restart (the cloud-sync skill's step 3: POST /api/admin/restart, then
- * poll /api/sync/status until it reports the new state). A worker that is not
- * running picks it up when it starts; one whose state cannot be read is
- * reported as such, never assumed.
- */
-async function restartWorkerForSyncChange(syncOn: boolean): Promise<void> {
-  const before = await workerHealth();
-  if (before.state === 'not_running') {
-    log.info(syncOn
-      ? 'The claude-mem worker is not running; cloud sync starts with it (npx claude-mem start).'
-      : 'The claude-mem worker is not running; it starts without cloud sync.');
-    return;
-  }
-  if (before.state === 'unknown') {
-    log.warn(`Could not check the claude-mem worker (${before.reason}). Restart it so the change applies: npx claude-mem restart`);
-    return;
-  }
-  const restartProblem = await requestWorkerRestart();
-  if (restartProblem) {
-    log.warn(`Could not restart the claude-mem worker (${restartProblem}). Restart it so the change applies: npx claude-mem restart`);
-    return;
-  }
-
-  const deadline = Date.now() + WORKER_RESTART_WAIT_MS;
-  while (Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, WORKER_RESTART_POLL_MS));
-    const health = await workerHealth();
-    if (health.state !== 'running' || (before.pid !== null && health.pid === before.pid)) continue;
-    const sync = await workerSyncStatus();
-    if (!sync || sync.configured !== syncOn) continue;
-    if (!syncOn) log.success('The worker restarted without cloud sync.');
-    else if (sync.hubError) log.warn(`Cloud sync is set up, but the sync hub did not answer yet: ${sync.hubError}`);
-    else log.success('Cloud sync is on: this install syncs to your account.');
-    return;
-  }
-  log.warn(`The worker restart could not be confirmed within ${WORKER_RESTART_WAIT_MS / 1000}s. Check it with: npx claude-mem doctor`);
 }
 
 async function chooseTeam(
@@ -636,7 +521,7 @@ async function runJoin(argv: string[]): Promise<number> {
     return 1;
   }
   log.success(`Joined ${team.name}. Your memory stays private; you choose what the team sees.`);
-  if (restartNeeded) await restartWorkerForSyncChange(true);
+  if (restartNeeded) await restartWorkerForSyncChange(true, log);
 
   const choice = shareFlags.choice ?? (isInteractive ? await promptShareChoice(team.name, membership) : null);
   if (choice) {
@@ -756,7 +641,7 @@ async function settleInstallAfterLeave(
     return 0;
   }
   log.info('Cloud sync is off for this install too: a TeamBrain seat was its only sync access (CLAUDE_MEM_CLOUD_SYNC_* cleared). Your memory stays on this machine.');
-  await restartWorkerForSyncChange(false);
+  await restartWorkerForSyncChange(false, log);
   return 0;
 }
 

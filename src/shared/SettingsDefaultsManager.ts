@@ -260,6 +260,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_IDLE_EXIT_SEC: string;  // Worker idle-exit window in seconds; '0' (default) = never idle-exit.
   CLAUDE_MEM_SKIP_TOOLS: string;
   CLAUDE_MEM_SKIP_BASH_PATTERNS: string;
+  CLAUDE_MEM_SKIP_BASH_PATTERNS_MATCH_EVERY_SEGMENT: string;  // 'true' = skip a shell command only when every part of it matches CLAUDE_MEM_SKIP_BASH_PATTERNS
   CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: string;  // #2736 — skip ALL subagent observations (agent id AND agent type present)
   CLAUDE_MEM_SKIP_AGENT_TYPES: string;            // #2736 — comma-separated subagent agent_type values to skip (e.g. workflow-subagent,Explore)
   CLAUDE_MEM_CAPTURE_ADVISOR_CALLS: string;       // #3165 — record Claude Code `advisor` tool calls (advice text) at Stop
@@ -409,6 +410,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_TEAMBRAIN_TEAM_ID: string;
   CLAUDE_MEM_LLM_TIMEOUT_MS: string;
   CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: string;
+  CLAUDE_MEM_FIELD_CONDENSE_ENABLED: string;
   CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: string;
   CLAUDE_MEM_WORKER_HEARTBEAT_STALE_MS: string;
   // Local API token (#5141), for hosts with more than one OS user. EMPTY = OFF:
@@ -582,6 +584,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_IDLE_EXIT_SEC: '0',
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
     CLAUDE_MEM_SKIP_BASH_PATTERNS: '',  // Regex matched against a shell command (Bash; PowerShell; Codex exec_command); when it matches, the observation is skipped. Empty = capture every command. Use alternation for several patterns, e.g. ^(ls|cat|pwd)\b
+    CLAUDE_MEM_SKIP_BASH_PATTERNS_MATCH_EVERY_SEGMENT: 'false',  // Opt in to matching every segment of a simple compound shell command. It only ever skips fewer commands: any `$`, backslash or other syntax it will not guess about keeps the command.
     CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'false',  // #2736 — default off preserves current behavior; set 'true' to skip every subagent observation (recommended for heavy Dynamic Workflows users)
     CLAUDE_MEM_SKIP_AGENT_TYPES: '',                 // #2736 — default empty preserves current behavior; recommended value 'workflow-subagent' to drop Dynamic Workflows fan-out noise
     CLAUDE_MEM_CAPTURE_ADVISOR_CALLS: 'false',       // #3165 — opt-in: the Stop hook scans the transcript's tail for advisor calls and stores the advice locally (worker runtime only)
@@ -770,6 +773,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TEAMBRAIN_TEAM_ID: '',  // The team this install joined (teambrain share/leave default to it)
     CLAUDE_MEM_LLM_TIMEOUT_MS: String(DEFAULT_LLM_TIMEOUT_MS),  // Per-attempt deadline for non-streamed observer requests (retry.ts); streamed OpenRouter/OpenAI-compatible requests use a 90s idle timeout + 300s cap (streamed-chat-completion.ts)
     CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: String(DEFAULT_LLM_TIMEOUT_MS),  // Oversized-field condensation deadline (field-optimizer.ts); a request to the same backend, so the same deadline
+    CLAUDE_MEM_FIELD_CONDENSE_ENABLED: 'true',  // 'false' skips the oversized-field condense model call; the field is cut by head/tail elision instead (#6503)
     CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: '90000',  // Streamed request idle window (streamed-chat-completion.ts): silence that ends a stream. Self-hosted backends queue behind a load balancer, and the queue wait reads as idle (#4737) — raise it there. Literal because shared cannot import from the worker; a drift test pins it to the shipped constant
     CLAUDE_MEM_WORKER_HEARTBEAT_STALE_MS: '120000', // A silent worker whose liveness heartbeat is younger than this is slow, not dead (10000-3600000).
     CLAUDE_MEM_LOCAL_API_TOKEN: '', // Local API token. Empty = off. See the declaration above.

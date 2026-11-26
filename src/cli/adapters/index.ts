@@ -8,6 +8,7 @@ import { geminiAdapter } from './gemini.js';
 import { kimiAdapter } from './kimi.js';
 import { rawAdapter } from './raw.js';
 import { windsurfAdapter } from './windsurf.js';
+import { zcodeAdapter } from './zcode.js';
 
 export function getPlatformAdapter(platform: string): PlatformAdapter {
   switch (platform) {
@@ -19,10 +20,11 @@ export function getPlatformAdapter(platform: string): PlatformAdapter {
     case 'gemini': return geminiAdapter;
     case 'kimi': return kimiAdapter;
     case 'windsurf': return windsurfAdapter;
+    case 'zcode': return zcodeAdapter;
     case 'antigravity': case 'antigravity-cli': return antigravityCliAdapter;
     case 'raw': return rawAdapter;
     default: return rawAdapter;
   }
 }
 
-export { antigravityCliAdapter, claudeCodeAdapter, codexAdapter, cursorAdapter, devinAdapter, kimiAdapter, rawAdapter, windsurfAdapter };
+export { antigravityCliAdapter, claudeCodeAdapter, codexAdapter, cursorAdapter, devinAdapter, kimiAdapter, rawAdapter, windsurfAdapter, zcodeAdapter };

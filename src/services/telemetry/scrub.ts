@@ -44,7 +44,7 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // user code (those never enter any event property).
   'stage',
   // phase is the installer OAuth pairing phase, a closed enum
-  // (login | enrollment | deferred) on installer_oauth_timeout and
+  // (login | enrollment) on installer_oauth_timeout and
   // installer_oauth_start_failed.
   'phase',
   'install_method',
@@ -245,6 +245,10 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // plus a hostname (no path, no user). Local is the worker; hosted is work.cmem.ai.
   'viewer_host',
   'hostname',
+  // work_view_hosted_plans_viewed — the Cloud Sync plan setup kept, as the setup
+  // funnel's closed enum (cloud_sync_monthly | cloud_sync_annual). Never a price,
+  // an account, or a checkout link.
+  'cloud_sync_offer',
   // auto_update_applied / auto_update_failed (src/services/auto-update/auto-update-apply.ts):
   // from_version and to_version are claude-mem release versions, failure_stage
   // and restore_result the supervisor's own closed enums

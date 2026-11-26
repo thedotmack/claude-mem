@@ -1,8 +1,18 @@
 // Storage choice starts checkout for new Cloud customers. Once the installer confirms
-// Cloud Sync, they can review their existing scan and optionally add hosted generation.
+// Cloud Sync, setup goes straight on to Finish Setup. The optional hosted offer no longer
+// interrupts setup: Work View shows it once the first memory has synced (live/work-view-offers.ts).
 
 import { DEFAULT_CLOUD_SYNC_OFFER, SETUP_STEPS, type SetupBranch, type SetupCloudSyncOffer, type SetupInstallerStage, type SetupMemoryBilling, type SetupScanPhase, type SetupStep } from '../../../../shared/setup-funnel.ts'
 export { SETUP_STEPS, type SetupStep }
+
+/**
+ * The screens setup can show. `savings` (the old hosted $30 upsell) stays in SETUP_STEPS because setup telemetry
+ * events from pages that still show it, and cmem.ai's funnel report, name it; the worker's event check must keep
+ * accepting them. No path routes to it any more (guardStep sends a request for it on), so it has no screen.
+ */
+export type RoutedSetupStep = Exclude<SetupStep, 'savings'>
+/** The screens setup can show, in SETUP_STEPS order. */
+export const ROUTED_SETUP_STEPS = SETUP_STEPS.filter((step): step is RoutedSetupStep => step !== 'savings')
 
 export type MemoryBranch = SetupBranch
 /** Who generates memories: a legacy hosted choice or the person's existing provider. */
@@ -38,7 +48,6 @@ export interface SetupFlowState {
   scanSkipped: boolean
   revealContinued: boolean
   choiceContinued: boolean
-  savingsComplete: boolean
   checkoutReviewed: boolean
   finishTools: string[]
   importStatus: HistoryImportStatus
@@ -48,23 +57,18 @@ export interface SetupFlowState {
 export function initialFlowState(alreadyPro: boolean): SetupFlowState {
   return {
     installationComplete: true, installConfirmed: true, installReview: false, scanReview: false, branch: 'go', memoryBilling: 'existing', cloudSyncOffer: DEFAULT_CLOUD_SYNC_OFFER, alreadyPro, scanComplete: false, scanSkipped: false,
-    revealContinued: false, choiceContinued: false, savingsComplete: false, checkoutReviewed: false, finishTools: [], importStatus: 'none', setupComplete: false,
+    revealContinued: false, choiceContinued: false, checkoutReviewed: false, finishTools: [], importStatus: 'none', setupComplete: false,
   }
 }
 
-type PlanState = Pick<SetupFlowState, 'branch' | 'alreadyPro' | 'memoryBilling' | 'checkoutReviewed' | 'savingsComplete'>
+type PlanState = Pick<SetupFlowState, 'branch' | 'alreadyPro' | 'checkoutReviewed'>
 
 function needsCheckout(state: PlanState): boolean {
   return state.branch === 'go' && !state.alreadyPro
 }
 
-function canOfferHosted(state: PlanState): boolean {
-  return needsCheckout(state) && state.memoryBilling === 'existing' && state.checkoutReviewed
-}
-
-export function nextAfterChoice(state: PlanState): 'checkout' | 'savings' | 'finish-setup' {
-  if (needsCheckout(state) && !state.checkoutReviewed) return 'checkout'
-  return canOfferHosted(state) && !state.savingsComplete ? 'savings' : 'finish-setup'
+export function nextAfterChoice(state: PlanState): 'checkout' | 'finish-setup' {
+  return needsCheckout(state) && !state.checkoutReviewed ? 'checkout' : 'finish-setup'
 }
 
 /** The installer's report on the choice. */
@@ -100,7 +104,7 @@ export function scanMovesOn(requested: SetupStep, state: Pick<SetupFlowState, 'i
 }
 
 /** The step to show for a requested step: an earlier one when a decision it depends on hasn't been made yet. */
-export function guardStep(step: SetupStep, state: SetupFlowState): SetupStep {
+export function guardStep(step: SetupStep, state: SetupFlowState): RoutedSetupStep {
   if (!state.installationComplete) return 'install'
   if (step === 'install') return state.installReview ? 'install' : scanPassed(state) ? 'reveal' : 'scan'
   if (!SETUP_STEPS.includes(step)) return 'scan'
@@ -108,7 +112,8 @@ export function guardStep(step: SetupStep, state: SetupFlowState): SetupStep {
   if (!BEFORE_CHOICE.includes(step) && !state.revealContinued) return 'reveal'
   if (![...BEFORE_CHOICE, 'choice'].includes(step) && !state.choiceContinued) return 'choice'
   const next = nextAfterChoice(state)
-  if (step === 'savings' && !canOfferHosted(state)) return next
+  // Never routed (RoutedSetupStep): a request for the old hosted offer goes on to the step after the choice.
+  if (step === 'savings') return next
   if (step === 'checkout' && !needsCheckout(state)) return next
   if (AFTER_PLAN.includes(step) && next !== 'finish-setup') return next
   if (step === 'import' && (state.branch !== 'go' || state.importStatus !== 'running')) return 'finish-setup'
@@ -129,10 +134,10 @@ export const PROGRESS_STEP_WORDS: Record<SetupProgressStep, string> = {
 }
 
 /** Which bar step each screen belongs to. */
-export const PROGRESS_STEP_OF_SCREEN: Record<SetupStep, SetupProgressStep> = {
+export const PROGRESS_STEP_OF_SCREEN: Record<RoutedSetupStep, SetupProgressStep> = {
   install: 'tools',
   scan: 'memory', reveal: 'memory',
-  choice: 'plan', savings: 'plan', checkout: 'plan',
+  choice: 'plan', checkout: 'plan',
   'finish-setup': 'connect', import: 'connect',
   launch: 'done', workspace: 'done',
 }
@@ -156,7 +161,7 @@ const PROGRESS_STEP_DONE: Record<SetupProgressStep, (state: SetupFlowState) => b
   done: () => false,
 }
 
-export function progressStepState(item: SetupProgressStep, screen: SetupStep, state: SetupFlowState): SetupProgressState {
+export function progressStepState(item: SetupProgressStep, screen: RoutedSetupStep, state: SetupFlowState): SetupProgressState {
   if (PROGRESS_STEP_OF_SCREEN[screen] === item) return 'current'
   return PROGRESS_STEP_DONE[item](state) ? 'done' : 'upcoming'
 }
@@ -170,16 +175,15 @@ export interface SetupBackFacts {
 }
 
 /** Back's target from each screen: the screen before it on this person's path, or null where there is none. */
-const PREVIOUS_STEP: Record<SetupStep, (state: SetupFlowState, facts: SetupBackFacts) => SetupStep | null> = {
+const PREVIOUS_STEP: Record<RoutedSetupStep, (state: SetupFlowState, facts: SetupBackFacts) => SetupStep | null> = {
   // The first screen: nothing comes before it.
   install: () => null,
   // The finished installation can be looked at again (read-only); without an install screen the scan comes first.
   scan: (_, facts) => facts.hasInstallStep ? 'install' : null,
   reveal: () => 'scan',
   choice: () => 'reveal',
-  savings: () => 'checkout',
   checkout: (_, facts) => facts.choiceLocked ? null : 'choice',
-  'finish-setup': (state, facts) => canOfferHosted(state) ? 'savings' : needsCheckout(state) ? 'checkout' : facts.choiceLocked ? null : 'choice',
+  'finish-setup': (state, facts) => needsCheckout(state) ? 'checkout' : facts.choiceLocked ? null : 'choice',
   import: () => 'finish-setup',
   // Launch only plays on the way forward; Back from either end of it returns to Finish Setup.
   launch: () => 'finish-setup',
@@ -187,7 +191,7 @@ const PREVIOUS_STEP: Record<SetupStep, (state: SetupFlowState, facts: SetupBackF
 }
 
 /** Where Back goes from `step` (passed through guardStep by the page like any request), or null to hide Back. */
-export function previousStep(step: SetupStep, state: SetupFlowState, facts: SetupBackFacts): SetupStep | null {
+export function previousStep(step: RoutedSetupStep, state: SetupFlowState, facts: SetupBackFacts): SetupStep | null {
   return PREVIOUS_STEP[step](state, facts)
 }
 

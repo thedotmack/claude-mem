@@ -156,9 +156,23 @@ export async function optimizeField(
   timeoutMs: number | (() => number) = FIELD_OPTIMIZE_TIMEOUT_MS,
   contextWindowTokens?: number,
   maxOutputTokens?: number | (() => number | undefined),
+  condenseEnabled: boolean | (() => boolean) = true,
 ): Promise<unknown> {
   const raw = JSON.stringify(value, null, 2) ?? '';
   if (raw.length <= maxChars) {
+    return value;
+  }
+
+  // CLAUDE_MEM_FIELD_CONDENSE_ENABLED=false: no model call at all, so the
+  // prompt builder's head/tail elision cuts the field instead (#6503). Read
+  // lazily, like the deadline, so a turn where everything fits never loads it.
+  if (!(typeof condenseEnabled === 'function' ? condenseEnabled() : condenseEnabled)) {
+    logger.debug('SDK', 'Oversized field condensing is switched off; falling back to truncation', {
+      sessionId: context.sessionDbId,
+      field: context.field,
+      toolName: context.toolName,
+      originalChars: raw.length,
+    });
     return value;
   }
 
@@ -350,6 +364,7 @@ export async function optimizeObservationFields(
   timeoutMs: number | (() => number) = FIELD_OPTIMIZE_TIMEOUT_MS,
   contextWindowTokens?: number,
   maxOutputTokens?: number | (() => number | undefined),
+  condenseEnabled: boolean | (() => boolean) = true,
 ): Promise<{ toolInput: unknown; toolOutput: unknown }> {
   // Inlined image payloads come out before anything measures or compresses the
   // field. `buildObservationPrompt` strips too, but it runs after this: a
@@ -369,9 +384,10 @@ export async function optimizeObservationFields(
   // ClaudeProvider's spawn factory wiring).
   const [toolInput, toolOutput] = await Promise.all([
     optimizeField(stripped.toolInput, compress, { ...context, field: 'parameters' }, maxChars, timeoutMs,
-      contextWindowTokens, maxOutputTokens),
+      contextWindowTokens, maxOutputTokens, condenseEnabled),
     optimizeField(context.toolName === 'Edit' ? compactEditOutput(stripped, maxChars) : stripped.toolOutput,
-      compress, { ...context, field: 'outcome' }, maxChars, timeoutMs, contextWindowTokens, maxOutputTokens),
+      compress, { ...context, field: 'outcome' }, maxChars, timeoutMs, contextWindowTokens, maxOutputTokens,
+      condenseEnabled),
   ]);
   return { toolInput, toolOutput };
 }

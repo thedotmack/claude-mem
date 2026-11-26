@@ -2,8 +2,8 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
-  PROGRESS_STEP_OF_SCREEN, PROGRESS_STEP_WORDS, SCAN_PHASE_RUNNING, SETUP_PROGRESS_STEPS, SETUP_STEPS, backWaitsFor, choiceLocked, guardStep,
-  hydrateSetupChoice, initialFlowState, launchLengthMs, nextAfterChoice, previousStep, progressStepState, scanMovesOn, scanRunning, type SetupFlowState, type SetupStep,
+  PROGRESS_STEP_OF_SCREEN, PROGRESS_STEP_WORDS, ROUTED_SETUP_STEPS, SCAN_PHASE_RUNNING, SETUP_PROGRESS_STEPS, SETUP_STEPS, backWaitsFor, choiceLocked, guardStep,
+  hydrateSetupChoice, initialFlowState, launchLengthMs, nextAfterChoice, previousStep, progressStepState, scanMovesOn, scanRunning, type RoutedSetupStep, type SetupFlowState,
 } from './setup-flow.ts'
 import type { SetupScanPhase } from '../../../../shared/setup-funnel.ts'
 
@@ -11,7 +11,7 @@ import type { SetupScanPhase } from '../../../../shared/setup-funnel.ts'
 const SCAN_PHASES = Object.keys(SCAN_PHASE_RUNNING) as SetupScanPhase[]
 
 const state = (changes: Partial<SetupFlowState> = {}): SetupFlowState => ({ ...initialFlowState(false), ...changes })
-const decided = (changes: Partial<SetupFlowState> = {}) => state({ scanComplete: true, revealContinued: true, choiceContinued: true, savingsComplete: true, ...changes })
+const decided = (changes: Partial<SetupFlowState> = {}) => state({ scanComplete: true, revealContinued: true, choiceContinued: true, ...changes })
 
 describe('nextAfterChoice', () => {
   it('sends On The Go to checkout and At Home straight to Finish Setup', () => {
@@ -21,15 +21,22 @@ describe('nextAfterChoice', () => {
   it('skips checkout for people already on Pro', () => {
     assert.equal(nextAfterChoice(state({ branch: 'go', alreadyPro: true })), 'finish-setup')
   })
-  it('offers hosted generation only after standalone checkout is confirmed', () => {
+  it('goes from a confirmed Cloud Sync checkout straight to Finish Setup, with no hosted offer in between', () => {
     for (const cloudSyncOffer of ['cloud_sync_monthly', 'cloud_sync_annual'] as const) {
-      const confirmed = decided({ cloudSyncOffer, checkoutReviewed: true, savingsComplete: false })
-      assert.equal(guardStep('finish-setup', confirmed), 'savings')
-      assert.equal(guardStep('savings', { ...confirmed, checkoutReviewed: false }), 'checkout')
-      assert.equal(guardStep('savings', { ...confirmed, memoryBilling: 'hosted' }), 'finish-setup')
-      assert.equal(guardStep('savings', { ...confirmed, branch: 'home' }), 'finish-setup')
-      assert.equal(guardStep('savings', { ...confirmed, alreadyPro: true }), 'finish-setup')
+      const confirmed = decided({ cloudSyncOffer, checkoutReviewed: true })
+      assert.equal(nextAfterChoice(confirmed), 'finish-setup')
+      assert.equal(guardStep('finish-setup', confirmed), 'finish-setup')
     }
+  })
+  it('never shows the old hosted offer: a request for it goes on to the step after the choice', () => {
+    const confirmed = decided({ checkoutReviewed: true })
+    for (const flow of [confirmed, { ...confirmed, memoryBilling: 'hosted' as const }, { ...confirmed, branch: 'home' as const }, { ...confirmed, alreadyPro: true }]) {
+      assert.equal(guardStep('savings', flow), 'finish-setup')
+    }
+    assert.equal(guardStep('savings', { ...confirmed, checkoutReviewed: false }), 'checkout')
+    // The id stays in the shared step list (old setup events name it), yet no request for any step lands on it.
+    assert.ok(SETUP_STEPS.includes('savings'))
+    for (const step of SETUP_STEPS) assert.notEqual(guardStep(step, confirmed), 'savings', step)
   })
 })
 
@@ -111,17 +118,17 @@ describe('saved storage choice', () => {
 })
 
 describe('step bar', () => {
-  it('maps the ten screens onto its steps in order, every step reached by a screen and worded once', () => {
+  it('maps the nine screens onto its steps in order, every step reached by a screen and worded once', () => {
     assert.deepEqual(Object.keys(PROGRESS_STEP_WORDS), [...SETUP_PROGRESS_STEPS])
     // The order of the screens never runs backwards through the bar, and it starts and ends with the bar.
-    const indexes = SETUP_STEPS.map((step) => SETUP_PROGRESS_STEPS.indexOf(PROGRESS_STEP_OF_SCREEN[step]))
+    const indexes = ROUTED_SETUP_STEPS.map((step) => SETUP_PROGRESS_STEPS.indexOf(PROGRESS_STEP_OF_SCREEN[step]))
     assert.deepEqual(indexes, [...indexes].sort((a, b) => a - b))
     assert.equal(indexes[0], 0)
     assert.equal(indexes[indexes.length - 1], SETUP_PROGRESS_STEPS.length - 1)
     // No bar step is left without a screen.
     assert.deepEqual([...new Set(indexes)], SETUP_PROGRESS_STEPS.map((_, index) => index))
   })
-  const states = (screen: SetupStep, flow: SetupFlowState) => SETUP_PROGRESS_STEPS.map((item) => progressStepState(item, screen, flow))
+  const states = (screen: RoutedSetupStep, flow: SetupFlowState) => SETUP_PROGRESS_STEPS.map((item) => progressStepState(item, screen, flow))
   it('ticks nothing on the first screen while installing', () => {
     assert.deepEqual(states('install', state({ installationComplete: false })), ['current', 'upcoming', 'upcoming', 'upcoming', 'upcoming'])
   })
@@ -140,7 +147,7 @@ describe('step bar', () => {
     assert.deepEqual(states('workspace', decided({ branch: 'home', setupComplete: true, finishTools: ['claude-code'] })), ['done', 'done', 'done', 'done', 'current'])
   })
   it('shows a step current again when the person goes back to it', () => {
-    assert.deepEqual(states('savings', decided({ branch: 'go', checkoutReviewed: true })), ['done', 'done', 'current', 'upcoming', 'upcoming'])
+    assert.deepEqual(states('checkout', decided({ branch: 'go', checkoutReviewed: true })), ['done', 'done', 'current', 'upcoming', 'upcoming'])
   })
 })
 
@@ -151,9 +158,8 @@ describe('Back', () => {
     assert.equal(previousStep('scan', state(), facts), 'install')
     assert.equal(previousStep('reveal', state({ scanComplete: true }), facts), 'scan')
     assert.equal(previousStep('choice', decided(), facts), 'reveal')
-    assert.equal(previousStep('savings', decided({ checkoutReviewed: true }), facts), 'checkout')
     assert.equal(previousStep('checkout', decided({ branch: 'go' }), facts), 'choice')
-    assert.equal(previousStep('finish-setup', decided({ branch: 'go', checkoutReviewed: true }), facts), 'savings')
+    assert.equal(previousStep('finish-setup', decided({ branch: 'go', checkoutReviewed: true }), facts), 'checkout')
     assert.equal(previousStep('finish-setup', decided({ branch: 'home' }), facts), 'choice')
     assert.equal(previousStep('finish-setup', decided({ branch: 'go', alreadyPro: true }), facts), 'choice')
     // Launch only plays forward, so Back from it or from the last screen returns to Finish Setup.
@@ -162,21 +168,20 @@ describe('Back', () => {
   it('treats the scan as the first screen when this run had no install screen', () => {
     assert.equal(previousStep('scan', state(), { hasInstallStep: false, choiceLocked: false }), null)
   })
-  it('keeps applied Home and existing plans out of the hosted offer', () => {
+  it('keeps applied Home and existing plans from going back into the plan choice', () => {
     assert.equal(previousStep('finish-setup', decided({ branch: 'home' }), { hasInstallStep: true, choiceLocked: true }), null)
     assert.equal(previousStep('finish-setup', decided({ alreadyPro: true }), { hasInstallStep: true, choiceLocked: true }), null)
     assert.equal(previousStep('finish-setup', decided({ memoryBilling: 'hosted', checkoutReviewed: true }), facts), 'checkout')
   })
   it('returns to a confirmed receipt without making the committed plan editable', () => {
     const locked = { hasInstallStep: true, choiceLocked: true }
-    assert.equal(previousStep('savings', decided({ checkoutReviewed: true }), locked), 'checkout')
+    assert.equal(previousStep('finish-setup', decided({ checkoutReviewed: true }), locked), 'checkout')
     assert.equal(previousStep('checkout', decided(), locked), null)
   })
   it('lands on a screen guardStep shows, so Back never bounces', () => {
-    const paths: Array<[SetupStep, SetupFlowState]> = [
+    const paths: Array<[RoutedSetupStep, SetupFlowState]> = [
       ['reveal', state({ scanComplete: true })],
       ['choice', state({ scanComplete: true, revealContinued: true })],
-      ['savings', decided({ checkoutReviewed: true })],
       ['checkout', decided({ branch: 'go' })],
       ['finish-setup', decided({ branch: 'go', checkoutReviewed: true })],
       ['finish-setup', decided({ branch: 'home' })],

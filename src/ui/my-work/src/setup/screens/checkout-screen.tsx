@@ -83,7 +83,7 @@ function useRenderAfter(at: string | null | undefined) {
 
 /**
  * The plan selection requests checkout. Keep the local tab available while the terminal
- * opens sign-in and Stripe. A completed pairing advances to usage or final setup.
+ * opens sign-in and Stripe. A completed pairing advances to Finish Setup.
  * A manual reopen also supports in-progress checkouts created by an older installer.
  */
 export function CheckoutScreen({ checkout, asked, installerStopped, cloudSyncOffer = DEFAULT_CLOUD_SYNC_OFFER, legacyHosted = false, back, onOpen, onContinue }: {

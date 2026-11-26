@@ -596,6 +596,10 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallDevinHooks } = await import('../../services/integrations/DevinHooksInstaller.js');
       return uninstallDevinHooks();
     }},
+    { label: 'ZCode hooks + MCP', fn: async () => {
+      const { uninstallZCode } = await import('../../services/integrations/ZCodeHooksInstaller.js');
+      return uninstallZCode();
+    }},
     { label: 'OMP hooks', fn: async () => {
       const { uninstallOmpHooks } = await import('../../services/integrations/OmpHooksInstaller.js');
       return uninstallOmpHooks();
