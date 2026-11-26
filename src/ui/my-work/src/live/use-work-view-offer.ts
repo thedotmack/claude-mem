@@ -53,8 +53,10 @@ export function useWorkViewOffer(enabled: boolean, cloudSyncConfigured: boolean 
 
   const read = async (signal: AbortSignal): Promise<OfferRead> => {
     const state = await readJson('/api/setup/state', signal)
-    if (memorySyncedIn(state)) store(MEMORY_SYNCED_KEY)
-    return { choice: offerChoiceIn(state), memorySynced: stored(MEMORY_SYNCED_KEY), now: Date.now() }
+    const synced = memorySyncedIn(state)
+    if (synced) store(MEMORY_SYNCED_KEY)
+    // The worker's own answer counts even when this browser cannot keep it.
+    return { choice: offerChoiceIn(state), memorySynced: synced || stored(MEMORY_SYNCED_KEY), now: Date.now() }
   }
   const nextCheckAt = (value: OfferRead, now: number) =>
     nextOfferCheckAt({ ...value, cloudSyncConfigured: configuredRef.current, now }, dismissedRef.current)
