@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+## [16.2.1] - 2026-11-26
 
 - **After a release ships, the childhood skill now watches it for 24 hours by default instead of 30 minutes** (#6480). A full day catches slow npm registry updates, late CI and reports from users in other time zones. Checks are close together in the first hour, every 30 minutes until hour 6, then every 2 hours, with a final sweep at the 24-hour mark. A new problem brings that surface back to close checks until it settles. Between checks the agent uses a scheduled check or wake-up instead of holding a session open, and if it can't come back it reports the window as still open, not as clean.
 
