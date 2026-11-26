@@ -8,11 +8,15 @@ import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
 import { _resetRedactionConfigCache, redactJsonStrings } from '../../../src/utils/redaction.js';
 import { SyncApply } from '../../../src/services/sync/SyncApply.js';
-import { buildContentOperation, canonicalJson } from '../../../src/services/sync/CanonicalContent.js';
+import { buildContentOperation, canonicalJson, sha256Base64Url } from '../../../src/services/sync/CanonicalContent.js';
 import { decodeChanges } from '../../../src/services/sync/SyncClient.js';
-import { publishSharedRecords, readSharedRecords } from '../../../src/services/work-view/shared-record-store.mjs';
-import { createSharedBatch, createSharedEntry, sharedRecordKey, sharedValueHash } from '../../../src/services/work-view/shared-records.mjs';
+import { createSharedRecordReader, publishSharedRecords, readSharedRecords } from '../../../src/services/work-view/shared-record-store.mjs';
+import { createSharedBatch, createSharedEntry, sharedEntryRef, sharedRecordKey, sharedValueHash } from '../../../src/services/work-view/shared-records.mjs';
 import { isSharedProjectionValue } from '../../../src/services/work-view/shared-projection.mjs';
+import { foldCloudBatch } from '../../../src/services/work-view/cloud-renderer.js';
+import { prepareReviewStackWrite, renderReviewStack, reviewStackPage, ReviewStackError } from '../../../src/services/work-view/review-stack.js';
+import { randomUUID } from 'node:crypto';
+import { redactSharedValue } from '../../../src/services/work-view/shared-redaction.mjs';
 import { WorkStateSource } from '../../../src/services/work-view/data-source.mjs';
 
 const AWS = 'AKIA' + 'ABCDEFGHIJKLMNOP';
@@ -53,6 +57,213 @@ function serializedDatabase(f: Fixture) {
   const tables = f.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as Array<{ name: string }>;
   return tables.map(({ name }) => JSON.stringify(f.db.query(`SELECT * FROM "${name}"`).all())).join('\n');
 }
+
+test('review excerpts and 5-word titles honor source and recipient redaction before persistence', () => {
+  const a = fixture('a'), b = fixture('b'), c = fixture('c');
+  const prefix = 'x'.repeat(3990) + ' ';
+  const excerpt = prefix + AWS + ' ' + 'z'.repeat(15_978 - prefix.length);
+  const body = { cards: [{
+    key: 'design-file', title: 'Review this private design ' + AWS, focus: 'Design',
+    what: 'The new cover brings the original print design into view.',
+    context: 'We are reviewing each draft ahead of the final publication.',
+    excerpt,
+  }] };
+  const importCard = (device: Fixture) => {
+    const {updates} = prepareReviewStackWrite([], 'import', body, '86837e86-e937-4b4b-ae8a-0670a697a0be', 1, {redactText:redactSharedValue});
+    expect(updates.filter(u => u.key.includes(':excerpt:'))).toHaveLength(1);
+    publishSharedRecords(device.db, { deviceId:device.deviceId, project:'Review', updates, validateValue:isSharedProjectionValue });
+  };
+  policy(false); importCard(a); const wire = wires(a);
+  policy(true); importCard(c);
+  expect(apply(b, wire).quarantined).toBe(0);
+  for (const recipient of [b, c]) {
+    const state = read(recipient);
+    expect(state.diagnostics.invalid).toBe(0);
+    const view = renderReviewStack(state.records.values(), {redactText:redactSharedValue});
+    expect(view.cards[0].excerpt).toBe(excerpt.replace(AWS, "<redacted type='aws_access_key'/>"));
+    expect(view.cards[0].title).toBe("Review this private design <redacted type='aws_access_key'/>");
+    expect(serializedDatabase(recipient)).not.toContain(AWS);
+  }
+});
+
+test('an enabled policy projects existing synced notes and selects a visible focus across devices', () => {
+  const a = fixture('a'), b = fixture('b');
+  const write = (f: Fixture, operation: 'import' | 'action', input: unknown) => {
+    const prepared = prepareReviewStackWrite(read(f).records.values(), operation, input, randomUUID(), 100, { redactText:redactSharedValue });
+    publishSharedRecords(f.db, { deviceId:f.deviceId, project:'Review', updates:prepared.updates, validateValue:isSharedProjectionValue });
+  };
+  policy(false);
+  write(a, 'import', {cards:['TEAM_BLUE', 'TEAM_GREEN'].map(focus => ({
+    key:'art-' + focus, focus, title:'Review the artwork',
+    what:'The first draft shows original cover artwork for our magazine.',
+    context:'We review the cover illustrations together ahead of final publication.',
+    source:'https://example.org/' + focus,
+  }))});
+  const original = renderReviewStack(read(a).records.values());
+  write(a, 'action', { action:'follow-up', cardId:original.cards[0].id, body:'Keep FOLLOWUP_PRIVATE visible only when authorized.' });
+  expect(apply(b, wires(a)).quarantined).toBe(0);
+  const cloud = foldCloudBatch(rows(a).map(row => ({...row, origin_device_id:'a', origin_local_id:String(row.id)})));
+  expect(cloud.invalid).toBe(0);
+  const plain = renderReviewStack(cloud.members);
+  policy(true, ['FOLLOWUP_PRIVATE']);
+  const notesMasked = renderReviewStack(cloud.members, {redactText:redactSharedValue});
+  expect(notesMasked.cards).toEqual(plain.cards);
+  expect(notesMasked.followUps[0].body).toContain("<redacted type='custom0'/>");
+  expect(notesMasked.revision).not.toBe(plain.revision);
+  expect(() => reviewStackPage(notesMasked, plain.revision + '.1')).toThrow(ReviewStackError);
+  policy(true, ['TEAM_BLUE|TEAM_GREEN', 'FOLLOWUP_PRIVATE']);
+  const safe = renderReviewStack(read(b).records.values(), {redactText:redactSharedValue});
+  expect(renderReviewStack(cloud.members, {redactText:redactSharedValue})).toEqual(safe);
+  for (const card of safe.cards) {
+    expect(card.key).toBe(card.id);
+    expect(card.source).toBeUndefined();
+    expect(card.focus).toBe("<redacted type='custom0'/>");
+  }
+  expect(new Set(safe.cards.map(card => card.focusId)).size).toBe(2);
+  expect(() => write(b, 'action', { action:'seen-group', focus:safe.cards[0].focus })).toThrow(ReviewStackError);
+  write(b, 'action', { action:'seen-group', focus:safe.cards[0].focus, cardId:safe.cards[0].id });
+  const maskedGroup = renderReviewStack(read(b).records.values(), {redactText:redactSharedValue});
+  expect(maskedGroup.groups[0]).toMatchObject({activeCount:1,focusId:safe.cards[0].focusId});
+  expect(maskedGroup.reviews.map(review => review.cardId)).toEqual([safe.cards[0].id]);
+  policy(false);
+  expect(apply(a, wires(b)).quarantined).toBe(0);
+  const received = renderReviewStack(read(a).records.values());
+  expect(received.cards.map(card => card.focus).sort()).toEqual(['TEAM_BLUE','TEAM_GREEN']);
+  expect(received.reviews).toEqual(maskedGroup.reviews);
+  write(a, 'action', { action:'undo-group', groupId:received.groups[0].id });
+  expect(renderReviewStack(read(a).records.values()).reviews).toEqual([]);
+});
+
+test('a stricter receiving device keeps two masked scopes distinct and undo leaves the other group seen', () => {
+  const a = fixture('alpha'), b = fixture('beta');
+  const write = (f: Fixture, operation: 'import' | 'action', body: unknown, mutationId = randomUUID()) => {
+    const { updates } = prepareReviewStackWrite(read(f).records.values(), operation, body, mutationId, 1, {redactText:redactSharedValue});
+    publishSharedRecords(f.db, {deviceId:f.deviceId,project:'Review',updates,validateValue:isSharedProjectionValue});
+    return mutationId;
+  };
+  policy(false);
+  write(a, 'import', {cards:['PRIVATE_ONE','PRIVATE_TWO'].map((focus,i) => ({
+    key:'art-' + i, focus, title:'Review the artwork', excerpt:'Original artwork',
+    what:'The first draft shows the original artwork for our magazine.',
+    context:'We review the magazine covers together ahead of final publication.',
+  }))});
+  const original = renderReviewStack(read(a).records.values());
+  const first = original.cards[0], second = original.cards[1];
+  const oldGroupId = write(a, 'action', {action:'seen-group', focus:first.focus});
+  policy(true, ['PRIVATE_ONE|PRIVATE_TWO']);
+  expect(apply(b, wires(a)).quarantined).toBe(0);
+  const received = renderReviewStack(read(b).records.values(), {redactText:redactSharedValue});
+  expect(received.cards.map(c => c.focus)).toEqual(["<redacted type='custom0'/>","<redacted type='custom0'/>"]);
+  expect(received.cards.map(c => c.focusId)).toEqual(original.cards.map(c => c.focusId));
+  expect(received.groups[0]).toMatchObject({id:oldGroupId,count:1,focusId:first.focusId});
+  const nextGroupId = write(b, 'action', {action:'seen-group',focus:received.cards[1].focus,cardId:second.id});
+  write(b, 'action', {action:'undo-group',groupId:oldGroupId});
+  const restored = renderReviewStack(read(b).records.values(), {redactText:redactSharedValue});
+  expect(restored.reviews.map(review => review.cardId)).toEqual([second.id]);
+  expect(restored.groups).toMatchObject([{id:nextGroupId,count:1,focusId:second.focusId}]);
+});
+
+test('receiver redaction preserves a verified link-only card and its unaffected batch sibling', () => {
+  const a = fixture('author'), b = fixture('receiver');
+  policy(false);
+  const cards = ['PRIVATE_KEY','unaffected'].map((key, i) => ({
+    key, focus:i ? 'Design' : 'PRIVATE_FOCUS', title:'Review the artwork',
+    what:'The first draft shows original cover artwork for our magazine.',
+    context:'We review the cover illustrations together ahead of final publication.',
+    source:i ? 'https://example.org/safe' : 'https://example.org/PRIVATE_URL',
+    ...(i ? {} : {preview:'https://preview.example.org/PRIVATE_URL'}),
+  }));
+  const {updates} = prepareReviewStackWrite([], 'import', {cards}, randomUUID(), 5);
+  publishSharedRecords(a.db, {deviceId:a.deviceId,project:'Review',updates,validateValue:isSharedProjectionValue});
+  const plain = renderReviewStack(read(a).records.values());
+  const protectedCard = plain.cards.find(c => c.key === 'PRIVATE_KEY')!;
+  policy(true, ['PRIVATE_(KEY|URL|FOCUS)']);
+  expect(apply(b, wires(a)).quarantined).toBe(0);
+  const state = read(b);
+  expect(state.diagnostics).toMatchObject({invalid:0,pending:0});
+  const safe = renderReviewStack(state.records.values());
+  expect(safe.cards).toHaveLength(2);
+  const masked = safe.cards.find(c => c.id === protectedCard.id)!;
+  expect(masked).toMatchObject({key:protectedCard.id,focusId:protectedCard.focusId});
+  expect(masked.source).toBeUndefined();
+  expect(masked.preview).toBeUndefined();
+  expect(safe.cards.find(c => c.key === 'unaffected')?.source).toBe(cards[1].source);
+  expect(serializedDatabase(b)).not.toMatch(/PRIVATE_(KEY|URL|FOCUS)/);
+  policy(false);
+  expect(renderReviewStack(read(b).records.values())).toEqual(safe);
+  const safeHead = state.records.get(sharedRecordKey('stack-card', protectedCard.id))!;
+  expect(safeHead.hash).toBe(read(a).records.get(sharedRecordKey('stack-card',protectedCard.id))!.hash);
+  expect(safeHead.valueHash).not.toBe(safeHead.hash);
+  // A network sender cannot manufacture receiver-only evidence by copying safe fields.
+  expect(isSharedProjectionValue('stack-card', protectedCard.id, JSON.parse(JSON.stringify(safeHead.value)))).toBe(false);
+});
+
+test('a legacy card receipt recovers on authenticated same-revision replay without restoring any protected value', () => {
+  const a = fixture('author'), b = fixture('receiver');
+  policy(false);
+  const cards = ['PRIVATE_KEY','unaffected'].map(key => ({
+    key, focus:'Art', title:'Review the artwork',
+    what:'The first draft shows original cover artwork for our magazine.',
+    context:'We review the cover illustrations together ahead of final publication.',
+    source:'https://example.org/PRIVATE_URL', excerpt:'Original',
+  }));
+  const {updates} = prepareReviewStackWrite([], 'import', {cards}, randomUUID(), 5);
+  publishSharedRecords(a.db,{deviceId:a.deviceId,project:'Review',updates,validateValue:isSharedProjectionValue});
+  const operations = wires(a);
+  policy(true, ['PRIVATE_(KEY|URL)']);
+  expect(apply(b, operations).quarantined).toBe(0);
+  for (const row of rows(a)) {
+    const fields = JSON.parse(row.fields);
+    if (fields.kind !== 'stack-card') continue;
+    // Recreate the exact old generic receipt and its attested scrubbed fields.
+    const legacyFields = {...fields, payload:canonicalJson(redactSharedValue(JSON.parse(fields.payload)))};
+    const stored = canonicalJson(legacyFields);
+    const target = b.db.query('SELECT id FROM work_state_entries WHERE origin_device_id=? AND origin_local_id=?')
+      .get(a.deviceId,String(row.id)) as {id:number};
+    b.db.query('UPDATE work_state_entries SET fields=? WHERE id=?').run(stored,target.id);
+    b.db.query('UPDATE local_shared_work_redactions SET stored_fields_hash=?,original_ref_json=? WHERE row_id=?')
+      .run(sha256Base64Url(stored),canonicalJson(sharedEntryRef(fields)),target.id);
+  }
+  const reader = createSharedRecordReader(b.db,{deviceId:b.deviceId,validateValue:isSharedProjectionValue});
+  expect(reader().diagnostics.invalid).toBe(1);
+  policy(false);
+  const recovered = apply(b,operations,operations.length + 1);
+  expect(recovered.quarantined).toBe(0);
+  expect(recovered.applied).toBe(2);
+  const reopened = reader(); // unchanged entity revisions must still invalidate the previously cached rejection
+  expect(reopened.diagnostics).toMatchObject({invalid:0,pending:0});
+  const deck = renderReviewStack(reopened.records.values());
+  expect(deck.cards).toHaveLength(2);
+  expect(deck.cards.filter(c => c.key === c.id)).toHaveLength(1);
+  expect(deck.cards.every(c => c.source === undefined)).toBe(true);
+  expect(serializedDatabase(b)).not.toMatch(/PRIVATE_(KEY|URL)/);
+  expect(apply(b,operations,2 * operations.length + 1).applied).toBe(0);
+});
+
+test.each(['wrong-key','opaque-key','invalid-url'])('rejects the original %s before recipient redaction can mask the defect', flaw => {
+  const a = fixture('author'), b = fixture('receiver');
+  policy(false);
+  const cards = ['original','sibling'].map(key => ({
+    key,focus:'Art',title:'Review the artwork',source:'https://example.org/original',
+    what:'The first draft shows original cover artwork for our magazine.',
+    context:'We review the cover illustrations together ahead of final publication.',
+  }));
+  const prepared = prepareReviewStackWrite([], 'import', {cards}, randomUUID(), 10);
+  const id = randomUUID(), author = a.deviceId;
+  const entries = prepared.updates.map(({kind,key,value}, i) => {
+    const bad = flaw === 'invalid-url' ? {source:'javascript:PRIVATE_TOKEN'} : {key:flaw === 'opaque-key' ? key : 'PRIVATE_TOKEN'};
+    return createSharedEntry({kind,key,value:i === 0 ? {...value as object,...bad} : value,writer:author,batchId:id,revision:'1'});
+  });
+  const insert = a.db.query('INSERT INTO work_state_entries(project,list_name,fields,created_at,created_at_epoch) VALUES(?,?,?,?,?)');
+  for (const row of createSharedBatch(entries,{batchId:id,writer:author})) insert.run('Review',row.listName,canonicalJson(row.fields),'2026-11-01T00:00:00Z',1793491200000);
+  const cloud = foldCloudBatch(rows(a).map(row => ({...row,origin_device_id:author,origin_local_id:String(row.id)})));
+  expect(cloud.invalid).toBe(1);
+  expect(cloud.members).toEqual([]);
+  policy(true,['PRIVATE_TOKEN']);
+  expect(apply(b, wires(a)).quarantined).toBe(1);
+  expect(renderReviewStack(read(b).records.values()).cards).toEqual([]);
+  expect(serializedDatabase(b)).not.toContain('PRIVATE_TOKEN');
+});
 
 test('origin redaction precedes payload and manifest hashes', () => {
   policy(true);

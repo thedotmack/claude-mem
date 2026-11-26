@@ -9,6 +9,7 @@ import type { ReviewResult } from '../live/review-response.ts'
 import type { RuleDecision, SavedRuleDecision } from '../live/rule-actions.ts'
 import type { RequestChange } from '../live/update-queue.ts'
 import type { UsageReport } from '../live/usage.ts'
+import type { WORK_VIEW_NAV_PAGES, WORK_VIEW_SECTIONS } from '../../../../shared/work-view-pages.ts'
 import type { ConversationContinuationSource, RuleSaveResult, SuggestionSaveResult, WorkDataSource, WorkModel } from '../live/work-data-source.ts'
 
 // ---------- Work: the active source's model ----------
@@ -74,9 +75,9 @@ export interface WorkSlice {
 
 /** `setup` is the install funnel (`?setup=1`): a full page outside the nav that becomes My Work when it completes. */
 export type Page = 'setup' | 'app'
-export type NavPage = 'work' | 'rules'
+export type NavPage = typeof WORK_VIEW_NAV_PAGES[number]
 /** What the main column shows: a page, or one of the focus views the rail opens. */
-export type Section = NavPage | 'suggested' | 'past-focus'
+export type Section = typeof WORK_VIEW_SECTIONS[number]
 export type WorkListView = 'cards' | 'list' | 'agents' | 'team'
 export type WorkFilter = 'all' | 'needs-you' | 'working' | 'shipped' | 'closed'
 export type WorkSort = 'attention' | 'started' | 'progress'

@@ -14,6 +14,7 @@
  */
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { PhotonCloudError } from './photon-cloud.js';
 import type { ChatInfo, MessageSource, ObserverEvent } from './types.js';
@@ -40,13 +41,13 @@ type PhotonGroupEvent = PhotonEventBase & {
 };
 interface PhotonStream<T> extends AsyncIterable<T> { close?(): Promise<void> }
 interface PhotonClient {
-  messages: { subscribeEvents(filter?: { chat?: string }): PhotonStream<PhotonMessageEvent> };
-  groups: { subscribeEvents(filter?: { chat?: string }): PhotonStream<PhotonGroupEvent> };
+  messages: { subscribeEvents(filter?: { chat?: string; onHeartbeat?: () => void }): PhotonStream<PhotonMessageEvent> };
+  groups: { subscribeEvents(filter?: { chat?: string; onHeartbeat?: () => void }): PhotonStream<PhotonGroupEvent> };
   chats: { get(guid: string): Promise<{ guid: string; displayName: string; isGroup: boolean; participants: readonly PhotonAddress[] }> };
   close(): Promise<void>;
 }
 type PhotonToken = string | (() => Promise<string>);
-interface PhotonModule {
+export interface PhotonModule {
   createGrpcClient?(options: { address: string; token: PhotonToken; tls?: boolean }): PhotonClient;
   createClient?(options: { address: string; token: PhotonToken; tls?: boolean }): PhotonClient;
 }
@@ -72,6 +73,11 @@ export interface PhotonOptions {
   tls?: boolean;
   /** Where `claude-mem imessage setup` installed the SDK. */
   installDir: string;
+  /** A signed app supplies its bundled SDK instead of loading user-installed code. */
+  sdk?: PhotonModule;
+  onListening?(): void;
+  onReconnecting?(): void;
+  onAuthRejected?(): void;
   log: { info(message: string): void; warn(message: string): void };
 }
 
@@ -141,7 +147,7 @@ export function fromPhotonGroupEvent(event: PhotonGroupEvent): ObserverEvent | n
 }
 
 /**
- * Merge async iterables into one, in arrival order. When one source fails or
+ * Merge the paired live subscriptions in arrival order. When one ends, fails or
  * the reader stops, every other source is closed too, so a reconnect never
  * leaves old streams open.
  */
@@ -158,10 +164,9 @@ async function* merge<T>(sources: AsyncIterable<T>[]): AsyncIterable<T> {
   try {
     while (pending.size > 0) {
       const { index, result } = await Promise.race(pending.values());
-      if (result.done) {
-        pending.delete(index);
-        continue;
-      }
+      // Each subscription is long lived. A clean EOF on either side makes
+      // the pair incomplete even when its sibling has nothing new to emit.
+      if (result.done) return;
       pull(index);
       yield result.value;
     }
@@ -180,11 +185,20 @@ async function* merge<T>(sources: AsyncIterable<T>[]): AsyncIterable<T> {
  * project has no line that can see group chats. A rejected token is fatal
  * only for a fixed token; a renewed one gets a fresh token on reconnect.
  */
+function authRejected(error: unknown): boolean {
+  // The SDK wraps nice-grpc's numeric code as grpcCode and uses the
+  // provider's free-form details as its message. Older transports expose code.
+  if (error && typeof error === 'object') {
+    const { grpcCode, code } = error as { grpcCode?: unknown; code?: unknown };
+    if (grpcCode === 7 || grpcCode === 16 || code === 7 || code === 16) return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /unauthenticated|permission[ _]denied|invalid token/i.test(message);
+}
+
 function isFatal(error: unknown, renewableTokens: boolean): boolean {
   if (error instanceof PhotonCloudError) return error.fatal;
-  if (renewableTokens) return false;
-  const message = error instanceof Error ? error.message : String(error);
-  return /unauthenticated|permission denied|invalid token/i.test(message);
+  return !renewableTokens && authRejected(error);
 }
 
 interface OpenLine { label: string; client: PhotonClient }
@@ -196,6 +210,7 @@ export class PhotonSource implements MessageSource {
   private readonly chatLine = new Map<string, PhotonClient>();
   private streams: PhotonStream<unknown>[] = [];
   private stopped = false;
+  private readonly stopping = new AbortController();
 
   constructor(private readonly options: PhotonOptions) {}
 
@@ -206,10 +221,11 @@ export class PhotonSource implements MessageSource {
 
   private async connect(): Promise<OpenLine[]> {
     if (this.lines.length > 0) return this.lines;
-    const sdk = await loadPhoton(this.options.installDir);
+    const sdk = this.options.sdk ?? await loadPhoton(this.options.installDir);
     const create = sdk.createGrpcClient ?? sdk.createClient;
     if (!create) throw new Error('This Photon SDK version has no gRPC client. Run: npx claude-mem imessage setup');
     const configs = typeof this.options.lines === 'function' ? await this.options.lines() : this.options.lines;
+    if (this.stopped) return [];
     if (configs.length === 0) throw new PhotonCloudError('No Photon iMessage line is set up. Run: npx claude-mem imessage setup', undefined, true);
     this.lines = configs.map(line => ({
       label: line.label ?? line.address,
@@ -219,11 +235,11 @@ export class PhotonSource implements MessageSource {
   }
 
   private async closeLines(): Promise<void> {
-    await Promise.allSettled(this.streams.map(stream => stream.close?.()));
-    await Promise.allSettled(this.lines.map(line => line.client.close()));
-    this.streams = [];
-    this.lines = [];
+    const streams = this.streams.splice(0);
+    const lines = this.lines.splice(0);
     this.chatLine.clear();
+    await Promise.allSettled(streams.map(stream => stream.close?.()));
+    await Promise.allSettled(lines.map(line => line.client.close()));
   }
 
   async *events(): AsyncIterable<ObserverEvent> {
@@ -231,31 +247,61 @@ export class PhotonSource implements MessageSource {
     while (!this.stopped) {
       try {
         const lines = await this.connect();
+        if (this.stopped) return;
         const feeds: AsyncIterable<{ client: PhotonClient; event: ObserverEvent | null }>[] = [];
+        const expected = 2 * lines.length;
+        let connected = 0;
+        const confirmation = () => {
+          let first = true;
+          return () => {
+            if (!first || this.stopped) return;
+            first = false;
+            if (++connected === expected) {
+              this.options.onListening?.();
+              this.options.log.info(`Listening for iMessage group chat messages on ${lines.map(line => line.label).join(', ')}.`);
+            }
+          };
+        };
         for (const line of lines) {
-          const messages = line.client.messages.subscribeEvents();
-          const groups = line.client.groups.subscribeEvents();
+          const messageConnected = confirmation();
+          const groupConnected = confirmation();
+          const messages = line.client.messages.subscribeEvents({ onHeartbeat: messageConnected });
+          const groups = line.client.groups.subscribeEvents({ onHeartbeat: groupConnected });
           this.streams.push(messages, groups);
-          feeds.push(mapIterable(messages, event => ({ client: line.client, event: fromPhotonMessageEvent(event) })));
-          feeds.push(mapIterable(groups, event => ({ client: line.client, event: fromPhotonGroupEvent(event) })));
+          feeds.push(mapIterable(messages, event => {
+            messageConnected();
+            return { client: line.client, event: fromPhotonMessageEvent(event) };
+          }));
+          feeds.push(mapIterable(groups, event => {
+            groupConnected();
+            return { client: line.client, event: fromPhotonGroupEvent(event) };
+          }));
         }
-        this.options.log.info(`Listening for iMessage group chat messages on ${lines.map(line => line.label).join(', ')}.`);
         for await (const item of merge(feeds)) {
           delayMs = 1_000;
           if (!item.event) continue;
           this.chatLine.set(item.event.chatGuid, item.client);
           yield item.event;
         }
+        if (!this.stopped) this.options.log.warn('A Photon group or message subscription ended. Reconnecting to both live streams.');
       } catch (error) {
         if (this.stopped) return;
         if (isFatal(error, this.renewableTokens())) throw error;
+        if (authRejected(error)) this.options.onAuthRejected?.();
         const message = error instanceof Error ? error.message : String(error);
         this.options.log.warn(`Photon stream dropped (${message}). Reconnecting in ${Math.round(delayMs / 1000)}s; messages sent meanwhile are not recorded.`);
+      } finally {
+        // This also releases the quiet sibling after a fatal credential error.
+        await this.closeLines();
       }
-      // Reopen from scratch next time, so a line Photon added or removed is picked up.
-      await this.closeLines();
       if (this.stopped) return;
-      await new Promise(resolve => setTimeout(resolve, delayMs));
+      this.options.onReconnecting?.();
+      try {
+        await delay(delayMs, undefined, { signal: this.stopping.signal });
+      } catch (error) {
+        if (this.stopped) return;
+        throw error;
+      }
       delayMs = Math.min(delayMs * 2, 60_000);
     }
   }
@@ -278,6 +324,7 @@ export class PhotonSource implements MessageSource {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.stopping.abort();
     await this.closeLines();
   }
 }

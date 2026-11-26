@@ -81,6 +81,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem hermes uninstall')}   Remove the owned Hermes integration; keep other settings and memories
   ${styleText('cyan', 'npx claude-mem imessage setup')}       Connect a Photon iMessage line for the group chat observer
   ${styleText('cyan', 'npx claude-mem imessage observe')}     Turn every group chat the line is in into Claude-Mem observations (one project per chat)
+  ${styleText('cyan', 'npx claude-mem imessage mac chats')}   List the chats on this Mac; the Claude-Mem Messages app picks which ones to observe
   ${styleText('cyan', 'npx claude-mem aider install|status|uninstall|sync')}   Manage Aider file-based context
   ${styleText('cyan', 'npx claude-mem gemini install|status|uninstall')}   Manage Gemini CLI capture hooks
   ${styleText('cyan', 'npx claude-mem devin install|status|uninstall')}   Manage Devin CLI / Devin Desktop hooks + MCP

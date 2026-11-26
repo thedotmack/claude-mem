@@ -10,3 +10,8 @@ export { groupIdFor, placeholderTitleFromAsk } from './request-groups.mjs';
 export { sharedSuggestionDescriptor } from './shared-reviews.mjs';
 export { isSharedProjectionValue } from './shared-projection.mjs';
 export { isSharedReviewValue } from './shared-review-value.mjs';
+export {
+  renderReviewStack, reviewStackPage, reviewStackImage, reviewStackWinners, prepareReviewStackWrite,
+  ReviewStackError, isReviewStackKind, REVIEW_STACK_CARD_KIND, REVIEW_STACK_CARD_TOOL_SCHEMA,
+  REVIEW_STACK_IMPORT_LIMIT,
+} from './review-stack.js';
