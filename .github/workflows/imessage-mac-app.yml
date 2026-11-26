@@ -93,6 +93,16 @@ jobs:
           lipo "$app/Contents/MacOS/ClaudeMemMessages" -verify_arch arm64 x86_64
           lipo "$app/Contents/Helpers/imessage-observer-arm64" -verify_arch arm64
           lipo "$app/Contents/Helpers/imessage-observer-x64" -verify_arch x86_64
+          for executable in "$app" "$app/Contents/Helpers/imessage-observer-"{arm64,x64}; do
+            codesign --display --verbose=4 "$executable" 2>&1 | grep -E 'flags=0x[[:xdigit:]]+\([^)]*runtime[,)]'
+            entitlements=$(codesign --display --entitlements - "$executable")
+            if [[ -n "$entitlements" ]]; then
+              test "$(plutil -convert json -o - - <<<"$entitlements")" = '{}'
+            fi
+          done
+          test "$(uname -m)" = arm64
+          "$app/Contents/MacOS/ClaudeMemMessages" --verify-bundle
+          bun scripts/smoke-observer.ts "$app/Contents/Helpers/imessage-observer-arm64"
       - uses: actions/upload-artifact@v4
         with:
           name: Claude-Mem-Messages
@@ -100,3 +110,29 @@ jobs:
           if-no-files-found: error
           overwrite: true
           retention-days: 14
+
+  verify-intel:
+    needs: build
+    runs-on: macos-15-intel
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - uses: actions/download-artifact@v4
+        with:
+          name: Claude-Mem-Messages
+          path: integrations/imessage-mac/build
+      - name: Run the downloadable app on Intel
+        working-directory: integrations/imessage-mac
+        run: |
+          test "$(uname -m)" = x86_64
+          extract=$(mktemp -d)
+          ditto -x -k build/Claude-Mem-Messages.zip "$extract"
+          app="$extract/Claude-Mem Messages.app"
+          codesign --verify --deep --strict "$app"
+          "$app/Contents/MacOS/ClaudeMemMessages" --verify-bundle
+          bun scripts/smoke-observer.ts "$app/Contents/Helpers/imessage-observer-x64"

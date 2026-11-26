@@ -32,12 +32,12 @@ for arch in arm64 x64; do
   helper="$APP/Contents/Helpers/imessage-observer-$arch"
   bun build observer/index.ts --compile --target="bun-darwin-$arch" \
     --no-compile-autoload-dotenv --no-compile-autoload-bunfig --outfile "$helper"
-  codesign --force --sign - "$helper"
+  codesign --force --sign - --options runtime "$helper"
 done
 
 # Ad-hoc releases use macOS System Settings > Privacy & Security > Open Anyway
 # on first open when prompted. Rebuilds may need a fresh Full Disk Access grant.
-codesign --force --sign - "$APP"
+codesign --force --sign - --options runtime "$APP"
 codesign --verify --deep --strict --verbose "$APP"
 "$APP/Contents/MacOS/ClaudeMemMessages" --verify-bundle
 if [[ "$(uname -m)" == arm64 ]]; then native=arm64; else native=x64; fi
