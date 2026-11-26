@@ -4007,12 +4007,19 @@ function parseSharedRow(row, localDeviceId2, { redactionReceipt = null } = {}) {
     if (sharedValueHash(fields.kind, fields.key, value, fields.deleted) !== fields.hash) {
       const receipt2 = redactionReceipt;
       if (!receipt2 || String(row.id) !== String(receipt2.row_id) || row.origin_device_id !== receipt2.origin_device_id || String(row.origin_local_id) !== receipt2.origin_local_id || String(row.sync_rev) !== receipt2.sync_rev || sha256Base64Url(canonicalJson(fields)) !== receipt2.stored_fields_hash) fail("entry hash mismatch");
-      const ref = JSON.parse(receipt2.original_ref_json);
+      const evidence2 = JSON.parse(receipt2.original_ref_json);
+      const validatedCard = evidence2?.domain === "stack-card-v1";
+      if (validatedCard) {
+        exact(evidence2, ["domain", "ref"]);
+        if (fields.kind !== "stack-card" || fields.deleted || !value || typeof value !== "object" || Array.isArray(value)) fail("invalid card disclosure");
+      }
+      const ref = validatedCard ? evidence2.ref : evidence2;
       exact(ref, ["kind", "key", "revision", "hash", "entryHash"]);
       hash(ref.hash);
       hash(ref.entryHash);
       if (ref.kind !== fields.kind || ref.key !== fields.key || ref.revision !== fields.revision || ref.hash !== fields.hash) fail("redaction receipt does not match entry");
       Object.defineProperty(result, verifiedRedactionReference, { value: ref });
+      if (validatedCard) Object.defineProperty(value, verifiedReviewCard, { value: fields.key });
     }
     return result;
   }
@@ -4042,7 +4049,7 @@ function parseSharedRow(row, localDeviceId2, { redactionReceipt = null } = {}) {
   }
   fail("unknown record type");
 }
-var SHARED_WORK_PREFIX, SHARED_WORK_MAX_VALUE_BYTES, SHARED_WORK_MAX_MANIFEST_BYTES, SHARED_WORK_MAX_ROW_BYTES, SHARED_WORK_MAX_UPDATES, SHARED_WORK_MAX_PARTS, isSharedWorkList, sharedWorkListSql, sharedRecordKey, sharedValueHash, fail, text, hash, bytes, verifiedRedactionReference, exact, sharedEntryRef;
+var SHARED_WORK_PREFIX, SHARED_WORK_MAX_VALUE_BYTES, SHARED_WORK_MAX_MANIFEST_BYTES, SHARED_WORK_MAX_ROW_BYTES, SHARED_WORK_MAX_UPDATES, SHARED_WORK_MAX_PARTS, isSharedWorkList, sharedWorkListSql, sharedRecordKey, sharedValueHash, fail, text, hash, bytes, verifiedRedactionReference, verifiedReviewCard, hasVerifiedReviewCardDisclosure, exact, sharedEntryRef;
 var init_shared_records = __esm({
   "src/services/work-view/shared-records.mjs"() {
     "use strict";
@@ -4071,6 +4078,8 @@ var init_shared_records = __esm({
     };
     bytes = (value) => Buffer.byteLength(value, "utf8");
     verifiedRedactionReference = /* @__PURE__ */ Symbol("verified-redaction-reference");
+    verifiedReviewCard = /* @__PURE__ */ Symbol("verified-review-card");
+    hasVerifiedReviewCardDisclosure = (value, key) => value?.[verifiedReviewCard] === key;
     exact = (value, keys) => {
       if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== keys.length || keys.some((key) => !Object.hasOwn(value, key))) fail("invalid fields");
     };
@@ -26805,7 +26814,7 @@ var imageTypes = ["image/png", "image/jpeg", "image/webp"];
 var inlineImage = external_exports.string().max(4 * Math.ceil(REVIEW_STACK_IMAGE_BYTES / 3) + 40);
 var importCard = external_exports.strictObject({ ...metadata, imageData: inlineImage.optional(), excerpt: text5(16e3).optional() }).refine((c) => Boolean(c.source || c.preview || c.imageData || c.excerpt), "Include the original source, preview or an excerpt.");
 var importBody = external_exports.strictObject({ cards: external_exports.array(importCard).min(1).max(REVIEW_STACK_IMPORT_LIMIT) });
-var storedCard = external_exports.strictObject({
+var cardFields = external_exports.strictObject({
   // Word counts guide authored copy. A recipient's redaction marker can replace
   // one word with two without changing the identity of a previously valid card.
   ...metadata,
@@ -26820,7 +26829,8 @@ var storedCard = external_exports.strictObject({
   imageParts: safeInt.max(Math.ceil(4 * Math.ceil(REVIEW_STACK_IMAGE_BYTES / 3) / IMAGE_CHUNK)),
   imageType: external_exports.enum(imageTypes).nullable(),
   imageHash: digest.nullable()
-}).refine((c) => c.imageType === null === (c.imageParts === 0) && c.imageHash === null === (c.imageParts === 0) && Boolean(c.source || c.preview || c.excerptParts || c.imageParts));
+}).refine((c) => c.imageType === null === (c.imageParts === 0) && c.imageHash === null === (c.imageParts === 0));
+var storedCard = cardFields.refine((c) => Boolean(c.source || c.preview || c.excerptParts || c.imageParts));
 function redactedCopy() {
   return text5(SHARED_WORK_MAX_VALUE_BYTES).refine((s) => /<redacted type='[^']+'\/>/u.test(s));
 }
@@ -26853,8 +26863,9 @@ function isReviewStackValue(kind, key, value, deleted = false) {
     case "stack-card": {
       if (!cardIdPattern.test(key)) return false;
       if (deleted) return true;
-      const data = storedCard.safeParse(value);
-      return data.success && cardId(data.data.key) === key;
+      const localDisclosure = hasVerifiedReviewCardDisclosure(value, key);
+      const data = (localDisclosure ? cardFields : storedCard).safeParse(value);
+      return data.success && (cardId(data.data.key) === key || localDisclosure && data.data.key === key);
     }
     case "stack-part": {
       const match = partKey.exec(key);
@@ -27405,6 +27416,7 @@ init_CanonicalContent();
 init_redaction();
 init_shared_records();
 var TABLE = "local_shared_work_redactions";
+var REPAIR_CLOCK = "shared_review_card_repair";
 function assertSharedMetadataRedactionSafe(fields, project = void 0) {
   const config2 = getRedactionConfig();
   if (project !== void 0 && redactJsonStrings(project, config2) !== project) {
@@ -27417,6 +27429,14 @@ function assertSharedMetadataRedactionSafe(fields, project = void 0) {
   }
   if (fields.record !== "entry" && canonicalJson(redactJsonStrings(JSON.parse(fields.payload), config2)) !== fields.payload) {
     throw new TypeError("Shared My Work: redaction would change a manifest identity");
+  }
+}
+function sharedReviewCardRepairClock(db) {
+  try {
+    return db.query("SELECT v FROM sync_state WHERE k=?").get(REPAIR_CLOCK)?.v ?? "";
+  } catch (error62) {
+    if (/no such table/i.test(String(error62.message))) return "";
+    throw error62;
   }
 }
 function readSharedRedactionReceipts(db) {
@@ -27486,6 +27506,12 @@ function scanShared(db, { deviceId, validateValue, includeHistory = false, revie
     }
     try {
       const summaries = summariesFor(db, deviceId, validateValue);
+      const repairClock = sharedReviewCardRepairClock(db);
+      if ((summaries.repairClock ?? "") !== repairClock) {
+        summaries.rows.clear();
+        summaries.values.clear();
+        summaries.repairClock = repairClock;
+      }
       const context = { db, deviceId, validateValue, reviewStack, reread: (id) => byId.get(id) };
       const seen = /* @__PURE__ */ new Map();
       const items = [];
@@ -27755,7 +27781,9 @@ function workStateRowsRevision(db, { where = "1", syncRev = true } = {}) {
   const statement = db.prepare(`SELECT COUNT(*) AS count, MAX(id) AS id${revisionSums} FROM work_state_entries WHERE ${where}`);
   try {
     const row = statement.get();
-    return `${row.count}:${row.id ?? 0}:${row.high ?? 0}:${row.low ?? 0}`;
+    const stamp2 = `${row.count}:${row.id ?? 0}:${row.high ?? 0}:${row.low ?? 0}`;
+    const repairClock = sharedReviewCardRepairClock(db);
+    return repairClock ? stamp2 + ":" + repairClock : stamp2;
   } finally {
     statement.finalize();
   }
