@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "16.1.4",
+  "version": "17.0.0",
   "description": "Persistent memory for Devin cloud sessions and Devin Bots: lifecycle hooks, the claude-mem MCP search server, and claude-mem skills. Needs the claude-mem runtime on the machine (see docs: Devin Integration).",
   "mcpServers": {
     "paths": [

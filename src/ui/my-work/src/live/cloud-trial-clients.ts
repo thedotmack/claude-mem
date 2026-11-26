@@ -11,6 +11,7 @@ export interface TrialClient {
   settings?: string
   guide?: string
   availability?: string
+  scheduleHelp?: string
 }
 
 const GEMINI_WEB_SETUP = 'In Gemini on the web, open Connected Apps ({settings}) → Custom apps. Add {url}, sign in to the same Claude-Mem account, then select the app with @ in your chat.'
@@ -25,11 +26,15 @@ function installedClient(id: string, fallback: string, override: Partial<TrialCl
 }
 
 export const PRIMARY_TRIAL_CLIENTS: readonly TrialClient[] = [
-  installedClient('chatgpt', 'Open ChatGPT Plugins ({settings}), add {url} as a custom MCP server with OAuth, and sign in to the same Claude-Mem account. Install the plugin and select it with @ in your chat.', { open: 'https://chatgpt.com/', settings: 'https://chatgpt.com/plugins', surface: 'ChatGPT Work' }),
-  installedClient('claude-ai', 'In Claude, open Plugins or Customize → Connectors. Add a custom connector with {url}, sign in to the same Claude-Mem account, and enable the connector in your conversation.', { name: 'Claude', surface: 'Claude Cowork', open: 'https://claude.ai/' }),
+  installedClient('chatgpt', 'Open ChatGPT Plugins ({settings}), add {url} as a custom MCP server with OAuth, and sign in to the same Claude-Mem account. Install the plugin and select it with @ in your chat.', { open: 'https://chatgpt.com/', settings: 'https://chatgpt.com/plugins', surface: 'ChatGPT Work',
+    scheduleHelp: 'Paste into ChatGPT with Claude-Mem connected. After ChatGPT confirms the task, open Scheduled to check its next run, edit it, or pause it.' }),
+  installedClient('claude-ai', 'In Claude, open Plugins or Customize → Connectors. Add a custom connector with {url}, sign in to the same Claude-Mem account, and enable the connector in your conversation.', { name: 'Claude', surface: 'Claude Cowork', open: 'https://claude.ai/',
+    scheduleHelp: 'Paste into Claude Cowork with Claude-Mem connected. Review the task and select Schedule. Open Scheduled to check its next run, edit it, or pause it.' }),
   { id: 'gemini-web', name: 'Gemini', surface: 'Gemini web', setup: GEMINI_WEB_SETUP, open: 'https://gemini.google.com/app', settings: 'https://gemini.google.com/apps', guide: 'https://support.google.com/gemini/answer/17209137',
     availability: 'Gemini custom apps require an eligible personal Google account in the US, age 18+, English, and Gemini conversation history turned on.' },
 ]
+
+export const SCHEDULING_TRIAL_CLIENTS = PRIMARY_TRIAL_CLIENTS.filter(client => client.scheduleHelp)
 
 export const OTHER_TRIAL_CLIENTS: readonly TrialClient[] = [
   installedClient('gemini-cli', GEMINI_CLI_SETUP),

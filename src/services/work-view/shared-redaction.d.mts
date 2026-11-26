@@ -5,3 +5,6 @@ export function redactSharedInboundRow(row: { id?: string | number; project?: st
 export function saveSharedRedactionReceipt(db: Database, row: { id: string | number; origin_device_id: string; origin_local_id: string; sync_rev: string }, receipt: SharedRedactionReceipt | null): void;
 export function readSharedRedactionReceipts(db: Database): Map<string, Record<string, unknown>>;
 export function redactSharedValue<T>(value: T): T;
+export function repairReplayedReviewCard(db: Database, deviceId: string, original: {project?: string; list_name: string;
+  fields: string; origin_device_id: string; origin_local_id: string; sync_rev: string}): boolean;
+export function sharedReviewCardRepairClock(db: Database): string;

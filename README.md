@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://cmem.ai/?utm_source=github_readme&amp;utm_campaign=holiday_cloud_sync">
+    <img src="docs/public/cloud-sync-bees.gif" alt="Everybody gets Cloud Sync! Visit the Claude-Mem homepage." width="480">
+  </a>
+</p>
+
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
@@ -59,7 +65,7 @@
     <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-16.1.4-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-17.0.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%5E20.19%20%7C%7C%20%3E%3D22.12-brightgreen.svg" alt="Node">

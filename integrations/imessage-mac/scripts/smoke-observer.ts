@@ -1,0 +1,149 @@
+/** Test the compiled executable in an empty home using synthetic groups and a local Photon stub. */
+import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { once } from 'node:events';
+import { createServer } from 'node:http2';
+import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
+import { FakeChatDb } from '../../../tests/fixtures/imessage/fake-chat-db';
+
+const binary = resolve(process.argv[2]);
+const home = mkdtempSync(join(tmpdir(), 'claude-mem-observer-'));
+const data = join(home, '.claude-mem');
+mkdirSync(data);
+const server = Bun.serve({
+  hostname: '127.0.0.1', port: 0,
+  fetch(request) {
+    if (new URL(request.url).pathname === '/api/health') return Response.json({ status: 'ok' });
+    if (request.headers.get('authorization') !== 'Basic ' + Buffer.from('fixture:fixtureSecret').toString('base64')) {
+      return new Response(null, { status: 401 });
+    }
+    return Response.json({ succeed: true, data: {
+      type: 'dedicated', auth: { test: 'fixtureToken' }, numbers: { test: 'Test line' }, expiresIn: 60,
+    } });
+  },
+});
+const env = {
+  HOME: home, PATH: '/usr/bin:/bin', CLAUDE_MEM_DATA_DIR: data,
+  CLAUDE_MEM_WORKER_URL: server.url.origin, SPECTRUM_CLOUD_URL: server.url.origin,
+};
+
+async function run(args: string[], input = '', status = 0) {
+  const child = Bun.spawn([binary, 'imessage', ...args], { cwd: home, env, stdin: new Blob([input]), stdout: 'pipe', stderr: 'pipe' });
+  const timeout = setTimeout(() => child.kill(), 10_000);
+  try {
+    const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    assert.equal(code, status, err + out);
+    assert.doesNotMatch(out + err, /fixtureSecret|fixtureToken/);
+    return out.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+  } finally { clearTimeout(timeout); }
+}
+
+try {
+  const before = await run(['photon', 'check', '--json']);
+  assert.equal(before[0].configured, false);
+  const connected = await run(['photon', 'connect', '--json'], JSON.stringify({ projectId: 'fixture', projectSecret: 'fixtureSecret' }));
+  assert.deepEqual(connected[0].lineNumbers, ['Test line']);
+  assert.equal(connected[0].worker.reachable, true);
+  const confPath = join(data, 'imessage-observer', 'config.json');
+  const saved = readFileSync(confPath, 'utf8');
+  const invalid = await run(['photon', 'connect', '--json'], JSON.stringify({ projectId: 'fixture', projectSecret: 'wrong' }), 1);
+  assert.equal(invalid[0].type, 'error');
+  assert.equal(readFileSync(confPath, 'utf8'), saved);
+  assert.equal(statSync(confPath).mode & 0o777, 0o600);
+
+  const legacy = JSON.parse(saved);
+  delete legacy.lineNumbers;
+  writeFileSync(confPath, JSON.stringify(legacy));
+  assert.deepEqual((await run(['photon', 'check', '--json']))[0].lineNumbers, ['Test line']);
+
+  // Legacy CLI opt-in for direct messages never widens the app's group subscription.
+  writeFileSync(confPath, JSON.stringify({ ...JSON.parse(saved), includeDirect: true }));
+  const feed = resolve(import.meta.dir, '../../../tests/fixtures/imessage/group-chats.jsonl');
+  const replay = await run(['photon', 'observe', '--replay', feed, '--dry-run', '--json']);
+  const windows = JSON.stringify(replay.filter(event => event.type === 'dry-run'));
+  assert.match(windows, /Booked 7:30/);
+  assert.doesNotMatch(windows, /This direct message must not be observed/);
+  assert.equal(replay.at(-1)?.type, 'stopped');
+
+  // Both subscriptions must reach the fixture through the compiled Photon gRPC client.
+  const grpc = createServer();
+  const methods = new Set<string>();
+  let subscribed!: () => void;
+  const subscriptions = new Promise<void>(resolve => { subscribed = resolve; });
+  grpc.on('stream', (stream, headers) => {
+    methods.add(String(headers[':path']));
+    assert.equal(headers.authorization, 'Bearer fixtureToken');
+    stream.respond({ ':status': 200, 'content-type': 'application/grpc' });
+    // The SDK's live response encodes heartbeat as length-delimited protobuf field 99.
+    stream.write(Buffer.from([0, 0, 0, 0, 3, 0x9a, 0x06, 0]));
+    if (methods.size === 2) subscribed();
+  });
+  grpc.listen(0, '127.0.0.1');
+  await once(grpc, 'listening');
+  const address = grpc.address();
+  assert.ok(address && typeof address === 'object');
+  writeFileSync(confPath, JSON.stringify({ address: '127.0.0.1:' + address.port, token: 'fixtureToken', tls: false }));
+  const photon = spawn(binary, ['imessage', 'photon', 'observe', '--json'], { env, cwd: home });
+  const completed = once(photon, 'close');
+  let diagnostics = '';
+  let active!: () => void;
+  const listening = new Promise<void>(resolve => { active = resolve; });
+  photon.stdout.on('data', chunk => {
+    diagnostics += chunk;
+    if (diagnostics.includes('"type":"started"')) active();
+  });
+  photon.stderr.on('data', chunk => { diagnostics += chunk; });
+  const timeoutPhoton = setTimeout(() => photon.kill('SIGKILL'), 8_000);
+  try {
+    const ready = await Promise.race([Promise.all([subscriptions, listening]).then(() => true), completed.then(() => false)]);
+    assert.ok(ready, diagnostics.replaceAll('fixtureToken', '[fixture]'));
+    assert.deepEqual([...methods].sort(), [
+      '/photon.imessage.v1.GroupService/SubscribeGroupEvents',
+      '/photon.imessage.v1.MessageService/SubscribeMessageEvents',
+    ]);
+    photon.stdin.end();
+    assert.equal((await completed)[0], 0);
+    assert.match(diagnostics, /"type":"stopped"/);
+  } finally {
+    clearTimeout(timeoutPhoton);
+    if (photon.exitCode === null && photon.signalCode === null) photon.kill();
+    grpc.close();
+  }
+
+  const dbPath = join(home, 'chat.db');
+  const fixture = new FakeChatDb(dbPath);
+  const guid = 'any;+;fixture';
+  fixture.chat(guid, { name: 'Test group', group: true, members: ['fixture@example.invalid'] });
+  fixture.close();
+  assert.equal((await run(['mac', 'check', '--db', dbPath, '--json']))[0].messages.ok, true);
+  const pick = (await run(['mac', 'pick', guid, '--on', '--json']))[0].choice;
+  assert.ok(pick.selectionId);
+  assert.equal((await run(['mac', 'pick', guid, '--focus', 'Test focus', '--json']))[0].choice.selectionId, pick.selectionId);
+  await run(['mac', 'pick', guid, '--off', '--json']);
+  assert.notEqual((await run(['mac', 'pick', guid, '--on', '--json']))[0].choice.selectionId, pick.selectionId);
+  assert.equal((await run(['mac', 'chats', '--db', dbPath, '--json']))[0].chats[0].observed, true);
+  const child = spawn(binary, ['imessage', 'mac', 'observe', '--db', dbPath, '--json', '--dry-run'], { env, cwd: home });
+  const closed = once(child, 'close');
+  const timeout = setTimeout(() => child.kill('SIGKILL'), 10_000);
+  const seen: string[] = [];
+  try {
+    for await (const line of createInterface({ input: child.stdout })) {
+      const event = JSON.parse(line);
+      seen.push(event.type);
+      if (event.type === 'started') child.stdin.end();
+    }
+    assert.equal((await closed)[0], 0);
+    assert.ok(seen.includes('started'));
+    assert.ok(seen.includes('stopped'));
+  } finally {
+    clearTimeout(timeout);
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+  }
+  console.log('Compiled observer passed Photon connection, group-only handoff, selected Mac chats, start and stop.');
+} finally {
+  server.stop(true);
+  rmSync(home, { recursive: true, force: true });
+}

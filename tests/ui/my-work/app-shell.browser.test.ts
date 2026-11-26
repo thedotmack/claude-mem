@@ -580,7 +580,7 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
     for (let index = 0; index < pageButtons; index++) {
       names.push((await accessibleText(`window.visibleIn('nav[aria-label="Pages"] button')[${index}]`)).name);
     }
-    expect(names.map((name) => name.replace(/\s*\d+ needs? you$/, ''))).toEqual(['My Work', 'My Rules']);
+    expect(names.map((name) => name.replace(/\s*\d+ needs? you$/, ''))).toEqual(['My Work', 'Review Stack', 'My Rules']);
     for (const height of await page!.evaluate(`window.visibleIn('nav[aria-label="Pages"] button').map((button) => button.getBoundingClientRect().height)`)) {
       expect(height).toBeGreaterThanOrEqual(44);
     }
