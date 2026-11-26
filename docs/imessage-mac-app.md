@@ -25,9 +25,10 @@ npx claude-mem install
 ```
 
 The app runs Claude-Mem's command line through `npx claude-mem@latest`, so it
-needs Node 20.19 or later (or 22.12 or later). It looks in the usual places: Homebrew, nvm, fnm, asdf, mise,
-Volta and Bun. It doesn't run your shell profile to find it, because the app
-holds Full Disk Access. The `claude-mem` launcher that install puts in
+needs Node 20.19 or newer, or 22.12 or newer. It looks in the usual places:
+Homebrew, nvm, fnm, Volta and Bun, then asdf and mise. Older Node versions are
+skipped. It doesn't run your shell profile to find it, because the app holds
+Full Disk Access. The `claude-mem` launcher that install puts in
 `~/.local/bin` only runs hooks, so the app doesn't use it. If the app can't
 find Node, or picked the wrong command, paste the full path to a `claude-mem`
 command into the setup screen, or clear it to search again.

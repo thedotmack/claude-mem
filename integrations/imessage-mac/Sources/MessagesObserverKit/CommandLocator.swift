@@ -53,10 +53,10 @@ public enum CommandLocator {
         return major > 22
     }
 
-    /// Node's bin folders from nvm, fnm, asdf and mise, newest version first.
-    /// Found by listing folders, never by running a shell. Node versions
-    /// claude-mem can't run on are left out, so an old leftover nvm Node never
-    /// wins over a newer one from Homebrew.
+    /// Node's bin folders from nvm and fnm, newest version first, then
+    /// Homebrew's own node folder. Found by listing folders, never by running a
+    /// shell. Node versions claude-mem can't run on are left out, so an old
+    /// leftover nvm Node never wins over a newer one from Homebrew.
     public static func versionManagerFolders(home: String, fileManager: FileManager = .default) -> [String] {
         func versions(_ root: String, bin: String) -> [String] {
             let names = (try? fileManager.contentsOfDirectory(atPath: root)) ?? []
@@ -69,17 +69,28 @@ public enum CommandLocator {
         var folders = versions("\(home)/.nvm/versions/node", bin: "/bin")
         folders += versions("\(home)/Library/Application Support/fnm/node-versions", bin: "/installation/bin")
         folders += versions("\(home)/.local/share/fnm/node-versions", bin: "/installation/bin")
-        folders += ["\(home)/.asdf/shims", "\(home)/.local/share/mise/shims", "/opt/homebrew/opt/node/bin", "/usr/local/opt/node/bin"]
+        folders += ["/opt/homebrew/opt/node/bin", "/usr/local/opt/node/bin"]
             .filter { fileManager.fileExists(atPath: $0) }
         return folders
     }
 
-    /// The child's PATH: version manager folders first, then the common folders, then the system ones. No repeats.
-    public static func searchPath(home: String, extraFolders: [String], inherited: String?) -> String {
+    /// asdf and mise shims, with asdf's own folder so its shims can run. These
+    /// can't be checked without running them (the version they pick depends on
+    /// the folder and the person's settings), so they come after Homebrew and
+    /// only win when nothing else has Node.
+    public static func shimFolders(home: String, fileManager: FileManager = .default) -> [String] {
+        ["\(home)/.asdf/shims", "\(home)/.asdf/bin", "\(home)/.local/share/mise/shims"]
+            .filter { fileManager.fileExists(atPath: $0) }
+    }
+
+    /// The child's PATH: version manager folders first, then the common
+    /// folders, then the shims, then the system ones. No repeats.
+    public static func searchPath(home: String, extraFolders: [String], lateFolders: [String] = [], inherited: String?) -> String {
         var seen = Set<String>()
         var folders: [String] = []
         let parts = extraFolders
             + commonFolders(home: home)
+            + lateFolders
             + (inherited ?? "/usr/bin:/bin:/usr/sbin:/sbin").split(separator: ":").map(String.init)
         for folder in parts where !folder.isEmpty && !seen.contains(folder) {
             seen.insert(folder)

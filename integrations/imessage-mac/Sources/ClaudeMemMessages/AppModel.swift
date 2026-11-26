@@ -84,28 +84,43 @@ final class AppModel: ObservableObject {
 
     // MARK: Setup
 
+    /// Counts refreshes, so only the newest one's answer is used when two
+    /// overlap (for example, coming back from Full Disk Access while the first
+    /// npx check is still downloading).
+    private var refreshGeneration = 0
+
     /// Checks access, finds claude-mem, asks it about Messages and the worker, then loads chats.
     func refreshAll() async {
+        refreshGeneration += 1
+        let generation = refreshGeneration
         access = FullDiskAccess.check()
         if launch == nil || !commandPath.isEmpty { await locateCommand() }
-        guard let runner else { return }
-        if let result = try? await runner.run(["imessage", "mac", "check", "--json"]) {
-            for event in result.events {
-                if case let .check(messages, worker, _) = event {
-                    if messages.ok { access = .granted } else if messages.reason == "no-permission" { access = .denied }
-                    workerReachable = worker.reachable
-                    workerURL = worker.url
-                }
-            }
-            if result.events.isEmpty {
-                commandProblem = result.errorText.isEmpty
-                    ? "claude-mem did not answer. Update it with: npx claude-mem@latest install"
-                    : result.errorText
-            } else {
-                commandProblem = nil
+        guard generation == refreshGeneration, let runner else { return }
+        let result: CommandResult
+        do {
+            result = try await runner.run(["imessage", "mac", "check", "--json"])
+        } catch {
+            guard generation == refreshGeneration else { return }
+            commandProblem = "claude-mem didn't start: \(error.localizedDescription)"
+            return
+        }
+        guard generation == refreshGeneration else { return }
+        for event in result.events {
+            if case let .check(messages, worker, _) = event {
+                if messages.ok { access = .granted } else if messages.reason == "no-permission" { access = .denied }
+                workerReachable = worker.reachable
+                workerURL = worker.url
             }
         }
+        if result.events.isEmpty {
+            commandProblem = result.errorText.isEmpty
+                ? "claude-mem did not answer. Update it with: npx claude-mem@latest install"
+                : result.errorText
+        } else {
+            commandProblem = nil
+        }
         if access == .granted { await loadChats() }
+        guard generation == refreshGeneration else { return }
         if access == .granted, listenOnLaunch, observedCount > 0, running == nil, !userStopped { startListening() }
     }
 
@@ -114,6 +129,7 @@ final class AppModel: ObservableObject {
         let found: CommandLaunch? = await Task.detached {
             let home = FileManager.default.homeDirectoryForCurrentUser.path
             let path = CommandLocator.searchPath(home: home, extraFolders: CommandLocator.versionManagerFolders(home: home),
+                                                 lateFolders: CommandLocator.shimFolders(home: home),
                                                  inherited: ProcessInfo.processInfo.environment["PATH"])
             return CommandLocator.resolve(override: override.isEmpty ? nil : override, searchPath: path) {
                 FileManager.default.isExecutableFile(atPath: $0)

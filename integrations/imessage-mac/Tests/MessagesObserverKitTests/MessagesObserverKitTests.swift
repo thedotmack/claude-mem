@@ -91,9 +91,15 @@ final class CommandLocatorTests: XCTestCase {
             "\(home)/.nvm/versions/node/v22.12.0/bin",
             "\(home)/.nvm/versions/node/v20.19.2/bin",
         ])
-        XCTAssertEqual(folders.count, 4)
-        XCTAssertTrue(folders.contains("\(home)/.asdf/shims"))
-        XCTAssertFalse(folders.contains("\(home)/.local/share/mise/shims"))
+        XCTAssertEqual(folders.count, 3)
+        // asdf shims can't be checked without running them, so they come after Homebrew.
+        XCTAssertFalse(folders.contains("\(home)/.asdf/shims"))
+        XCTAssertEqual(CommandLocator.shimFolders(home: home), ["\(home)/.asdf/shims"])
+        let parts = CommandLocator.searchPath(home: home, extraFolders: folders,
+                                              lateFolders: CommandLocator.shimFolders(home: home), inherited: "/usr/bin")
+            .split(separator: ":").map(String.init)
+        XCTAssertLessThan(parts.firstIndex(of: "/opt/homebrew/bin")!, parts.firstIndex(of: "\(home)/.asdf/shims")!)
+        XCTAssertLessThan(parts.firstIndex(of: "\(home)/.asdf/shims")!, parts.firstIndex(of: "/usr/bin")!)
     }
 }
 
