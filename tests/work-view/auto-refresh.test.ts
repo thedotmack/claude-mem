@@ -1312,6 +1312,35 @@ describe('a group left without a review (#6432)', () => {
       expect(readLedger(dir).progress).toEqual({});
     } finally { unregister(); database.close(); rmSync(dir, { recursive: true, force: true }); }
   });
+
+  it.each([
+    ['could not be written', 'the disk is full'],
+    ['was refused by the check', 'state must be one of shipped, in-progress, stalled, abandoned, unknown.'],
+  ])('a review that %s is not forgiven when the retry leaves its group out: the refresh still fails and names why', async (fault, why) => {
+    const dir = scratchDir('auto-refresh-review-unsaved-then-left-out');
+    const database = fixtureDatabase();
+    let unregister = () => {};
+    try {
+      const task = buildRefreshTask(threeDueRequests(dir, database));
+      const writeFails = fault === 'could not be written';
+      if (writeFails) unregister = registerSharedFileWriter(dir, (name: string) => { if (name.startsWith('progress/')) throw new Error('the disk is full'); return null; });
+      const laterSteps: string[] = [];
+      let reviewAsks = 0;
+      const error = await task.run(async (prompt: string) => {
+        if (!prompt.includes('Do only section 2')) { laterSteps.push(prompt); return defaultAnswer(prompt); }
+        // Every group gets a review on the first ask, none of them saved; the retry then holds no review at all.
+        return JSON.stringify({ reviews: reviewAsks++ ? [] : showsIn(prompt).map(show => writeFails ? reviewOf(show) : { ...reviewOf(show), state: 'finished' }) });
+      }, 'claude-code').then(() => null, (caught: unknown) => caught as Error & { answerRefused?: boolean });
+      // Left as "no review was given", this would report a full disk as groups the model skipped, on every refresh.
+      expect(error?.message).toMatch(/^reviews: g_[0-9a-f]{12}: no review was given on the retry; the first one was not saved: /);
+      expect(error?.message).toContain(`the first one was not saved: ${why}`);
+      expect(error?.answerRefused).toBe(true);
+      expect(reviewAsks).toBe(2);
+      expect(laterSteps).toEqual([]);
+      expect(readLedger(dir).progress).toEqual({});
+      expect(task.groupsLeftWithoutReview).toBe(0);
+    } finally { unregister(); database.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
 });
 
 describe('grouping repair', () => {

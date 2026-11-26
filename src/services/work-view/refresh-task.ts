@@ -820,13 +820,16 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & {
       /** One batch of reviews. Like step(), but a refusal re-asks only for the groups that were refused.
        * A group the model gave no review for, on the first ask and on that one retry, is left without a review: it
        * stays due and the next refresh asks for it again. A model that leaves the same group out every time used to
-       * fail every refresh here, so titles, focus and the story never ran (#6432). When leaving groups out is the
-       * retry's only fault the batch's saved reviews stand and the refresh goes on. A review that was given and
-       * still could not be saved (refused again, or a write that failed) fails the batch as before. */
+       * fail every refresh here, so titles, focus and the story never ran (#6432). The batch's saved reviews stand
+       * and the refresh goes on. A review that was given and could not be saved (the check refused it, or the write
+       * failed) still fails the batch unless its retry is saved: leaving that group out on the retry does not
+       * forgive it, so a write that keeps failing is never reported as a group the model left out. */
       const reviewBatch = async (groups: Array<{ groupId: string }>, rule: string) => {
         let shows = groups.map(group => cli(['show', group.groupId]));
         let refusals: string[] = [];
         let rejectedReviews: Array<{ groupId?: string }> = [];
+        /** Why a review that was given could not be saved, by group, from either ask. */
+        const rejections = new Map<string, string>();
         for (let attempt = 0; attempt < 2 && shows.length; attempt++) {
           const retryGroupIds = new Set(shows.map(show => show.groupId));
           let text: string;
@@ -861,13 +864,20 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & {
               for (const label of saved?.droppedPreferences ?? []) droppedPreferences.add(`${review.groupId}:${label}`);
               recorded.add(String(review.groupId)); reviewed++;
             }
-            catch (error) { rejectedReviews.push(review); refusals.push(`${review.groupId}: ${error instanceof Error ? error.message : String(error)}`); }
+            catch (error) {
+              const why = error instanceof Error ? error.message : String(error);
+              rejectedReviews.push(review); refusals.push(`${review.groupId}: ${why}`); rejections.set(String(review.groupId), why);
+            }
           }
           shows = shows.filter(show => !recorded.has(show.groupId));
-          for (const show of shows) if (!refusals.some(line => line.startsWith(`${show.groupId}:`))) refusals.push(`${show.groupId}: no review was given.`);
+          for (const show of shows) if (!refusals.some(line => line.startsWith(`${show.groupId}:`))) {
+            // Left out on the retry after a review that could not be saved: the failure keeps that first reason.
+            const earlier = rejections.get(show.groupId);
+            refusals.push(earlier ? `${show.groupId}: no review was given on the retry; the first one was not saved: ${earlier}` : `${show.groupId}: no review was given.`);
+          }
         }
         if (!shows.length) return;
-        if (rejectedReviews.length) throw refused(new Error(`reviews: ${refusals.join('; ').slice(0, 500)}`));
+        if (rejectedReviews.length || shows.some(show => rejections.has(show.groupId))) throw refused(new Error(`reviews: ${refusals.join('; ').slice(0, 500)}`));
         groupsLeftWithoutReview += shows.length;
         // The failed run used to name these groups in the worker log; the run that now finishes still does.
         logger.warn('WORKER', `Work view refresh (${reason}) left ${shows.length} groups without a review; they stay due for the next refresh`, { agent, reviews: refusals.join('; ') });
