@@ -71,6 +71,13 @@ beforeEach(async () => {
   const sessionManager = {
     getSession: (id: number) => activeSessions.get(id),
     initializeSession: (id: number, prompt: string, promptNumber: number, project: string) => {
+      // As SessionManager does: a live session is returned as the same object, with the new turn on it.
+      const cached = activeSessions.get(id);
+      if (cached) {
+        cached.userPrompt = prompt;
+        cached.lastPromptNumber = promptNumber || cached.lastPromptNumber;
+        return cached;
+      }
       const row = store!.getSessionById(id);
       const session = makeActiveSession(
         id,
@@ -267,6 +274,26 @@ describe('session-init carries the per-session observer model onto the ActiveSes
     expect(response.status).toBe(200);
     expect(body).toMatchObject({ skipped: false, status: 'initialized' });
     expect(activeSessions.get(body.sessionDbId)?.observerModel).toBe('endpoint-model');
+  });
+
+  it('keeps the last known observer model when a later prompt arrives without one', async () => {
+    // V2 reads the model under a 250 ms deadline, so one slow read sends a prompt without the field.
+    const contentSessionId = 'observer-model-missed-read';
+    const first = await postInit({ contentSessionId, project: 'acme/api', prompt: 'first turn', observerModel: 'model-a' });
+    const firstJson = await first.json() as any;
+    const liveSession = activeSessions.get(firstJson.sessionDbId)!;
+    expect(liveSession.observerModel).toBe('model-a');
+
+    const second = await postInit({ contentSessionId, project: 'acme/api', prompt: 'second turn' });
+    const secondJson = await second.json() as any;
+
+    expect(secondJson).toMatchObject({ skipped: false, status: 'initialized' });
+    expect(liveSession.lastPromptNumber).toBe(2);
+    expect(activeSessions.get(secondJson.sessionDbId)?.observerModel).toBe('model-a');
+
+    // A prompt that does carry one still replaces it.
+    await postInit({ contentSessionId, project: 'acme/api', prompt: 'third turn', observerModel: 'model-b' });
+    expect(liveSession.observerModel).toBe('model-b');
   });
 
   it('ignores an empty, whitespace-only, oversized, or non-string observer model without failing init', async () => {
