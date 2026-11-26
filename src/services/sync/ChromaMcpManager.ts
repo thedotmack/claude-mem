@@ -191,6 +191,13 @@ const CHROMA_EXCLUDE_NEWER_SETTING = 'CLAUDE_MEM_CHROMA_EXCLUDE_NEWER';
 // Leap seconds (:60) are not accepted.
 const EXCLUDE_NEWER_PATTERN =
   /^(\d{4})-(\d{2})-(\d{2})(?:T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d))?$/i;
+// Shown when an install that passed --exclude-newer exits non-zero. uv treats
+// a package with no upload time as unavailable under a cutoff, so a private
+// index or mirror that does not publish them fails here and vector search
+// stays off. uv's stderr wording is not matched: the hint is conditional, and
+// it is the one failure this flag can cause that the user can fix in settings.
+const CHROMA_EXCLUDE_NEWER_FAILURE_HINT =
+  `If your package index or mirror does not publish upload times, set ${CHROMA_EXCLUDE_NEWER_SETTING} to "" in ~/.claude-mem/settings.json and restart the worker.`;
 
 /** Chroma child health for /api/admin/doctor and `npx claude-mem doctor`. */
 export interface ChromaCrashState {
@@ -321,6 +328,12 @@ export class ChromaMcpManager {
   private activePrewarmTracked: TrackedChild | null = null;
   /** Consecutive prewarm failures; trips the circuit breaker, reset on success. */
   private consecutivePrewarmFailures: number = 0;
+  /**
+   * The recovery hint of the latest failed prewarm, if it had one. The breaker
+   * messages below replace that failure's message in the uvx status within
+   * about a minute of retries, so they repeat it; reset on success.
+   */
+  private latestPrewarmFailureHint: string | null = null;
   /** When the breaker last opened; gates the half-open recovery probe. */
   private prewarmBreakerOpenedAt: number = 0;
   /** Monotonic prewarm-attempt counter, so the retry cap is observable in logs. */
@@ -1364,6 +1377,10 @@ export class ChromaMcpManager {
     await ChromaMcpManager.uvBuildsScratchSweep;
   }
 
+  private latestPrewarmFailureHintSuffix(): string {
+    return this.latestPrewarmFailureHint ? `. ${this.latestPrewarmFailureHint}` : '';
+  }
+
   private async prewarmChromaMcp(
     command: string,
     commandArgs: string[],
@@ -1377,7 +1394,7 @@ export class ChromaMcpManager {
       // failed, so stop spawning entirely until the worker restarts. This caps
       // the total wasted builds (and the scratch they can leak) on a host that
       // never recovers.
-      const message = `chroma-mcp prewarm disabled after ${this.consecutivePrewarmFailures} consecutive failures; restart required`;
+      const message = `chroma-mcp prewarm disabled after ${this.consecutivePrewarmFailures} consecutive failures; restart required${this.latestPrewarmFailureHintSuffix()}`;
       logger.warn('CHROMA_MCP', 'chroma-mcp prewarm circuit breaker latched, restart required', {
         consecutiveFailures: this.consecutivePrewarmFailures,
         prewarmAttempts: this.prewarmAttempts,
@@ -1391,7 +1408,7 @@ export class ChromaMcpManager {
       const msSinceOpen = Date.now() - this.prewarmBreakerOpenedAt;
       if (msSinceOpen < cooldownMs) {
         const retryInS = Math.ceil((cooldownMs - msSinceOpen) / 1000);
-        const message = `chroma-mcp prewarm paused after ${this.consecutivePrewarmFailures} consecutive failures; retrying in ${retryInS}s`;
+        const message = `chroma-mcp prewarm paused after ${this.consecutivePrewarmFailures} consecutive failures; retrying in ${retryInS}s${this.latestPrewarmFailureHintSuffix()}`;
         logger.warn('CHROMA_MCP', 'chroma-mcp prewarm circuit breaker open, skipping spawn', {
           consecutiveFailures: this.consecutivePrewarmFailures,
           prewarmAttempts: this.prewarmAttempts,
@@ -1436,6 +1453,9 @@ export class ChromaMcpManager {
     const stderrTail = ChromaMcpManager.captureOutputTail(child.stderr);
 
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    // True only when uvx itself exited with a failure code: not a timeout, a
+    // spawn error, a signal or a cancelled connection.
+    let prewarmExitedNonZero = false;
     const exitPromise = new Promise<void>((resolve, reject) => {
       child.once('error', (error) => {
         if (this.connectionGeneration !== connectionGeneration) {
@@ -1453,6 +1473,7 @@ export class ChromaMcpManager {
           resolve();
           return;
         }
+        prewarmExitedNonZero = code !== null;
         reject(new Error(`chroma-mcp prewarm exited with code ${code ?? 'null'}${signal ? ` signal ${signal}` : ''}`));
       });
     });
@@ -1467,6 +1488,7 @@ export class ChromaMcpManager {
       await Promise.race([exitPromise, timeoutPromise]);
       this.assertConnectionNotCancelled(connectionGeneration);
       this.consecutivePrewarmFailures = 0;
+      this.latestPrewarmFailureHint = null;
       logger.debug('CHROMA_MCP', 'chroma-mcp uvx prewarm completed');
       if (!this.sweptUvBuildsScratchAfterSuccess) {
         // A host that recovered (e.g. once UV_LINK_MODE=copy lets installs
@@ -1492,6 +1514,12 @@ export class ChromaMcpManager {
         this.prewarmBreakerOpenedAt = Date.now();
       }
       const errorMessage = error instanceof Error ? error.message : String(error);
+      // Read now: the timeout path reaches here with the child still running,
+      // and it may exit non-zero once it is killed below.
+      const excludeNewerHint = prewarmExitedNonZero && args.includes('--exclude-newer')
+        ? CHROMA_EXCLUDE_NEWER_FAILURE_HINT
+        : null;
+      this.latestPrewarmFailureHint = excludeNewerHint;
       const pid = child.pid;
       const stdout = stdoutTail();
       const stderr = stderrTail();
@@ -1503,6 +1531,7 @@ export class ChromaMcpManager {
         consecutiveFailures: this.consecutivePrewarmFailures,
         ...(pid ? { pid } : {}),
         error: errorMessage,
+        ...(excludeNewerHint ? { hint: excludeNewerHint } : {}),
         ...(stdout ? { stdoutTail: stdout } : {}),
         ...(stderr ? { stderrTail: stderr } : {})
       });
@@ -1528,7 +1557,7 @@ export class ChromaMcpManager {
       // our own scratch dir is no longer held open.
       ChromaMcpManager.startUvBuildsScratchSweep(env);
 
-      const unavailableMessage = `chroma-mcp prewarm failed: ${errorMessage}`;
+      const unavailableMessage = `chroma-mcp prewarm failed: ${errorMessage}${this.latestPrewarmFailureHintSuffix()}`;
       recordUvxVectorSearchUnavailable(unavailableMessage);
       throw new ChromaUnavailableError(unavailableMessage, error instanceof Error ? error : undefined);
     } finally {
