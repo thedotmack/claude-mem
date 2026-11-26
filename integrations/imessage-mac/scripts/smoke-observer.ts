@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { once } from 'node:events';
+import { createServer } from 'node:http2';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { FakeChatDb } from '../../../tests/fixtures/imessage/fake-chat-db';
@@ -61,6 +62,45 @@ try {
   assert.match(windows, /Booked 7:30/);
   assert.doesNotMatch(windows, /This direct message must not be observed/);
   assert.equal(replay.at(-1)?.type, 'stopped');
+
+  // Both subscriptions must reach the fixture through the compiled Photon gRPC client.
+  const grpc = createServer();
+  const methods = new Set<string>();
+  let subscribed!: () => void;
+  const subscriptions = new Promise<void>(resolve => { subscribed = resolve; });
+  grpc.on('stream', (stream, headers) => {
+    methods.add(String(headers[':path']));
+    assert.equal(headers.authorization, 'Bearer fixtureToken');
+    stream.respond({ ':status': 200, 'content-type': 'application/grpc' });
+    stream.write(Buffer.alloc(5)); // An empty protobuf stream frame.
+    if (methods.size === 2) subscribed();
+  });
+  grpc.listen(0, '127.0.0.1');
+  await once(grpc, 'listening');
+  const address = grpc.address();
+  assert.ok(address && typeof address === 'object');
+  writeFileSync(confPath, JSON.stringify({ address: '127.0.0.1:' + address.port, token: 'fixtureToken', tls: false }));
+  const photon = spawn(binary, ['imessage', 'photon', 'observe', '--json'], { env, cwd: home });
+  const completed = once(photon, 'close');
+  let diagnostics = '';
+  photon.stdout.on('data', chunk => { diagnostics += chunk; });
+  photon.stderr.on('data', chunk => { diagnostics += chunk; });
+  const timeoutPhoton = setTimeout(() => photon.kill('SIGKILL'), 8_000);
+  try {
+    const ready = await Promise.race([subscriptions.then(() => true), completed.then(() => false)]);
+    assert.ok(ready, diagnostics.replaceAll('fixtureToken', '[fixture]'));
+    assert.deepEqual([...methods].sort(), [
+      '/photon.imessage.v1.GroupService/SubscribeGroupEvents',
+      '/photon.imessage.v1.MessageService/SubscribeMessageEvents',
+    ]);
+    photon.stdin.end();
+    assert.equal((await completed)[0], 0);
+    assert.match(diagnostics, /"type":"stopped"/);
+  } finally {
+    clearTimeout(timeoutPhoton);
+    if (photon.exitCode === null && photon.signalCode === null) photon.kill();
+    grpc.close();
+  }
 
   const dbPath = join(home, 'chat.db');
   const fixture = new FakeChatDb(dbPath);

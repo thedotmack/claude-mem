@@ -1,4 +1,4 @@
-import { createGrpcClient } from '@photon-ai/advanced-imessage/grpc';
+import { createGrpcClient } from './photon-sdk.cjs';
 import { runImessageMacCommand } from '../../../src/npx-cli/commands/imessage-mac';
 import { runPhotonAppCommand } from '../../../src/npx-cli/commands/imessage';
 

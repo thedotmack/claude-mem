@@ -26,6 +26,8 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # These self-contained readers have no runtime npm dependency or shell lookup.
 # Keep architecture-specific executables intact; Bun embeds JS data in each image.
+../../node_modules/.bin/esbuild observer/photon-sdk.cts --bundle --platform=node --target=node22 \
+  --format=cjs --log-override:empty-import-meta=silent --outfile=observer/photon-sdk.cjs
 for arch in arm64 x64; do
   helper="$APP/Contents/Helpers/imessage-observer-$arch"
   bun build observer/index.ts --compile --target="bun-darwin-$arch" \
