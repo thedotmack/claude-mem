@@ -1,6 +1,6 @@
 // A read-only projection of recorded work and observation activity. A captured
 // tool call establishes its author, never the assignee or live presence.
-import { buildHumanRequests, originalFor } from './request-projection.mjs';
+import { buildHumanRequests, conversationKey, originalFor } from './request-projection.mjs';
 import { goalKindOf, OWNER_GOALS_LIST, isOwnerGoalsList } from './owner-goals.mjs';
 import { buildRules } from './my-rules.mjs';
 import { buildFocusAreas, placeRequests } from './my-focus.mjs';
@@ -451,6 +451,9 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
   const groupedSessionIds = new Set([...groups.values()].filter((group) => !group.isSubagent).map((group) => group.sessionId));
   for (const session of sessions) {
     if (session.id == null || groupedSessionIds.has(session.id)) continue;
+    // The grouping ledger ruled this conversation out as a human goal, so
+    // buildHumanRequests builds no card from its asks and no group is needed.
+    if (ledger?.groups?.ignored?.[conversationKey(session)]) continue;
     const own = promptsBySessionId.get(session.id) ?? [];
     if (!originalFor(session, own)) continue;
     const group = getGroup({ session, agentId: null, agentType: null, project: session.project });

@@ -9,8 +9,7 @@ import { groupIdFor } from '../../src/services/work-view/request-groups.mjs';
 // agent group was built only from recorded work and recent observations. A
 // session that ended — prompts and a summary captured, observations aged out
 // of the loaded window, no work state — left the card with agentIds: [] and
-// the UI's "Agent not recorded" fallback, and nothing dated the request's
-// end, so it presented as still in progress.
+// the UI's "Agent not recorded" fallback.
 const DAY = 86400000, NOW = 100 * DAY;
 const key = (session: string) => JSON.stringify(['conversation', 'claude', session]);
 
@@ -29,9 +28,9 @@ const addSession = (db: Database, id: number, content: string, ask: string, stat
     .run(id, 'claude', content, `m${id}`, 'repo', ask, status, startedAt, completedAt);
   db.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(id, 1, ask, startedAt);
 };
-const viewOf = (db: Database) => {
+const viewOf = (db: Database, ledger: any = null) => {
   const state = reduceWorkState([], { currentProject: 'repo' });
-  return buildAgentView(state, readAgentRecords(db, { workState: state, now: NOW }), { now: NOW });
+  return buildAgentView(state, readAgentRecords(db, { workState: state, ledger, now: NOW }), { ledger, now: NOW });
 };
 
 describe('a request whose session has ended', () => {
@@ -51,8 +50,9 @@ describe('a request whose session has ended', () => {
     expect(agent.label).toBe('Claude Code');
     expect(agent.platformSource).toBe('claude');
     expect(agent.sessionId).toBe(1);
-    // The request stopped running when its only session ended.
-    expect(request.completedAtEpoch).toBe(NOW - 3 * DAY + 3600000);
+    // A completed session row does not date the request's end: the worker
+    // also marks a row completed when its observer goes idle mid-conversation.
+    expect(request.completedAtEpoch).toBeNull();
   });
 
   it('an active session with only asks names its agent and stays undated', () => {
@@ -74,58 +74,7 @@ describe('a request whose session has ended', () => {
     expect(view.agents.filter((agent: any) => agent.sessionId === 1)).toHaveLength(1);
     const [request] = view.humanRequests;
     expect(request.agentIds).toHaveLength(1);
-    expect(request.completedAtEpoch).toBe(NOW - DAY + 3600000);
-  });
-});
-
-describe('the completion date of a grouped request', () => {
-  const session = (id: number, content: string, ask: string, status: string, at: number, completedAt: number | null) =>
-    ({ id, platform_source: 'claude', content_session_id: content, project: 'repo', user_prompt: ask, started_at_epoch: at, status, completed_at_epoch: completedAt });
-  const prompt = (id: number, sessionId: number, text: string, at: number) => ({ id, session_db_id: sessionId, prompt_number: 1, prompt_text: text, created_at_epoch: at });
-  const ledgerFor = (contents: string[]) => ({
-    groups: {
-      conversations: Object.fromEntries(contents.map((content) => [key(content), groupIdFor(key(contents[0]))])),
-      groups: { [groupIdFor(key(contents[0]))]: { title: 'Cards', anchor: key(contents[0]), projectRoot: 'repo' } },
-      ignored: {},
-    },
-    progress: {},
-  });
-
-  it('is the last session end when every conversation has ended, and stays open while one is active', () => {
-    const prompts = [prompt(11, 1, 'Build the release cards', 10), prompt(21, 2, 'Fix the card spacing', 20)];
-    const ended = [session(1, 'a', 'Build the release cards', 'completed', 10, 5000), session(2, 'b', 'Fix the card spacing', 'completed', 20, 9000)];
-    const [done] = buildHumanRequests({ agents: [] }, { sessions: ended, prompts }, { ledger: ledgerFor(['a', 'b']) }).humanRequests;
-    expect(done.completedAtEpoch).toBe(9000);
-    const oneActive = [ended[0], session(2, 'b', 'Fix the card spacing', 'active', 20, null)];
-    const [open] = buildHumanRequests({ agents: [] }, { sessions: oneActive, prompts }, { ledger: ledgerFor(['a', 'b']) }).humanRequests;
-    expect(open.completedAtEpoch).toBeNull();
-  });
-
-  it('a group member whose session is not loaded here leaves the request undated', () => {
-    // The ledger names two conversations; only the ended one's session has
-    // arrived on this device. The missing member's end is unknown, so the
-    // ended subset alone must not date the whole request.
-    const prompts = [prompt(11, 1, 'Build the release cards', 10)];
-    const sessions = [session(1, 'a', 'Build the release cards', 'completed', 10, 5000)];
-    const [request] = buildHumanRequests({ agents: [] }, { sessions, prompts }, { ledger: ledgerFor(['a', 'b']) }).humanRequests;
     expect(request.completedAtEpoch).toBeNull();
-  });
-
-  it('a group member with no substantive ask that is still active leaves the request undated', () => {
-    // Member b's session is captured and active, but its only ask is
-    // 'continue', so no card-building step ever brought its key to the
-    // request. The ledger still assigns it to the group.
-    const prompts = [prompt(11, 1, 'Build the release cards', 10), prompt(21, 2, 'continue', 20)];
-    const sessions = [session(1, 'a', 'Build the release cards', 'completed', 10, 5000), session(2, 'b', 'continue', 'active', 20, null)];
-    const [request] = buildHumanRequests({ agents: [] }, { sessions, prompts }, { ledger: ledgerFor(['a', 'b']) }).humanRequests;
-    expect(request.completedAtEpoch).toBeNull();
-  });
-
-  it('an ended group member with no substantive ask still dates the group by its own end', () => {
-    const prompts = [prompt(11, 1, 'Build the release cards', 10), prompt(21, 2, 'continue', 20)];
-    const sessions = [session(1, 'a', 'Build the release cards', 'completed', 10, 5000), session(2, 'b', 'continue', 'completed', 20, 9000)];
-    const [request] = buildHumanRequests({ agents: [] }, { sessions, prompts }, { ledger: ledgerFor(['a', 'b']) }).humanRequests;
-    expect(request.completedAtEpoch).toBe(9000);
   });
 
   it('a group whose anchor session was never captured keeps no agent and no completion date', () => {
@@ -135,34 +84,14 @@ describe('the completion date of a grouped request', () => {
     expect(request.agentIds).toEqual([]);
     expect(request.completedAtEpoch).toBeNull();
   });
-});
 
-describe('an end stamp followed by newer work', () => {
-  const session = (status: string, completedAt: number | null) =>
-    ({ id: 1, platform_source: 'claude', content_session_id: 'a', project: 'repo', user_prompt: 'Build the release cards', started_at_epoch: 10, status, completed_at_epoch: completedAt });
-  const prompt = (id: number, text: string, at: number, number = 1) => ({ id, session_db_id: 1, prompt_number: number, prompt_text: text, created_at_epoch: at });
-  const ask = prompt(11, 'Build the release cards', 10);
-  const workView = (lastUpdateEpoch: number) => ({
-    agents: [{ id: 'agent-1', label: 'Claude Code', sessionId: 1, work: [{ id: 'w1', title: 'Card grid', kind: 'work-state', listId: 'cards', listName: 'cards', project: 'repo', status: 'doing', lastUpdateEpoch, sourceRefs: [] }], activity: [] }],
-  });
-
-  it('does not date the request when a prompt landed after the stamp', () => {
-    // The row was finalized at 5000, then the conversation carried on: a
-    // later prompt sits in the same session past the stamp it still carries.
-    const prompts = [ask, prompt(12, 'Also fix the card spacing', 8000, 2)];
-    const [request] = buildHumanRequests({ agents: [] }, { sessions: [session('completed', 5000)], prompts }).humanRequests;
-    expect(request.completedAtEpoch).toBeNull();
-  });
-
-  it('does not date the request when recorded work is newer than the stamp', () => {
-    // Capture resumed on later tool calls after an idle finalize; the work
-    // the agent recorded at 8000 postdates the stamp of 5000.
-    const [request] = buildHumanRequests(workView(8000), { sessions: [session('completed', 5000)], prompts: [ask] }).humanRequests;
-    expect(request.completedAtEpoch).toBeNull();
-  });
-
-  it('keeps the date when the recorded work predates the stamp', () => {
-    const [request] = buildHumanRequests(workView(4000), { sessions: [session('completed', 5000)], prompts: [ask] }).humanRequests;
-    expect(request.completedAtEpoch).toBe(5000);
+  it('a conversation the grouping ledger ignored gets no agent group: it backs no card', () => {
+    const db = database();
+    addSession(db, 1, 'kept-1', 'Build the release cards', 'completed', NOW - 2 * DAY, NOW - 2 * DAY + 3600000);
+    addSession(db, 2, 'ignored-1', 'Fix the card spacing', 'completed', NOW - DAY, NOW - DAY + 3600000);
+    const ledger = { groups: { conversations: {}, groups: {}, ignored: { [key('ignored-1')]: 'not a goal' } }, progress: {} };
+    const view = viewOf(db, ledger);
+    expect(view.humanRequests.map((request: any) => request.id)).toEqual([key('kept-1')]);
+    expect(view.agents.map((agent: any) => agent.sessionId)).toEqual([1]);
   });
 });

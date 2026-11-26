@@ -387,56 +387,6 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
     request.startedAtEpoch = request.original.atEpoch ?? null;
     request.progress = request.groupId ? ledger?.progress?.[request.groupId] ?? null : null;
     request.completedAtEpoch = request.lifecycle && (request.lifecycle.complete === true || ['done', 'completed', 'complete', 'shipped', 'delivered'].includes(request.lifecycle.status.toLowerCase())) ? request.lifecycle.atEpoch : null;
-    // No recorded work closed this request, but every conversation behind it
-    // is a captured session that has ended (its row no longer reads 'active':
-    // completion is written only at finalize and cleared if the session
-    // resumes). The request stopped running when the last of them ended, so
-    // it is not presented as still in progress. This dates the end only; the
-    // recorded status above still says what the work's state is.
-    //
-    // Two guards on that reading. A group is vouched for by every
-    // conversation the ledger assigned to it, not only the ones that reached
-    // this card: a member whose session is not loaded here, or whose ask was
-    // not substantive enough to build a card from, still belongs to the
-    // request, and while its end is unknown or it is still active the
-    // request stays undated. And an end stamp is believed only when no newer
-    // work follows it: the observer finalizes a row after three idle
-    // minutes, capture can resume on later tool calls without reopening the
-    // row (only a new prompt reopens one), and a later finalize never
-    // restamps a completed row — so a session whose prompts or recorded work
-    // postdate its stamp has not been shown to stop.
-    if (request.completedAtEpoch == null) {
-      const endIds = new Set(relatedIds);
-      let unknownMember = false;
-      if (request.groupId && ledger?.groups?.conversations) {
-        for (const [memberKey, memberGroup] of Object.entries(ledger.groups.conversations)) {
-          if (memberGroup !== request.groupId || ledger.groups.ignored?.[memberKey]) continue;
-          const memberSession = sessionsByKey.get(memberKey);
-          if (memberSession && groupFor(memberKey, memberSession) !== request.groupId) continue;
-          const memberIds = sessionIdsByKey.get(memberKey) ?? [];
-          if (!memberIds.length) { unknownMember = true; break; }
-          for (const memberId of memberIds) endIds.add(memberId);
-        }
-      }
-      if (!unknownMember && endIds.size) {
-        const endedAt = [];
-        for (const id of endIds) {
-          const session = sessions.get(id);
-          if (!session || !session.status || session.status === 'active') { endedAt.length = 0; break; }
-          const ownPrompts = promptsBySession.get(id) ?? [];
-          const end = session.completed_at_epoch
-            ?? Math.max(0, ...ownPrompts.map((prompt) => prompt.created_at_epoch ?? 0), session.started_at_epoch ?? 0);
-          if (!end) { endedAt.length = 0; break; }
-          if (session.completed_at_epoch != null) {
-            const lastWork = Math.max(0, ...ownPrompts.map((prompt) => prompt.created_at_epoch ?? 0),
-              ...request.items.filter((item) => item.agentSessionId === id).map((item) => item.lastUpdateEpoch ?? 0));
-            if (lastWork > end) { endedAt.length = 0; break; }
-          }
-          endedAt.push(end);
-        }
-        if (endedAt.length) request.completedAtEpoch = Math.max(...endedAt);
-      }
-    }
     request.requestedBy = metadata('requestedBySource')[0]?.item.requestedBy ?? null;
     request.requestedBySource = metadata('requestedBySource')[0]?.record ?? null;
     request.shipEstimate = metadata('shipEstimateSource')[0]?.item.shipEstimate ?? null;
