@@ -14,6 +14,7 @@ import { join } from 'path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import {
   CloudSync,
+  getNativeContentOperation,
   HubHttpError,
   hubRetryAfterMs,
   parseContentBatchSize,
@@ -25,6 +26,7 @@ import {
   type CloudSyncSettingKeys,
   type CloudSyncOptions,
 } from '../../../src/services/sync/CloudSync.js';
+import { readSyncQueueInventory } from '../../../src/services/sync/SyncQueueEvidence.js';
 import { PROMPT_TEXT_MAX_BYTES, PROMPT_TRUNCATION_MARKER } from '../../../src/services/sync/prompt-text-clamp.js';
 import { buildContentOperation, buildMutationOperation, stableDocumentId } from '../../../src/services/sync/CanonicalContent.js';
 import { SyncApply } from '../../../src/services/sync/SyncApply.js';
@@ -998,6 +1000,43 @@ describe('CloudSync', () => {
     db.prepare('UPDATE user_prompts SET synced_at = -1 WHERE id = 1').run();
     new SessionStore(db);
     expect(db.prepare('SELECT synced_at FROM user_prompts WHERE id = 1').get()).toEqual({ synced_at: -1 });
+  });
+
+  it('keeps setup-history prompts local across pairing, frozen retries and selected history', async () => {
+    const secret = 'Historical ask from setup import';
+    seedPrompt(secret, 1);
+    seedPrompt('New live hook ask', 2);
+    seedPrompt('New live agent ask', 3);
+    const device = 'device-fixture';
+    const legacy = getNativeContentOperation(db, 'prompt', '1', device)!;
+    const insert = db.prepare(`INSERT INTO sync_content_outbox
+      (entity_id, kind, origin_local_id, entity_rev, body, operation_sha256, deleted, created_at_epoch)
+      VALUES (?, 'prompt', ?, ?, ?, ?, 0, 1)`);
+    const record = JSON.parse(legacy.operation.body);
+    insert.run(record.id, '1', legacy.revision, legacy.operation.body, legacy.operation.operation_sha256);
+    const missing = buildContentOperation({ kind: 'prompt', originDeviceId: device, originLocalId: '77',
+      entityRev: '3', payload: record.payload });
+    insert.run(stableDocumentId('prompt', device, '77'), '77', '3', missing.body, missing.operation_sha256);
+    db.exec(`UPDATE user_prompts SET native_prompt_id='transcript:turn-1' WHERE id=1;
+      UPDATE user_prompts SET native_prompt_id='live:turn-3' WHERE id=3;
+      INSERT INTO sync_launch_exclusions(kind,origin_local_id,through_rev) VALUES ('prompt','1','1'), ('prompt','2','1')`);
+
+    const { impl, calls } = makeFetchMock();
+    const sync = makeCloudSync(impl);
+    const inventory = readSyncQueueInventory(db, { deviceId: device, workStateSupported: true, sharedWorkWritesEnabled: true });
+    expect(inventory.kinds.prompt.eligiblePending).toBe(2);
+    expect(sync.status().pending.prompts).toBe(2);
+    expect(getNativeContentOperation(db, 'prompt', '1', device)).toBeNull();
+    const preview = sync.recovery.preview({ project: 'unknown', kinds: ['prompt'], from: '2025-01-01T00:00:00Z', to: '2026-01-01T00:00:00Z' });
+    expect(preview.items.map(item => item.originLocalId)).toEqual(['2']);
+    await sync.flush();
+    expect(sync.status().lastError).toBeNull();
+    const ops = calls.flatMap(call => call.wireParsed?.ops ?? []).map(op => JSON.parse(op.body));
+    expect(ops.filter(op => !op.deleted).map(op => op.payload.prompt_text)).toEqual(['New live hook ask', 'New live agent ask']);
+    expect(ops.find(op => op.origin_local_id === '77')).toMatchObject({ deleted: true, payload: null, entity_rev: '4' });
+    expect(JSON.stringify(calls)).not.toContain(secret);
+    expect(db.prepare('SELECT prompt_text, synced_at FROM user_prompts WHERE id=1').get()).toEqual({ prompt_text: secret, synced_at: null });
+    expect(sync.status().pending.prompts).toBe(0);
   });
 
   it('cuts a prompt that fits as raw bytes but not once JSON-escaped', async () => {

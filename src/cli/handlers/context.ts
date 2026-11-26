@@ -4,6 +4,7 @@
 // This handler is PURE: it returns a HookResult and MUST NOT call
 // process.stderr.write / process.stdout.write / console.* / process.exit.
 // logger.* calls are DIAGNOSTIC and route through hook-io's stderr path.
+import { cmemCapExhaustedAt } from '../../shared/cmem-cap-probe.js';
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import {
   executeWithWorkerFallback,
@@ -25,6 +26,7 @@ import { readStaleMarker } from '../../shared/oauth-token.js';
 import { clipUtf16 } from '../../shared/relayed-text.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { withoutLoadedRulesPointer } from '../../shared/claude-code-rules-import.js';
+import { dispatchClaudeMemMessage, formatClaudeMemMessage, nextClaudeMemMessage } from '../../shared/claude-mem-messages.js';
 import { proTrialLine } from '../../shared/pro-promo.js';
 import { providersMappedBySource } from '../../shared/provider-by-source.js';
 import {
@@ -517,12 +519,16 @@ export const contextHandler: EventHandler = {
       workerNotice,
       input.platform === 'claude-code' ? consumeTelemetryNotice() : null,
     ].filter(Boolean).join('\n\n') || null;
-    // Without the worker there is no timeline, but a pending onboarding still reaches the agent as context.
-    const noticeOnlyResult = (notice: string | null): HookResult => notice ? {
+    // Reserve room before reading the timeline. Commit delivery only when the
+    // hook is returning context. Onboarding takes precedence over release notes.
+    const pendingMessage = onboardingNotice ? undefined : nextClaudeMemMessage(input, settings);
+    const messageText = pendingMessage ? formatClaudeMemMessage(pendingMessage) : '';
+    const claimMessage = (): string => pendingMessage && dispatchClaudeMemMessage(pendingMessage.id) ? messageText : '';
+    const noticeOnlyResult = (notice: string | null): HookResult => ({
       ...emptyResult,
-      ...(onboardingNotice ? { hookSpecificOutput: { hookEventName, additionalContext: onboardingNotice } } : {}),
-      systemMessage: notice,
-    } : emptyResult;
+      hookSpecificOutput: { hookEventName, additionalContext: [onboardingNotice, claimMessage()].filter(Boolean).join('\n\n') },
+      ...(notice ? { systemMessage: notice } : {}),
+    });
 
     const notices: string[] = [];
     if (onboardingNotice) notices.push(onboardingNotice);
@@ -576,12 +582,12 @@ export const contextHandler: EventHandler = {
         message: settings.CLAUDE_MEM_PRO_FALLBACK_MESSAGE,
         action: settings.CLAUDE_MEM_PRO_FALLBACK_ACTION,
         url: settings.CLAUDE_MEM_PRO_FALLBACK_URL,
-      }, gatewayRole);
+      }, gatewayRole, cmemCapExhaustedAt() !== null);
       notices.unshift(fallbackNotice);
 
     }
 
-    const noticeText = notices.join('\n\n');
+    const noticeText = [...notices, messageText].filter(Boolean).join('\n\n');
     const noticeReserveChars = noticeText ? noticeText.length + 2 : 0;
 
     // TeamBrain brief: a per-session notice, never part of the cacheable
@@ -762,6 +768,8 @@ export const contextHandler: EventHandler = {
     // fallback notice. Waiting until all reads finish keeps failed attempts
     // retryable. A lost claim merely leaves a little unused render budget.
     if (showFallbackNotice && !markProFallbackNoticeShown()) notices.shift();
+    const dispatchedMessage = claimMessage();
+    if (dispatchedMessage) notices.push(dispatchedMessage);
     additionalContext = composeSessionStartContext(additionalContext, notices.join('\n\n'), teamSection);
 
     // Antigravity CLI (like the former Gemini CLI) is hooks-based, not an

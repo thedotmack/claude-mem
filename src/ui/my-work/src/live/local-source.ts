@@ -6,6 +6,8 @@
 // page names where its work comes from and where a change is saved.
 // The live wiring copies claude-mem v15.0.1 plugin/ui/work-view/app.js:180-261 (`accept`, `refresh`, the
 // EventSource handlers, the 1s connection timer and the 60s aging timer). The check copies app.js:125-138 (`saveReview`).
+import { notifySharedViewer, sharedViewerOwner } from './shared-viewer-session.ts'
+import { ruleVersion } from './rule-actions.ts'
 import { getConnectionStatus, type ConnectionStatus } from './connection-status.ts'
 import { browserHostname, browserVisibility, isServedFromCloud, type PageVisibility } from './served-from.ts'
 import { conflictReason, readReviewResponse, readSaveReceipt, type ReviewResult } from './review-response.ts'
@@ -26,6 +28,7 @@ import { startViewerActivity, type ViewerActivityOptions } from '../../../viewer
 
 export interface LocalSourceOptions {
   hostname?: string
+  sharedOwner?: string
   fetchImpl?: typeof fetch
   eventSourceFactory?: (url: string) => EventSource
   bootstrapTimeoutMs?: number
@@ -72,7 +75,8 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   const WORK_VIEW_STOP_OPENING_CONVERSATION_IN_APP_URL = '/api/work-view/conversations/open-in-app/stop'
   const CONTENT_FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/
   const CONNECTION_TICK_MS = 1000
-  const SOURCE_KIND = isServedFromCloud(options.hostname ?? browserHostname() ?? 'localhost') ? 'cloud' : 'local'
+  const sharedOwner = options.sharedOwner ?? sharedViewerOwner()
+  const SOURCE_KIND = sharedOwner || isServedFromCloud(options.hostname ?? browserHostname() ?? 'localhost') ? 'cloud' : 'local'
   const AGING_TICK_MS = 60_000
   const STALE_FALLBACK_INTERVAL_MS = 120_000
   /** The worker's SSE `retry: 1000`. */
@@ -101,6 +105,7 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   let latestSnapshot: WorkViewSnapshot | null = null
   let latestModel: MappedWorkModel | null = null
   let latestOverviewSignature: string | null = null
+  let latestCloudRevision: string | null = null
   let legacyMode = false
   // All accepted models count, including HTTP reads and saves: an older response must not rewind either.
   let modelVersion = 0
@@ -166,7 +171,7 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
     latestSnapshot = snapshot
     latestOverviewSignature = null
     latestModel = toWorkModel(snapshot, Date.now())
-    if (fromEvent || connectionEvidence.lastEventAt === null) recordSourceHealth(snapshot.source, snapshot.generatedAt)
+    if (sharedOwner || fromEvent || connectionEvidence.lastEventAt === null) recordSourceHealth(snapshot.source, snapshot.generatedAt)
     recordSync(snapshot.sync, expectedSyncVersion)
     return withConnection(latestModel)
   }
@@ -174,7 +179,8 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   function acceptOverview(overview: WorkViewOverview, fromEvent: boolean, expectedSyncVersion?: number): WorkModel {
     modelVersion++
     latestSnapshot = null
-    if (fromEvent || connectionEvidence.lastEventAt === null) recordSourceHealth(overview.source, overview.generatedAt)
+    latestCloudRevision = overview.revision
+    if (sharedOwner || fromEvent || connectionEvidence.lastEventAt === null) recordSourceHealth(overview.source, overview.generatedAt)
     recordSync(overview.sync, expectedSyncVersion)
     // A transport revision does not include clock-derived labels. Compare the actual
     // compact content, before allocating the full request shapes and empty detail arrays.
@@ -247,32 +253,47 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
   }
 
   /** POSTs to an origin-guarded work-view route that answers with the snapshot after the change. Anything else throws its reason. */
+  function writeHeaders(): Record<string, string> {
+    return {
+      'Content-Type': 'application/json',
+      ...(sharedOwner && latestCloudRevision ? { 'X-Work-Revision': latestCloudRevision } : {}),
+    }
+  }
+
+  function modelFromSave(value: unknown, newer: MappedWorkModel | null, syncBeforeSave: number): WorkModel | null {
+    if (isOverview(value)) return newer ? withConnection(newer) : acceptOverview(value, false, syncBeforeSave)
+    if (isWorkViewSnapshot(value)) return newer ? withConnection(newer) : acceptSnapshot(value, false, syncBeforeSave)
+    return null
+  }
+
   async function postForWorkModel(url: string, body: unknown, whatWasSaved: string, keepReceipt = false): Promise<RuleSaveResult> {
     const versionBeforeSave = modelVersion
     const syncBeforeSave = syncVersion
     const generation = streamGeneration
-    const response = await fetchImpl(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    const response = await fetchImpl(url, { method: 'POST', headers: writeHeaders(), body: JSON.stringify(body) })
     let answer: unknown = null
     try { answer = await response.json() } catch { /* A body that isn't JSON leaves only the status to report. */ }
+    const newer = latestModel && (modelVersion !== versionBeforeSave || generation !== streamGeneration) ? latestModel : null
     if (!response.ok) {
-      const { error: reason, snapshot } = (answer ?? {}) as { error?: unknown; snapshot?: unknown }
+      const conflict = answer as { error?: unknown; overview?: unknown; snapshot?: unknown } | null
+      const reason = conflict?.error
       const message = `${whatWasSaved} was not saved: ${typeof reason === 'string' ? reason : `the worker answered ${response.status}`}`
-      // A 409 answers the snapshot the worker refused against, so the screen can show what changed.
-      if (isWorkViewSnapshot(snapshot)) {
-        const model = latestModel && (modelVersion !== versionBeforeSave || generation !== streamGeneration)
-          ? withConnection(latestModel) : acceptSnapshot(snapshot, false, syncBeforeSave)
+      const model = modelFromSave(conflict?.overview ?? conflict?.snapshot, newer, syncBeforeSave)
+      if (model) {
         lastDeliveredSignature = modelSignature(model)
         throw new SaveRefusedError(message, model)
       }
       throw new Error(message)
     }
-    if (!isWorkViewSnapshot(answer)) throw new Error(`${whatWasSaved} was saved, but the worker sent back something that is not a work snapshot. Reload to see it.`)
-    const newerModel = latestModel && (modelVersion !== versionBeforeSave || generation !== streamGeneration) ? latestModel : null
-    const model = newerModel ? withConnection(newerModel) : acceptSnapshot(answer, false, syncBeforeSave)
+    const model = modelFromSave(answer, newer, syncBeforeSave)
+    if (!model) throw new Error(`${whatWasSaved} was saved, but the worker sent back something that is not a work snapshot. Reload to see it.`)
     lastDeliveredSignature = modelSignature(model)
-    // Undo needs this write's receipt, even if the live model has already moved on. Mapping the
-    // receipt separately must not replace the newer model used by the screen or detail reads.
-    const receipt = keepReceipt && newerModel ? withConnection(toWorkModel(answer, Date.now())) : model
+    // Undo needs this write's receipt even if a newer model arrived first.
+    let receipt = model
+    if (keepReceipt && newer) {
+      if (isOverview(answer)) receipt = withConnection(expandWorkViewOverview(answer))
+      else if (isWorkViewSnapshot(answer)) receipt = withConnection(toWorkModel(answer, Date.now()))
+    }
     const { savedRuleId } = answer as { savedRuleId?: unknown }
     const save = readSaveReceipt(answer)
     return { model: receipt, savedRuleId: typeof savedRuleId === 'string' ? savedRuleId : null, ...(save ? { save } : {}) }
@@ -370,7 +391,7 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
         const generation = streamGeneration
         const pending = (async () => {
           let model: WorkModel | null = null
-          if (waiting) {
+          if (waiting && !sharedOwner) {
             let timer: ReturnType<typeof setTimeout> | undefined
             try {
               model = await Promise.race([waiting.promise, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), bootstrapTimeoutMs) })])
@@ -400,13 +421,21 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
         && (!latestModel || (summary?.detailRevision ?? summary?.contentFingerprint) === cached.fingerprint)) {
         return summary ? mergeRequestDetail(summary, cached.request) : cached.request
       }
+      // Sync identifiers may contain thousands of UTF-8 bytes and URL escaping can triple their size.
+      // Cloud stores this exact SHA-256 key alongside the full identifier. Local workers keep their route.
+      let detailPath = '/api/work-view/requests/' + encodeURIComponent(requestId)
+      if (sharedOwner && detailPath.length > 1024) {
+        const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(requestId)))
+        const digest = btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
+        detailPath = '/api/work-view/requests/by-hash/' + digest
+      }
       let fingerprint = expectedFingerprint
       for (let attempt = 0; attempt < 2; attempt++) {
         const versionBeforeRead = modelVersion
         const syncBeforeRead = syncVersion
         const query = new URLSearchParams()
         if (fingerprint) query.set('fingerprint', fingerprint)
-        const { response, body } = await readJson(`/api/work-view/requests/${encodeURIComponent(requestId)}${query.size ? `?${query}` : ''}`, signal)
+        const { response, body } = await readJson(`${detailPath}${query.size ? `?${query}` : ''}`, signal)
         assertCurrent()
         if (response.status === 409 && isOverview((body as { overview?: unknown } | null)?.overview)) {
           const overview = (body as { overview: WorkViewOverview }).overview
@@ -460,26 +489,23 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
       const generation = streamGeneration
       const response = await fetchImpl(WORK_VIEW_REVIEW_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: writeHeaders(),
         body: JSON.stringify({ requestId, expectedFingerprint, checked, expectedReviewHash }),
       })
       let body: unknown = null
       try { body = await response.json() } catch { /* A body that isn't JSON leaves only the status to report. */ }
       const answer = readReviewResponse(response.status, body)
       if (answer.kind === 'unavailable') return { outcome: 'unavailable', serverMessage: answer.serverMessage }
+      const newer = latestModel && (modelVersion !== versionBeforeSave || generation !== streamGeneration) ? latestModel : null
       if (answer.kind === 'conflict') {
-        const latest = isWorkViewSnapshot(answer.snapshot)
-          ? latestModel && (modelVersion !== versionBeforeSave || generation !== streamGeneration)
-            ? withConnection(latestModel) : acceptSnapshot(answer.snapshot, false, syncBeforeSave)
-          : await localSource.loadWorkModel()
+        const latest = modelFromSave(answer.snapshot, newer, syncBeforeSave) ?? await localSource.loadWorkModel()
         const latestFingerprint = latest.requests.find((request) => request.id === requestId)?.contentFingerprint
         return conflictReason(expectedFingerprint, latestFingerprint) === 'refused'
           ? { outcome: 'refused', serverMessage: answer.serverMessage, model: latest }
           : { outcome: 'changed-while-reading', model: latest, serverMessage: answer.serverMessage }
       }
-      if (!isWorkViewSnapshot(answer.snapshot)) throw new Error('The local review was saved, but the worker sent back something that is not a work snapshot. Reload to see it.')
-      const model = latestModel && (modelVersion !== versionBeforeSave || generation !== streamGeneration)
-        ? withConnection(latestModel) : acceptSnapshot(answer.snapshot, false, syncBeforeSave)
+      const model = modelFromSave(answer.snapshot, newer, syncBeforeSave)
+      if (!model) throw new Error('The local review was saved, but the worker sent back something that is not a work snapshot. Reload to see it.')
       lastDeliveredSignature = modelSignature(model)
       return { outcome: 'saved', model, ...(answer.save ? { save: answer.save } : {}) }
     },
@@ -491,7 +517,14 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
       return { model, ...(save ? { save } : {}) }
     },
 
-    saveRuleChange: (change) => postForWorkModel(WORK_VIEW_RULES_URL, change, 'The rule change'),
+    async saveRuleChange({ expectedRuleVersion, ...change }) {
+      // A sync may update the transport revision while an old draft is still open.
+      if (expectedRuleVersion !== undefined && (!expectedRuleVersion ||
+        expectedRuleVersion !== ruleVersion(latestModel?.rules.find(rule => rule.id === change.ruleId)))) {
+        throw new Error('This rule changed while you were editing. Reopen it to review the latest version.')
+      }
+      return postForWorkModel(WORK_VIEW_RULES_URL, change, 'The rule change')
+    },
     saveFocusChange: async (change) => (await postForWorkModel(WORK_VIEW_FOCUS_URL, change, 'The focus change', true)).model,
     loadRulesInClaudeCode: async () => (await postForWorkModel(WORK_VIEW_LOAD_RULES_URL, {}, 'Loading your rules into Claude Code')).model,
     async refreshWork() {
@@ -529,7 +562,9 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
       let reopenTimer: ReturnType<typeof setTimeout> | undefined
       const openStream = () => {
         if (generation !== streamGeneration) return
-        const currentStream = createEventSource(`${WORK_VIEW_EVENTS_URL}?view=overview`)
+        const query = new URLSearchParams({ view: 'overview' })
+        if (sharedOwner) query.set('session', sharedOwner)
+        const currentStream = createEventSource(`${WORK_VIEW_EVENTS_URL}?${query}`)
         stream = currentStream
         const current = () => generation === streamGeneration && stream === currentStream
         stream.onopen = () => {
@@ -542,8 +577,32 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
           // Notices may have been missed while the stream was closed, so every row showing a continued conversation reads it again.
           if (reopened) tellConversationContinuationListeners('live-updates-reconnected')
         }
+        if (sharedOwner) {
+          // The stream's cookie was captured when it opened. A fresh owner-pinned request
+          // must authorize every update, including updates announced during another read.
+          let refreshing = false
+          let pending = false
+          const refreshFromHint = async () => {
+            pending = true
+            if (refreshing) return
+            refreshing = true
+            try {
+              while (pending && current()) {
+                pending = false
+                const model = await readOverview(undefined, () => { if (!current()) throw abortError() })
+                if (!current()) return
+                markEventReceived()
+                waiting.resolve(model)
+                sendIfChanged(model)
+                reportConnection()
+              }
+            } catch { /* Fresh HTTP authorization handles account changes; fallback handles failed reads. */ }
+            finally { refreshing = false }
+          }
+          stream.addEventListener('work-view-changed', () => { if (current()) void refreshFromHint() })
+        }
         stream.addEventListener('work-view', (event) => {
-          if (!current()) return
+          if (sharedOwner || !current()) return
           let snapshot: unknown
           try { snapshot = JSON.parse((event as MessageEvent).data) } catch { return /* Malformed messages cannot renew the live indicator. */ }
           if (!isWorkViewSnapshot(snapshot)) return
@@ -555,7 +614,7 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
           reportConnection()
         })
         stream.addEventListener('work-view-overview', (event) => {
-          if (!current()) return
+          if (sharedOwner || !current()) return
           let overview: unknown
           try { overview = JSON.parse((event as MessageEvent).data) } catch { return }
           if (!isOverview(overview)) return
@@ -569,6 +628,17 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
           if (!current()) return
           let beat: { source?: WorkViewSource; at?: string; sync?: SyncStatusForDisplay } | null
           try { beat = JSON.parse((event as MessageEvent).data) } catch { return /* Keep the last valid heartbeat; the freshness deadline still applies. */ }
+          if (sharedOwner) {
+            if (!beat?.at || !Number.isFinite(Date.parse(beat.at))) return
+            markEventReceived()
+            // A successful durable-head check confirms that the last authorized model is current.
+            if (connectionEvidence.sourceConnected && connectionEvidence.lastSuccessfulCheckAt) {
+              connectionEvidence.lastSuccessfulCheckAt = beat.at
+              connectionEvidence.lastSuccessfulCheckReceivedAt = performance.now()
+            }
+            reportConnection()
+            return
+          }
           if (!beat || typeof beat.source?.connected !== 'boolean') return
           markEventReceived()
           recordSourceHealth(beat.source, beat.at)
@@ -576,7 +646,7 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
           reportConnection()
         })
         stream.addEventListener('sync_status', (event) => {
-          if (!current()) return
+          if (sharedOwner || !current()) return
           let status: { sync?: unknown } | null
           try { status = JSON.parse((event as MessageEvent).data) } catch { return }
           if (!status || !isSyncStatus(status.sync)) return
@@ -587,14 +657,18 @@ export function createLocalSource(options: LocalSourceOptions = {}): WorkDataSou
         // An exchange sent from My Work started or ended. The notice names it and its state only: the row it concerns
         // reads the rest through the guarded read. Like a sync diagnostic, it is no evidence about the work projection.
         stream.addEventListener('conversation-continuation', (event) => {
-          if (!current()) return
+          if (sharedOwner || !current()) return
           applySseFrame('conversation-continuation', (event as MessageEvent).data, (frame: Record<string, unknown>) => {
             const notice = readConversationContinuationNotice(frame)
             if (notice) tellConversationContinuationListeners(notice)
           }, (frame) => readConversationContinuationNotice(frame) !== null)
         })
+        if (sharedOwner) stream.addEventListener('session-ended', () => {
+          if (current()) notifySharedViewer('cmem:session-ended')
+        })
         stream.onerror = () => {
           if (!current()) return
+          if (sharedOwner) notifySharedViewer('cmem:session-check')
           waiting.resolve(null)
           connectionEvidence.transportConnected = false
           connectionEvidence.reconnecting = true

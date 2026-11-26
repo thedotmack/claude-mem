@@ -32,7 +32,14 @@ retired without inference. The non-inference metadata spool remains separate.
 
 An outage can leave a gap in generated memory. Preserve the original source
 transcript and saved observations. Do not hide that gap by quietly replaying
-fragments. A future recovery operation needs explicit authorization, a source
+fragments. A trusted cmem gateway HTTP 402 `allowance_exhausted` is a pre-inference
+refusal. If a configured provider can take the current live batch immediately
+and no send of the batch may have been billed, the worker hands it over within
+the same bounded session and paid-send budget. If no provider can take it, the
+normal quota discard applies. This exception never creates a disk backlog or
+replays after a restart or billing reset.
+
+A future recovery operation needs explicit authorization, a source
 position that includes valid skips, matching observer state or a specified
 reconstruction boundary, deduplication, and a known spend scope.
 

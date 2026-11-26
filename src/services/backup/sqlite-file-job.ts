@@ -40,6 +40,9 @@ function standalone(p, maxSchemaVersion) {
       const hasTable = db.query("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?");
       for (const table of ['sdk_sessions', 'observations', 'session_summaries']) {
         if (!hasTable.get(table)) {
+          if (stamp === 0) {
+            throw new Error("This file doesn't look like a claude-mem database (no " + table + " table). Your current database was not changed.");
+          }
           throw new Error('Snapshot schema v' + stamp + ' is missing the required worker table ' + table + '.');
         }
       }

@@ -25,8 +25,8 @@ The core memory rows replicated between your devices are:
 
 - **Observations** — the compressed memories claude-mem generates from your sessions.
 - **Session summaries** — the per-session overview records.
-- **User prompts** — the prompts you typed. A prompt over 200&nbsp;KB uploads as its first 200&nbsp;KB plus a truncation note; the full prompt stays on the device that captured it.
-- **Images (on by default)** — while **Keep images** (`CLAUDE_MEM_MEDIA_CAPTURE_ENABLED`) is on, the converted WebP copies of captured screenshots are uploaded privately to your cmem.ai account, separately from the text log. Images appear in My Work locally and at work.cmem.ai. Other devices and work.cmem.ai download an image the first time it is viewed and show it as *downloading* until then. Original image files and their paths are never uploaded. Turn **Keep images** off in the memory viewer's Settings to stop keeping and uploading new images. See [Screenshots and Images](configuration#screenshots-and-images).
+- **User prompts** — prompts recorded as you work. Prompts reconstructed from transcript files during setup stay on the originating device. If your own inference is unavailable, setup offers a separate choice to send selected conversations to cmem.ai for organization. A prompt over 200&nbsp;KB uploads as its first 200&nbsp;KB plus a truncation note; the full prompt stays on the device that captured it.
+- **Images (on by default)** — while **Keep images** (`CLAUDE_MEM_MEDIA_CAPTURE_ENABLED`) is on, the converted WebP copies of captured screenshots are uploaded privately to your cmem.ai account, separately from the text log. Images appear in My Work locally and in your [private Work View](https://cmem.ai/work). Other devices and the signed-in viewer download an image the first time it is viewed and show it as *downloading* until then. Original image files and their paths are never uploaded. Turn **Keep images** off in the memory viewer's Settings to stop keeping and uploading new images. See [Screenshots and Images](configuration#screenshots-and-images).
 
 When the sync hub supports it, **agent work state** also syncs: the to-do lists
 and working state agents save, including each entry's fields.
@@ -252,8 +252,7 @@ unknown lag rather than zero. Sequence values stay decimal strings.
 Cloud sync does not mean a byte-for-byte copy of every local file. Compatible
 readers can share My Work grouping, progress, story, reviews, decisions and
 published output links when `CLAUDE_MEM_WORK_VIEW_SHARED_STATE=true` and the hub
-supports `work_state`. The setting defaults to `false` for a consumer-first
-rollout: update participating local and hosted readers before enabling writers.
+supports `work_state`. A fresh install enables sharing after you select Cloud Sync with private Work View and approve the device. Local installs, existing explicit settings and older setup choices keep their configuration.
 Local paths, review sidecars and arbitrary deliverable files stay on their
 origin device; the shared state carries bounded semantic records and published
 links. A scope or incomplete-generation warning is distinct from a stopped

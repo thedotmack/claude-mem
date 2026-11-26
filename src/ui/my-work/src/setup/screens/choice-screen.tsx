@@ -28,7 +28,7 @@ const ORBIT_NAMED = 3
 /** Display names for the two storage branches used by current and older installers. */
 const BRANCH_NAMES: Record<MemoryBranch, string> = { home: 'This computer', go: 'Cloud Sync' }
 const OFFER_LABELS: Record<SetupCloudSyncOffer, string> = {
-  cloud_sync_monthly: 'Monthly · $0 today, then $12/month after 30 days',
+  cloud_sync_monthly: 'Monthly · 30 days free, then $12/month if you continue',
   cloud_sync_annual: 'Annual · $99 today, then $99/year. No trial.',
 }
 
@@ -61,7 +61,7 @@ export function ChoiceScreen({ branch, cloudSyncOffer = DEFAULT_CLOUD_SYNC_OFFER
               <span className="card-title">{t(BRANCH_NAMES.go)}</span>
               <span className="card-price">{alreadyPro ? t('Keep your existing plan') : offer === 'cloud_sync_annual'
                 ? t('$99 today · $99/year · No trial')
-                : interpolate(t('30 day free trial, then {amount} a month'), { amount: money(CLOUD_SYNC_OFFER_TERMS.cloud_sync_monthly.cents) })}</span>
+                : interpolate(t('30 days free · {amount}/month if you continue'), { amount: money(CLOUD_SYNC_OFFER_TERMS.cloud_sync_monthly.cents) })}</span>
               <span className="card-gets">
                 <span><CheckIcon aria-hidden="true" />{t('Your memory on every device')}</span>
                 <span><CheckIcon aria-hidden="true" />{goTools}</span>
@@ -86,11 +86,12 @@ export function ChoiceScreen({ branch, cloudSyncOffer = DEFAULT_CLOUD_SYNC_OFFER
         </fieldset>
         {selected === 'go' && !alreadyPro && <fieldset className="cloud-sync-offers" disabled={saving}>
           <legend>{t('Choose your Cloud Sync plan')}</legend>
+          <p>{t('Sync saved prompts, memories and summaries to your private account, along with Work View groups, progress, reviews and published links.')}</p>
           {SETUP_CLOUD_SYNC_OFFERS.map(value => <label key={value} className="cloud-sync-offer">
             <input type="radio" name="cloud-sync-offer" value={value} checked={offer === value} onChange={() => setOffer(value)} />
             <span>{t(OFFER_LABELS[value])}</span>
           </label>)}
-          {offer === 'cloud_sync_monthly' && <p>{t('Card required.')}</p>}
+          {offer === 'cloud_sync_monthly' && <p>{t('No card needed for your first trial.')}</p>}
         </fieldset>}
         <SetupActions back={saving ? null : back}>
           <SetupButton type="submit" busy={saving}>{selected === 'go' && !alreadyPro ? t(offer === 'cloud_sync_monthly' ? 'Try Cloud Sync free for 30 days' : 'Get annual Cloud Sync for $99') : t(selected === 'home' ? 'Use this computer' : 'Continue with my plan')} <ArrowRightIcon aria-hidden="true" /></SetupButton>

@@ -565,9 +565,10 @@ async function runViewerMatrix(a: Device, b: Device, c: Device, viewers: MatrixV
   };
   const sessions = ['main', 'companion'].map(name => {
     const content = `matrix-view-${name}`, memory = `matrix-memory-${name}`;
-    const id = a.store.createSDKSession(content, 'matrix-view', name === 'main' ? 'Ship shared viewer' : 'Polish shared viewer', undefined, 'claude');
+    const privateOpening = name === 'main' ? 'Ship shared viewer' : 'Polish shared viewer';
+    const id = a.store.createSDKSession(content, 'matrix-view', privateOpening, undefined, 'claude');
     a.store.updateMemorySessionId(id, memory); a.store.saveUserPrompt(content, 1, `Matrix ${name} request`, id);
-    return { id, content, memory };
+    return { id, content, memory, privateOpening };
   });
   const fields = { task: 'Build shared viewer', status: 'doing' };
   const workId = a.store.appendWorkStateEntry({ project: 'matrix-view', listName: 'matrix-work', fields });
@@ -617,8 +618,16 @@ async function runViewerMatrix(a: Device, b: Device, c: Device, viewers: MatrixV
   const av = find(await local.snapshot()), bv = find(await middle.snapshot()), cv = find(await hosted.snapshot());
   check(av.progress.percent === 60 && cv.progress.percent === 60 && cv.conversationKeys.length === 2,
     'shared group membership and 60 percent progress converge');
-  check(av.contentFingerprint === cv.contentFingerprint && av.contentFingerprint === bv.contentFingerprint && av.sharedReviewDescriptor.fingerprint === cv.sharedReviewDescriptor.fingerprint,
-    'review fingerprints agree across distinct replica ids');
+  check([av, bv, cv].every(view => view.sharedReviewDescriptor.complete
+    && view.contentFingerprint === av.contentFingerprint && view.sharedReviewDescriptor.fingerprint === av.sharedReviewDescriptor.fingerprint),
+    'complete review fingerprints agree on the origin and both receiving replicas');
+  const detail = await hosted.request(`/api/work-view/requests/${encodeURIComponent(cv.id)}`);
+  const detailText = await detail.text();
+  check(detail.ok && detailText.includes('Matrix main request') && sessions.every(session => !detailText.includes(session.privateOpening)),
+    'hosted request detail discloses the live ask and omits private session openings');
+  check([b, c].every(device => sessions.every(session =>
+    count(device, 'SELECT COUNT(*) AS n FROM work_state_entries WHERE instr(fields, ?) > 0', session.privateOpening) === 0)),
+    'neither recipient stores the private openings in shared work metadata');
   check(cv.workProduct.some((product: any) => product.url === 'http://github.com/example/repo/pull/42'), 'published output provenance reaches hosted projection');
   check(count(c, 'SELECT COUNT(*) AS n FROM tool_uses') === 0, 'hosted projection requires no raw local tool bodies');
   const receivedWork = row<{ id: number }>(c, "SELECT id FROM work_state_entries WHERE origin_device_id=? AND origin_local_id=?", DEVICE_IDS.a, String(workId));

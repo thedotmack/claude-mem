@@ -1951,6 +1951,15 @@ describe('My Work refresh stays on one agent (#5189)', () => {
     await withSettings({ CLAUDE_MEM_PROVIDER: 'gemini' }, dir => expect(resolveRefreshAgents(dir)).toEqual({ allowedAgents: ['gemini'], preferredAgent: 'gemini', stayOnFirstUsableAgent: true }));
   });
 
+  it('setup prefers the configured CLI and can use another signed-in agent when that CLI is unavailable', async () => {
+    await withSettings({ CLAUDE_MEM_PROVIDER: 'claude' }, dir => {
+      expect(resolveRefreshAgents(dir, true)).toEqual({ preferredAgent: 'claude-code', stayOnFirstUsableAgent: true });
+    });
+    await withSettings({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_WORK_VIEW_AGENT: 'codex' }, dir => {
+      expect(resolveRefreshAgents(dir, true).allowedAgents).toEqual(['codex']);
+    });
+  });
+
   it('an API-endpoint provider runs the first logged-in agent, whichever it is, and only that one, until the owner sets CLAUDE_MEM_WORK_VIEW_AGENT=api', async () => {
     for (const provider of ['openrouter', 'openai-compatible', 'cmem']) {
       await withSettings({ CLAUDE_MEM_PROVIDER: provider }, dir => expect(resolveRefreshAgents(dir)).toEqual({ stayOnFirstUsableAgent: true }));

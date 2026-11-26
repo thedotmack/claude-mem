@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { describe, it, type TestContext } from 'node:test'
 import { createLocalSource, type LocalSourceOptions } from './local-source.ts'
+import { ruleVersion } from './rule-actions.ts'
 import { sampleSource } from './sample-source.ts'
 import type { ConversationContinuationEvent, MappedWorkModel, WorkModel } from './work-data-source.ts'
 import type { WorkViewOverview } from './work-view-overview.ts'
@@ -56,7 +58,7 @@ function fakePageUnload() {
   }
 }
 
-function harness(fetcher: typeof fetch, bootstrapTimeoutMs = 100, page: Pick<LocalSourceOptions, 'hostname' | 'visibility' | 'pageUnload'> = {}) {
+function harness(fetcher: typeof fetch, bootstrapTimeoutMs = 100, page: Pick<LocalSourceOptions, 'hostname' | 'sharedOwner' | 'visibility' | 'pageUnload'> = {}) {
   const streams: FakeStream[] = []
   const urls: string[] = []
   const local = createLocalSource({ hostname: 'localhost', ...page, fetchImpl: fetcher, bootstrapTimeoutMs,
@@ -374,6 +376,19 @@ describe('compact local source', () => {
     assert.equal(second.contentFingerprint, FIRST)
     assert.equal(calls.filter((url) => url.includes('/requests/')).length, 1)
     assert.match(calls[1], /fingerprint=aaaaaaaa/)
+  })
+
+  it('loads a hosted detail whose escaped conversation key exceeds a normal request URL', async () => {
+    const session = '🧠'.repeat(1023) + '/?%#'
+    assert.equal(Buffer.byteLength(session), 4096)
+    const requestId = JSON.stringify(['conversation', 'claude-code', session])
+    const hash = createHash('sha256').update(requestId, 'utf8').digest('base64url')
+    const full = { ...SAMPLE.requests[0], id: requestId, contentFingerprint: FIRST, detailRevision: FIRST, detailLoaded: true }
+    const { local } = harness(async (url) => {
+      assert.equal(String(url), '/api/work-view/requests/by-hash/' + hash + '?fingerprint=' + FIRST)
+      return json({ version: 1, revision: FIRST, request: full })
+    }, 100, { sharedOwner: 'test-account' })
+    assert.equal((await local.loadRequestDetail!(requestId, FIRST)).id, requestId)
   })
 
   it('accepts a changed overview from a detail conflict and retries only its current fingerprint', async () => {
@@ -1099,4 +1114,76 @@ describe('manual refresh', () => {
       return true
     })
   })
+})
+
+it('shared cloud writes pin the displayed revision and accept compact save and conflict replies', async () => {
+  let reads = 0
+  const revisions: (string | null)[] = []
+  const local = createLocalSource({ sharedOwner: 'owner-a', fetchImpl: async (input, init) => {
+    if (String(input).endsWith('/overview')) { reads++; return json(overview(FIRST)) }
+    revisions.push(new Headers(init?.headers).get('X-Work-Revision'))
+    return revisions.length === 1
+      ? json({ ...overview(SECOND), save: { scope: 'shared', state: 'saved' } })
+      : json({ error: 'Changed on another device.', overview: overview(THIRD) }, 409)
+  } })
+  await local.loadWorkModel()
+  const saved = await local.saveRuleChange({ action: 'turn-off', ruleId: 'rule-a' })
+  assert.equal(saved.model.requests[0].contentFingerprint, SECOND)
+  const conflict = await local.setRequestChecked('request-a', SECOND, true, null)
+  assert.equal(conflict.outcome, 'changed-while-reading')
+  assert.deepEqual(revisions, [FIRST, SECOND])
+  assert.equal(reads, 1)
+})
+
+it('an open rule draft cannot overwrite a change that arrived with a newer cloud revision', async () => {
+  let board = overview(FIRST)
+  const posts: { revision: string | null; body: unknown }[] = []
+  const local = createLocalSource({ sharedOwner: 'owner-a', fetchImpl: async (_url, init) => {
+    if (init?.method === 'POST') posts.push({
+      revision: new Headers(init.headers).get('X-Work-Revision'),
+      body: JSON.parse(String(init.body)),
+    })
+    return json(board)
+  } })
+  const original = (await local.loadWorkModel()).rules[0]
+  const draft = { action: 'edit' as const, ruleId: original.id,
+    rule: { scopeTier: 'everywhere' as const, scopeName: 'Everywhere', when: '', then: 'My older draft' } }
+  board = overview(SECOND)
+  board.model.rules = board.model.rules.map(rule => rule.id === original.id ? { ...rule, then: 'New on another device' } : rule)
+  const current = (await local.loadWorkModel()).rules.find(rule => rule.id === original.id)!
+  await assert.rejects(local.saveRuleChange({ ...draft, expectedRuleVersion: ruleVersion(original) }), /changed while you were editing/)
+  assert.deepEqual(posts, [])
+  await local.saveRuleChange({ ...draft, expectedRuleVersion: ruleVersion(current) })
+  assert.deepEqual(posts, [{ revision: SECOND, body: draft }])
+})
+
+it('shared streams deliver private work only through fresh owner-checked reads and coalesce simultaneous hints', async () => {
+  const first = deferred<Response>()
+  let reads = 0
+  const shown: WorkModel[] = []
+  const { local, streams } = harness(async (url) => {
+    assert.equal(String(url), '/api/work-view/overview')
+    reads++
+    if (reads === 1) return first.promise
+    return reads === 2 ? json(overview(SECOND)) : json({ code: 'owner_changed' }, 409)
+  }, 100, { sharedOwner: 'alice' })
+  const stop = local.subscribeToLiveUpdates(model => shown.push(model), () => {})
+  try {
+    const stream = streams[0]
+    stream.emit('work-view-overview', overview(THIRD))
+    stream.emit('work-view', snapshot(THIRD))
+    assert.equal(shown.length, 0)
+    stream.emit('work-view-changed', {})
+    stream.emit('work-view-changed', {})
+    stream.emit('work-view-changed', {})
+    assert.equal(reads, 1)
+    first.resolve(json(overview()))
+    await settle()
+    assert.equal(reads, 2)
+    assert.deepEqual(shown.map(model => model.requests[0].contentFingerprint), [FIRST, SECOND])
+    stream.emit('work-view-changed', {})
+    await settle()
+    assert.equal(reads, 3)
+    assert.equal(shown.length, 2)
+  } finally { stop() }
 })

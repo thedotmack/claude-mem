@@ -1371,8 +1371,8 @@ var init_SettingsDefaultsManager = __esm({
         // 'false' = My Work never runs owner-goals / request-progress on its own (refresh.json in ~/.claude-mem/work-view)
         CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN: "10",
         // Minutes between My Work's scheduled checks (each is a read-only database look; an agent runs only when something is due). 1440 = once a day. Read when the worker starts.
-        CLAUDE_MEM_WORK_VIEW_SHARED_STATE: "false",
-        // Enable only after all local/cloud readers understand reserved My Work records.
+        CLAUDE_MEM_WORK_VIEW_SHARED_STATE: "",
+        // Off until explicitly configured. A pinned 'false' remains an opt-out.
         CLAUDE_MEM_WORK_VIEW_COPY_PROVIDER: "",
         // '' uses OpenRouter only when it is the primary provider; openrouter/openai-compatible explicitly select that provider; off disables generated My Work copy
         CLAUDE_MEM_WORK_VIEW_COPY_MODEL: "",
@@ -3608,6 +3608,18 @@ function humanRequestTitle(original) {
   const cut = clause.slice(0, 99), boundary = cut.lastIndexOf(" ");
   return `${cut.slice(0, boundary > 60 ? boundary : 99).trimEnd()}\u2026`;
 }
+function placeholderTitleFromAsk(askText) {
+  const ask = requestText(askText ?? null, FOCUS_ASK_CHARS);
+  return humanRequestTitle(ask) || requestText(ask, 120) || "Untitled request";
+}
+function comparableWords(text5) {
+  return String(text5 ?? "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/[*_`#]/g, "").toLowerCase().replace(/\s+/g, " ").trim().replace(/[\s.!?…:;,]+$/u, "");
+}
+function copiesOpeningAsk(title, askText) {
+  const words = comparableWords(title);
+  if (words === comparableWords(placeholderTitleFromAsk(askText))) return true;
+  return words.length > 0 && comparableWords(requestText(askText ?? null, FOCUS_ASK_CHARS)).startsWith(words);
+}
 function conversationKey(session) {
   if (!session?.content_session_id || !session?.platform_source) return null;
   return JSON.stringify(["conversation", session.platform_source, session.content_session_id]);
@@ -3628,7 +3640,7 @@ function originalFor(session, prompts) {
   if (isHumanActionRequest(session.user_prompt)) return initial();
   return null;
 }
-function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = null, onProductFile = null } = {}) {
+function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = null, onProductFile = null, localFiles = true, getProjectRoot = projectRoot } = {}) {
   const sessions = new Map((records2.sessions ?? []).map((session) => [session.id, session]));
   const prompts = records2.prompts ?? [];
   const promptsBySession = /* @__PURE__ */ new Map();
@@ -3671,9 +3683,9 @@ function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = nul
     if (key && !sessionsByKey.has(key)) sessionsByKey.set(key, session);
   }
   const rootFromMembers = (groupId, group) => {
-    const anchorRoot = projectRoot(sessionsByKey.get(group.anchor)?.project);
+    const anchorRoot = getProjectRoot(sessionsByKey.get(group.anchor)?.project);
     if (anchorRoot) return anchorRoot;
-    const memberRoots = new Set(Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId).map(([key]) => projectRoot(sessionsByKey.get(key)?.project)).filter(Boolean));
+    const memberRoots = new Set(Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId).map(([key]) => getProjectRoot(sessionsByKey.get(key)?.project)).filter(Boolean));
     return memberRoots.size === 1 ? [...memberRoots][0] : NO_PROJECT;
   };
   const derivedRoots = /* @__PURE__ */ new Map();
@@ -3683,14 +3695,14 @@ function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = nul
       if (!derivedRoots.has(groupId)) derivedRoots.set(groupId, rootFromMembers(groupId, group));
       return derivedRoots.get(groupId);
     }
-    return projectRoot(sessionsByKey.get(group?.anchor)?.project);
+    return getProjectRoot(sessionsByKey.get(group?.anchor)?.project);
   };
   const groupFor = (key, session) => {
     const groupId = key ? ledger?.groups?.conversations?.[key] ?? null : null;
     if (!groupId) return null;
     const storedRoot = ledger.groups.groups[groupId]?.projectRoot;
     if (typeof storedRoot === "string" && storedRoot !== NO_PROJECT) return groupId;
-    const own = projectRoot(session?.project), expected = groupRoot(groupId);
+    const own = getProjectRoot(session?.project), expected = groupRoot(groupId);
     return own == null || expected == null || own === expected || storedRoot === NO_PROJECT && own === NO_PROJECT ? groupId : null;
   };
   const requests = /* @__PURE__ */ new Map(), unlinkedWork = [];
@@ -3746,7 +3758,7 @@ function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = nul
       continue;
     }
     const groupId = !explicit ? groupFor(key, session) : null;
-    const root = projectRoot(session?.project) ?? projectRoot(item.project);
+    const root = getProjectRoot(session?.project) ?? getProjectRoot(item.project);
     const id = explicit ? JSON.stringify(root == null ? ["explicit-request", explicit] : ["explicit-request", root, explicit]) : groupId ? JSON.stringify(["overall-request", groupId]) : key;
     const request = requestFor(id, { key, original, groupId, explicit, explicitText });
     addProject(request, session?.project);
@@ -3784,13 +3796,13 @@ function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = nul
     const merged = mergeProducts([...recordedProducts.get(request) ?? [], ...request.items.flatMap((item) => item.workProduct ?? [])]);
     request.sourceProductHash = createHash4("sha256").update(canonicalJson(JSON.parse(JSON.stringify(merged)))).digest("hex");
     request.sourceProductRecordedAtEpoch = merged.every((product) => Number.isFinite(product.atEpoch) && product.atEpoch > 0) ? merged.reduce((latest, product) => Math.max(latest, product.atEpoch), 0) : null;
-    const copies = merged.filter((product) => product.deliverable && product.sourcePath);
+    const copies = localFiles ? merged.filter((product) => product.deliverable && product.sourcePath) : [];
     const coverage = new Map(copies.map((copy) => [copy, copyCoversSource(copy, copy.sourcePath)]));
     const covered = (product) => Boolean(product.path) && copies.some((copy) => copy.sourcePath === product.path && coverage.get(copy));
     request.workProduct = merged.filter((product) => !covered(product)).map((product) => {
-      const available = product.path ? Boolean(servableFile(product)) : product.deliverable ? bucketFileAvailable(product) : true;
+      const available = product.path ? localFiles && Boolean(servableFile(product)) : product.deliverable ? localFiles && bucketFileAvailable(product) : true;
       if (product.path || product.bucketPath) onProductFile?.(product, available, coverage.get(product) ?? null);
-      return { ...product, fileUrl: fileUrl(product), available };
+      return { ...product, fileUrl: localFiles ? fileUrl(product) : null, available };
     });
     const relatedIds = new Set(request.conversationKeys.flatMap((key) => sessionIdsByKey.get(key) ?? []));
     const related = [...relatedIds].flatMap((id) => promptsBySession.get(id) ?? []);
@@ -3853,7 +3865,7 @@ function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = nul
   }
   return { humanRequests: [...requests.values()].sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch), unlinkedWork };
 }
-var REQUEST_MEDIA_PREVIEW_LIMIT, ENGLISH_ACTION, IMPERATIVE_OPENING, NOT_A_VERB, ENGLISH_WORDS, isConversationKey;
+var REQUEST_MEDIA_PREVIEW_LIMIT, ENGLISH_ACTION, IMPERATIVE_OPENING, NOT_A_VERB, ENGLISH_WORDS, isConversationKey, FOCUS_ASK_CHARS;
 var init_request_projection = __esm({
   "src/services/work-view/request-projection.mjs"() {
     "use strict";
@@ -3873,6 +3885,7 @@ var init_request_projection = __esm({
         return false;
       }
     };
+    FOCUS_ASK_CHARS = 400;
   }
 });
 
@@ -4962,7 +4975,7 @@ var init_request_judge = __esm({
 });
 
 // src/services/work-view/request-groups.mjs
-import { Database } from "bun:sqlite";
+import { createRequire } from "node:module";
 import { createHash as createHash5 } from "node:crypto";
 import { readFileSync as readFileSync9, readdirSync, statSync as statSync6 } from "node:fs";
 import { homedir as homedir9 } from "node:os";
@@ -5137,7 +5150,7 @@ function writeJsonAtomic(path4, value) {
   writeJsonFileAtomic(path4, stored, { mode: 384 });
   finish?.();
 }
-function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = /* @__PURE__ */ new Map() } = {}) {
+function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = /* @__PURE__ */ new Map(), getProjectRoot = projectRoot } = {}) {
   if (!Array.isArray(decisions?.groups)) throw new TypeError("Decisions need a groups array.");
   const next = structuredClone(stored ?? emptyGroups());
   for (const [index, decision] of decisions.groups.entries()) {
@@ -5166,13 +5179,13 @@ function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = 
     const allMembers = [.../* @__PURE__ */ new Set([...decision.conversations, ...Object.entries(next.conversations).filter(([key, groupId]) => groupId === id && !decision.conversations.includes(key)).map(([key]) => key)])];
     const storedRoot = upgradedGroupRoot(
       next.groups[id]?.projectRoot,
-      projectRoot(projectOf.get(next.groups[id]?.anchor)),
-      allMembers.map((key) => projectRoot(projectOf.get(key)))
+      getProjectRoot(projectOf.get(next.groups[id]?.anchor)),
+      allMembers.map((key) => getProjectRoot(projectOf.get(key)))
     );
     const rootWasUnknown = storedRoot === NO_PROJECT;
     const roots = /* @__PURE__ */ new Map();
     for (const key of allMembers) {
-      const root = projectRoot(projectOf.get(key));
+      const root = getProjectRoot(projectOf.get(key));
       if (root == null || rootWasUnknown && root === NO_PROJECT && !decision.conversations.includes(key)) continue;
       roots.set(root, [...roots.get(root) ?? [], key]);
     }
@@ -5650,18 +5663,6 @@ function validateFocusAnswer(answer, input, ledger, { other = false } = {}) {
     ...other ? { otherPassHash: otherPassHash(ledger, [...listed.keys()].filter((anchor) => !held.has(anchor)).map((anchor) => listed.get(anchor).groupId), requestIndex) } : {}
   };
 }
-function placeholderTitleFromAsk(askText) {
-  const ask = requestText(askText ?? null, FOCUS_ASK_CHARS);
-  return humanRequestTitle(ask) || requestText(ask, 120) || "Untitled request";
-}
-function comparableWords(text5) {
-  return String(text5 ?? "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/[*_`#]/g, "").toLowerCase().replace(/\s+/g, " ").trim().replace(/[\s.!?…:;,]+$/u, "");
-}
-function copiesOpeningAsk(title, askText) {
-  const words = comparableWords(title);
-  if (words === comparableWords(placeholderTitleFromAsk(askText))) return true;
-  return words.length > 0 && comparableWords(requestText(askText ?? null, FOCUS_ASK_CHARS)).startsWith(words);
-}
 function hasPlaceholderTitle(group) {
   return copiesOpeningAsk(group.title, group.anchorAsk?.text ?? null);
 }
@@ -5705,7 +5706,8 @@ function option(args, name, fallback) {
 function openDatabase() {
   const path4 = process.env.CLAUDE_MEM_DB ?? join11(DATA_DIR2, "claude-mem.db");
   statSync6(path4);
-  const database = new Database(path4, { readonly: true, create: false });
+  const { Database: Database2 } = createRequire(typeof __filename === "string" ? __filename : import.meta.url)("bun:sqlite");
+  const database = new Database2(path4, { readonly: true, create: false });
   database.exec("PRAGMA busy_timeout = 1500");
   return database;
 }
@@ -5889,7 +5891,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   if (command2 === "refresh-needs") return print2(refreshNeeds({ dir, database: db(), now, days: option(args, "days", 14), localDeviceId: localDeviceId2 }));
   throw new TypeError("Usage: request-groups.mjs candidates|grouping-input|judge|apply|pending|show|record-progress|title-input|record-titles|story-input|record-story|focus-input|record-focus|refresh-needs (see file header).");
 }
-var DATA_DIR2, LEDGER_DIR, AGENT_WRITTEN_PROMPTS_FILE, DAY_MS2, GOALS_STALE_MS, MAX_CONVERSATIONS_PER_LINKING_LIST, PROGRESS_STATES, PREFERENCE_KINDS, USAGE_LEVELS, VALUE_LEVELS, LINK_KINDS, MAX_READINGS, iso3, groupIdFor, emptyGroups, isIsoOrNull, textTarget, evidenceList, STORY_NARRATIVE_MAX, STORY_NARRATIVE_TARGET, STORY_RECAP_BUDGET, STORY_CHAPTER_MIN_BUDGET, STORY_CHARS_PER_WORD, STORY_REFUSAL_PARTS, FOCUS_ASK_CHARS, CONVERSATIONS_PER_QUERY, records, otherPassHash, focusAreaRecord, AREA_NAME_MAX, AREA_SENTENCE_MAX, requireDeviceId, GROUPING_BATCH, FOCUS_BATCH, TITLE_BATCH, CLOSED_STATES;
+var DATA_DIR2, LEDGER_DIR, AGENT_WRITTEN_PROMPTS_FILE, DAY_MS2, GOALS_STALE_MS, MAX_CONVERSATIONS_PER_LINKING_LIST, PROGRESS_STATES, PREFERENCE_KINDS, USAGE_LEVELS, VALUE_LEVELS, LINK_KINDS, MAX_READINGS, iso3, groupIdFor, emptyGroups, isIsoOrNull, textTarget, evidenceList, STORY_NARRATIVE_MAX, STORY_NARRATIVE_TARGET, STORY_RECAP_BUDGET, STORY_CHAPTER_MIN_BUDGET, STORY_CHARS_PER_WORD, STORY_REFUSAL_PARTS, CONVERSATIONS_PER_QUERY, records, otherPassHash, focusAreaRecord, AREA_NAME_MAX, AREA_SENTENCE_MAX, requireDeviceId, GROUPING_BATCH, FOCUS_BATCH, TITLE_BATCH, CLOSED_STATES;
 var init_request_groups = __esm({
   "src/services/work-view/request-groups.mjs"() {
     "use strict";
@@ -5900,6 +5902,7 @@ var init_request_groups = __esm({
     init_shared_file_hooks();
     init_work_state_status();
     init_atomic_json();
+    init_request_projection();
     DATA_DIR2 = process.env.CLAUDE_MEM_DATA_DIR || join11(homedir9(), ".claude-mem");
     LEDGER_DIR = join11(DATA_DIR2, "work-view");
     AGENT_WRITTEN_PROMPTS_FILE = "agent-written-prompts.json";
@@ -5924,7 +5927,6 @@ var init_request_groups = __esm({
     STORY_CHAPTER_MIN_BUDGET = 300;
     STORY_CHARS_PER_WORD = 6;
     STORY_REFUSAL_PARTS = 6;
-    FOCUS_ASK_CHARS = 400;
     CONVERSATIONS_PER_QUERY = 400;
     records = (database, ledger, groupIds, requests) => {
       const asks = openingAsks(database, ledger, groupIds.flatMap(requests.conversations));
@@ -6104,7 +6106,7 @@ function withHarnessAuth(init, auth) {
 init_paths();
 init_SettingsDefaultsManager();
 init_request_groups();
-import { Database as Database2 } from "bun:sqlite";
+import { Database } from "bun:sqlite";
 import { existsSync as existsSync13 } from "node:fs";
 
 // src/services/work-view/shared-ledger-adapter.mjs
@@ -6497,7 +6499,8 @@ function launchRequest(launch) {
   const text5 = launch.description ?? launch.prompt;
   return text5 ? { text: text5, source: "agent-launch", sourceId: launch.shared ? null : launch.toolUseId, url: launch.shared ? null : `/api/work-view/evidence/tool-use/${launch.toolUseId}` } : null;
 }
-function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1e3, titleCache = {}, ledger = null, onProductFile = null, workStateLabels = null } = {}) {
+var DEFAULT_RECENT_ACTIVITY_MS = 15 * 60 * 1e3;
+function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = DEFAULT_RECENT_ACTIVITY_MS, titleCache = {}, ledger = null, onProductFile = null, workStateLabels = null, localFiles = true, getProjectRoot } = {}) {
   const { calls = [], observations = [], summaries = [], sessions = [], prompts = [], agentLaunches = [], agentToolActivity = [] } = records2;
   const launches = readAgentLaunches(agentLaunches);
   const lastToolEpochs = new Map(agentToolActivity.map((row) => [lifecycleKey(row.platform_source, row.content_session_id, row.agent_id), Number(row.last_epoch) || 0]));
@@ -6628,7 +6631,8 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
     const original = prompt ? { source: "user-prompt", sourceId: prompt.id, url: `/api/work-view/evidence/prompt/${prompt.id}` } : null;
     if (summary && readableRequest(summary.request)) return { key, text: readableRequest(summary.request), source: "session-summary-request", sourceId: summary.id, url: `/api/work-view/evidence/summary/${summary.id}`, original };
     if (prompt && readableRequest(prompt.prompt_text)) return { key, text: readableRequest(prompt.prompt_text), ...original };
-    if ((number == null || number <= 1) && readableRequest(session.user_prompt)) return { key, text: readableRequest(session.user_prompt), source: "session-initial-request", sourceId: session.sharedOnly ? null : session.id, url: session.sharedOnly ? null : `/api/work-view/evidence/session/${session.id}` };
+    const opening = readableRequest(Object.hasOwn(session, "sharedOpeningPrompt") ? session.sharedOpeningPrompt : session.user_prompt);
+    if ((number == null || number <= 1) && opening) return { key, text: opening, source: "session-initial-request", sourceId: session.sharedOnly ? null : session.id, url: session.sharedOnly ? null : `/api/work-view/evidence/session/${session.id}` };
     return null;
   }
   function addActivity(group, entry) {
@@ -6792,7 +6796,7 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
     };
   }).sort((a, b) => String(b.presence.lastActivityAt ?? "").localeCompare(String(a.presence.lastActivityAt ?? "")));
   const recentActivity = activity.sort((a, b) => b.atEpoch - a.atEpoch).slice(0, activityLimit);
-  const requestProjection = buildHumanRequests({ agents, recentActivity }, records2, { titleCache, ledger, onProductFile });
+  const requestProjection = buildHumanRequests({ agents, recentActivity }, records2, { titleCache, ledger, onProductFile, localFiles, getProjectRoot });
   const { focusAreas, focusAreaIdByAnchor } = buildFocusAreas(state);
   return {
     version: 1,
@@ -6998,6 +7002,11 @@ function validateHumanCopy(output2, input) {
   return { title: copyText(output2.title, 100, "Request title"), summary: copyText(output2.summary, 240, "Request summary"), next: copyText(output2.next, 160, "Next step", true), ...Object.hasOwn(output2, "stage") ? { stage: copyText(output2.stage, 40, "Stage", true) } : {}, workstreams };
 }
 
+// src/services/prompt-import/transcript-origin.mjs
+function syncablePromptSql(column) {
+  return `(${column} IS NULL OR ${column} NOT GLOB 'transcript:*')`;
+}
+
 // src/services/work-view/shared-projection.mjs
 import { isIP } from "node:net";
 import { basename as basename7 } from "node:path";
@@ -7062,7 +7071,7 @@ var forbiddenKeys = /* @__PURE__ */ new Set(["__proto__", "constructor", "protot
 var string = (value, max = 12e3) => typeof value === "string" && value.length <= max;
 var optional = (value, check) => value == null || check(value);
 var date = (value) => string(value, 40) && Number.isFinite(Date.parse(value));
-var epoch = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
+var epoch = (value) => typeof value === "number" && value >= 0 && Number.isFinite(new Date(value).getTime());
 var list = (value, check, max = 512) => Array.isArray(value) && value.length <= max && value.every(check);
 var preferenceKinds = ["directive", "correction", "praise", "frustration"];
 var quote = (value) => object2(value) && string(value.quote, 4e3) && optional(value.at, date);
@@ -7134,6 +7143,7 @@ function get(database, sql, args) {
 }
 function stableEvidenceRef(database, kind, id, deviceId) {
   if (id == null) return null;
+  if (database.stableEvidenceRef) return database.stableEvidenceRef(kind, id);
   if (kind === "session") {
     const row2 = get(database, "SELECT platform_source, content_session_id FROM sdk_sessions WHERE id = ?", [id]);
     const key = conversationKey(row2);
@@ -7154,6 +7164,7 @@ function stableEvidenceRef(database, kind, id, deviceId) {
 }
 function resolveEvidenceRef(database, ref, deviceId) {
   if (!ref || typeof ref !== "object") return null;
+  if (database.resolveEvidenceRef) return database.resolveEvidenceRef(ref);
   if (ref.kind === "session") {
     let tuple;
     try {
@@ -7258,13 +7269,35 @@ function groupRecords(rows, keyOf) {
 function buildSharedProjectionUpdates(database, { ledger, records: records2 = {}, view = {}, deviceId, copyEntries = {} } = {}) {
   if (!deviceId) return [];
   decorateSharedView(view, { database, deviceId, records: records2 });
+  const liveOpenings = /* @__PURE__ */ new Map();
+  const liveOpening = (key) => {
+    if (!conversation(key)) return null;
+    if (!liveOpenings.has(key)) {
+      const [, platform, contentId] = JSON.parse(key);
+      const prompt = get(database, `SELECT p.prompt_text FROM sdk_sessions s JOIN user_prompts p ON p.session_db_id = s.id
+        WHERE s.platform_source = ? AND s.content_session_id = ? AND p.prompt_text = s.user_prompt
+          AND p.origin_device_id IS NULL AND ${syncablePromptSql("p.native_prompt_id")} LIMIT 1`, [platform, contentId]);
+      liveOpenings.set(key, requestText(prompt?.prompt_text));
+    }
+    return liveOpenings.get(key);
+  };
   const updates = [];
   const add = (kind, key, value) => updates.push({ kind, key, value });
   for (const [id, group] of Object.entries(ledger?.groups?.groups ?? {})) {
     const members = Object.entries(ledger.groups.conversations ?? {}).filter(([, groupId]) => groupId === id).map(([key]) => key).sort();
     const suggestions = Object.fromEntries(Object.entries(ledger.groups.suggestions ?? {}).filter(([, suggestion]) => suggestion.requestId === id).map(([key, value]) => [key, pick(value, ["requestId", "confidence", "evidence", "judge", "at", "status", "resolvedAt"])]));
     const portableGroup = pick(group, ["title", "anchor", "projectRoot", "rootNamed", "product", "links", "decidedAt"]);
-    if (group.anchorAsk) portableGroup.anchorAsk = pick(group.anchorAsk, ["text", "source", "sourceId", "url", "promptNumber", "atEpoch"]);
+    const ask = group.anchorAsk;
+    if (ask) {
+      let text5 = ask.source === "session-summary-request" ? ask.text : null;
+      if (ask.source === "user-prompt") {
+        const prompt = get(database, `SELECT prompt_text FROM user_prompts WHERE id = ? AND origin_device_id IS NULL
+          AND ${syncablePromptSql("native_prompt_id")}`, [ask.sourceId]);
+        text5 = requestText(prompt?.prompt_text);
+      } else if (ask.source === "session-initial-request") text5 = liveOpening(group.anchor);
+      if (text5 && text5 === ask.text) portableGroup.anchorAsk = pick(ask, ["text", "source", "sourceId", "url", "promptNumber", "atEpoch"]);
+      else if (copiesOpeningAsk(portableGroup.title, ask.text)) portableGroup.title = "Untitled request";
+    }
     add("group", id, portableWorkValue(database, { group: portableGroup, members, suggestions }, deviceId));
   }
   for (const [key, ignored] of Object.entries(ledger?.groups?.ignored ?? {})) add("ignored", key, portableWorkValue(database, ignored, deviceId));
@@ -7345,7 +7378,7 @@ function buildSharedProjectionUpdates(database, { ledger, records: records2 = {}
     const sessionValue = Object.fromEntries(sessionFields.map((field) => [field, clean2(session[field])]));
     sessionValue.project = sharedProjectKey(sessionValue.project);
     const rejectedOpening = prompts.some((prompt) => ledger?.agentWrittenPromptIds?.has(prompt.id) && (prompt.prompt_number === 1 || prompt.prompt_text === session.user_prompt));
-    sessionValue.user_prompt = rejectedOpening ? null : requestText(session.user_prompt, 1200);
+    sessionValue.user_prompt = !rejectedOpening && session.user_prompt ? liveOpening(key) : null;
     if (typeof sessionValue.custom_title === "string") sessionValue.custom_title = sessionValue.custom_title.slice(0, 120);
     add("provenance", key, { session: sessionValue, attributions, products, launches, activity });
   }
@@ -7446,9 +7479,11 @@ function applySharedProjection(database, shared, { ledger = null, records: recor
     else if (record.kind === "provenance" && !record.deleted && value?.session) {
       const key = conversationKey(value.session);
       if (key !== record.key) continue;
+      const facts = pick(value.session, sessionFields);
       let session = merged.sessions.find((row) => conversationKey(row) === key);
-      if (session) session = record.writer === deviceId ? { ...value.session, ...session } : { ...session, ...value.session };
-      else session = { ...value.session, id: `shared:${key}`, sharedOnly: true };
+      if (session) session = record.writer === deviceId ? { ...facts, ...session } : { ...session, ...facts };
+      else session = { ...facts, id: `shared:${key}`, sharedOnly: true };
+      session.sharedOpeningPrompt = facts.user_prompt ?? null;
       merged.sessions = merged.sessions.filter((row) => conversationKey(row) !== key);
       merged.sessions.push(session);
       for (const attribution of value.attributions ?? []) {
@@ -7463,7 +7498,7 @@ function applySharedProjection(database, shared, { ledger = null, records: recor
   const referencedGroups = new Set(Object.values(next.groups.conversations));
   for (const groupId of Object.keys(next.groups.groups)) if (!referencedGroups.has(groupId)) delete next.groups.groups[groupId];
   for (const session of merged.sessions) if ((merged.prompts ?? []).some((prompt) => prompt.session_db_id === session.id && next.agentWrittenPromptIds.has(prompt.id) && (prompt.prompt_number === 1 || prompt.prompt_text === session.user_prompt))) excludedOpenings.add(conversationKey(session));
-  merged.sessions = merged.sessions.map((session) => excludedOpenings.has(conversationKey(session)) ? { ...session, user_prompt: null } : session);
+  merged.sessions = merged.sessions.map((session) => excludedOpenings.has(conversationKey(session)) ? { ...session, user_prompt: null, sharedOpeningPrompt: null } : session);
   merged.prompts = (merged.prompts ?? []).filter((prompt) => !next.agentWrittenPromptIds.has(prompt.id));
   return { ledger: next, records: merged, copyEntries, diagnostics };
 }
@@ -7778,6 +7813,7 @@ function foldSharedRows(items, context, includeHistory, values2, previousValues 
     const recordOf = (summary) => {
       const entry = full(summary);
       return {
+        ...context.sourceId ? { sourceId: context.sourceId(summary) } : {},
         kind: entry.kind,
         key: entry.key,
         value: entry.value,
@@ -8448,7 +8484,7 @@ var stopSharedWriter = null;
 var command = process.argv[2];
 var writesLedger = ["apply", "record-progress", "record-titles", "record-story"].includes(command) || command === "judge" && process.argv.includes("--apply");
 if (settings.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === "true" && writesLedger && existsSync13(join13(resolveDataDir(), "claude-mem.db"))) {
-  sharedDatabase = new Database2(join13(resolveDataDir(), "claude-mem.db"), { readwrite: true, create: false });
+  sharedDatabase = new Database(join13(resolveDataDir(), "claude-mem.db"), { readwrite: true, create: false });
   localDeviceId = ensureLocalDeviceIdentity(sharedDatabase, join13(resolveDataDir(), "settings.json"), localDeviceId);
   const adapter = new SharedLedgerAdapter(sharedDatabase, { directory: join13(resolveDataDir(), "work-view"), deviceId: localDeviceId });
   stopSharedWriter = registerSharedFileWriter(join13(resolveDataDir(), "work-view"), (name, value) => adapter.beforeWrite(name, value));

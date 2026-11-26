@@ -150,6 +150,9 @@ export class ClassifiedProviderError extends Error {
   }
 }
 
+/** A trusted cmem gateway credit refusal, or a local pre-send guard for that refusal. */
+export class CmemAllowanceExhaustedError extends ClassifiedProviderError {}
+
 /**
  * What a key pool reports when its last key is spent or refused while another
  * key frees within a rate-limit window (api-key-pool's withKeyPool): a rate

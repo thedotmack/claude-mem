@@ -44,7 +44,7 @@ describe('restore schema compatibility before live changes', () => {
 
       const originalLive = readFileSync(dbPath);
       await expect(swapDatabaseFromSnapshot(dbPath, snapshotPath, { preRestoreDir: backupsDir }))
-        .rejects.toThrow('required worker table sdk_sessions');
+        .rejects.toThrow("This file doesn't look like a claude-mem database (no sdk_sessions table). Your current database was not changed.");
       expect(readFileSync(dbPath)).toEqual(originalLive);
       expect(readdirSync(backupsDir)).toEqual([snapshotName]);
       expect(readdirSync(dir).filter(name => name.includes('.restore-'))).toEqual([]);
