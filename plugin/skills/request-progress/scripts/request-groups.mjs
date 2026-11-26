@@ -1135,6 +1135,8 @@ var init_SettingsDefaultsManager = __esm({
         // OpenAI-compatible base URL, e.g. https://integrate.api.nvidia.com/v1. Overrides the preset's base URL when set.
         CLAUDE_MEM_OPENAI_COMPAT_MODEL: "",
         // Model id passed verbatim. Empty = the preset's default model.
+        CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION: "false",
+        // opt-in: use the model selected in the host session
         CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT: "",
         CLAUDE_MEM_OPENAI_COMPAT_REASONING: "",
         // off | on. Empty = off: every openai-compatible request sends reasoning:{enabled:false}. "on" leaves reasoning to the endpoint.
