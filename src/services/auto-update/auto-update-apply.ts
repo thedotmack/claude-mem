@@ -653,7 +653,7 @@ function firstVersionNewerThan(versions: readonly string[], targetVersion: strin
  * The target is not blocked (blocksVersion false), whether or not the
  * previous version's worker comes back. A blocked version can never be
  * applied on this machine, so blocking it on a passing failure (an npx
- * download blip, the installer stopping at its 10 s worker stop) would strand
+ * download blip, the installer stopping at its worker stop's wait) would strand
  * the install until a newer version is promoted, and the daily check interval
  * (AUTO_UPDATE_CHECK_INTERVAL_MS) already limits retries to one download a day.
  */
