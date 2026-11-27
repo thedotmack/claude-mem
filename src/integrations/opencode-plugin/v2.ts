@@ -36,6 +36,7 @@
 
 import { isClaudeMemTool, WORK_STATE_WRITE_TOOL } from "../../shared/work-state-tool.js";
 import { CONTEXT_TAG_CLOSE, CONTEXT_TAG_OPEN } from "../../utils/context-injection.js";
+import { renderKeyList, toolKeyNames } from "./tool-call-guidance.js";
 import { createCore, type ClaudeMemCore, type CoreContext } from "./core.js";
 
 /** The V2 plugin id. Also the handle `opencode.json(c)` uses to disable it. */
@@ -49,6 +50,8 @@ export interface V2ToolExecuteAfterEvent {
   status?: string;
   tool?: string;
   sessionID?: string;
+  agent?: string;
+  info?: { name?: string; input?: unknown };
   input?: Record<string, unknown>;
   args?: Record<string, unknown>;
   result?: unknown;
@@ -110,8 +113,11 @@ const RESUBSCRIBE_DELAY_MS = 10_000;
 const OBSERVER_MODEL_READ_TIMEOUT_MS = 250;
 
 // Bounds the per-session reply cache on a long-lived server, as core.ts
-// bounds its session maps.
+// bounds its session maps. The same bound applies to the transient raw-key map.
 const MAX_TRACKED_SESSIONS = 1000;
+
+// A Code Mode script is scanned, never executed; oversized scripts are skipped.
+const MAX_CODE_CHARS = 8 * 1024;
 
 /** The slice of the V2 context this adapter uses. Every member is optional so
  * a beta API change degrades to a no-op instead of failing the whole load. */
@@ -282,6 +288,130 @@ export function missingRequiredKeys(schema: unknown, input: Record<string, unkno
 }
 
 /**
+ * Top-level keys of a literal object argument. Nested values are skipped by
+ * depth, and a computed or non-literal member never yields a name. An
+ * unterminated argument is discarded rather than guessed at.
+ */
+function literalObjectKeys(code: string, open: number): string[] | undefined {
+  const keys: string[] = [];
+  let depth = 1;
+  let atStart = true;
+  let candidate: string | undefined;
+  let quoted = false;
+  for (let index = open + 1; index < code.length; index++) {
+    const char = code[index];
+    if (char === "'" || char === '"' || char === "`") {
+      const quote = char;
+      let value = "";
+      index++;
+      while (index < code.length && code[index] !== quote) {
+        if (code[index] === "\\") {
+          index++;
+          if (index >= code.length) return undefined;
+        }
+        value += code[index];
+        index++;
+      }
+      if (index >= code.length) return undefined;
+      if (depth === 1 && atStart) {
+        candidate = value;
+        quoted = true;
+      }
+      atStart = false;
+      continue;
+    }
+    if (char === "{" || char === "[" || char === "(") {
+      if (char === "{" && depth === 1) atStart = true;
+      else {
+        atStart = false;
+        candidate = undefined;
+      }
+      depth++;
+      continue;
+    }
+    if (char === "}" || char === "]" || char === ")") {
+      depth--;
+      if (depth === 0) return keys;
+      atStart = false;
+      candidate = undefined;
+      continue;
+    }
+    if (depth !== 1 || /\s/.test(char)) continue;
+    if (char === ",") {
+      atStart = true;
+      candidate = undefined;
+      quoted = false;
+      continue;
+    }
+    if (char === ":") {
+      if (candidate !== undefined && (quoted || /^[A-Za-z_$][\w$]*$/.test(candidate))) keys.push(candidate);
+      candidate = undefined;
+      quoted = false;
+      atStart = false;
+      continue;
+    }
+    if (atStart && /[A-Za-z_$]/.test(char)) {
+      let end = index + 1;
+      while (end < code.length && /[\w$]/.test(code[end])) end++;
+      candidate = code.slice(index, end);
+      quoted = false;
+      atStart = false;
+      index = end - 1;
+      continue;
+    }
+    candidate = undefined;
+    quoted = false;
+  }
+  return undefined;
+}
+
+/**
+ * Names the top-level keys of literal object arguments passed to claude-mem
+ * tools inside a Code Mode script. The script is scanned as text: it is never
+ * evaluated, repaired or replayed, and no argument value is retained. A
+ * non-literal argument, a computed key, an unrelated tool or an oversized
+ * script yields no names.
+ */
+export function extractRawKeyNames(code: string): string[] {
+  if (typeof code !== "string" || !code || code.length > MAX_CODE_CHARS) return [];
+  const names: unknown[] = [];
+  const calls = /\btools\b((?:\s*(?:\.\s*[A-Za-z_$][\w$]*|\[\s*['"][^'"]+['"]\s*\]))+)\s*\(/g;
+  const segments = /(\.\s*([A-Za-z_$][\w$]*)|\[\s*['"]([^'"]+)['"]\s*\])/g;
+  for (let call = calls.exec(code); call !== null; call = calls.exec(code)) {
+    const path = call[1] ?? "";
+    const parts: string[] = [];
+    segments.lastIndex = 0;
+    for (let part = segments.exec(path); part !== null; part = segments.exec(path)) {
+      const name = part[2] ?? part[3];
+      if (name) parts.push(name);
+    }
+    if (parts.length === 0 || !isClaudeMemTool(parts.join("."))) continue;
+    let cursor = call.index + call[0].length;
+    while (cursor < code.length && /\s/.test(code[cursor])) cursor++;
+    if (code[cursor] !== "{") continue;
+    const keys = literalObjectKeys(code, cursor);
+    if (keys) names.push(...keys);
+  }
+  return toolKeyNames(names);
+}
+
+/**
+ * Names the raw key captured from the outer `execute` script on the error the
+ * nested tool call reports. Task 6 extends this one function with schema
+ * guidance; neither version repairs input, retries a call or logs a value.
+ */
+export function enrichValidationError(event: V2ToolExecuteAfterEvent, rawNames: string[]): boolean {
+  if (event.status !== "error") return false;
+  const names = renderKeyList(rawNames);
+  if (!names) return false;
+  const error = event.error;
+  if (!error || typeof error !== "object" || typeof error.message !== "string") return false;
+  // Mutate the host's error object in place: its identity must survive.
+  error.message = `${error.message}\nRaw keys from execute: ${names}`;
+  return true;
+}
+
+/**
  * V2 hands the tool result over as an object, not the string V1's
  * `output.output` carried. The observed shape is
  * `{ output: { exit, truncated, output }, content: [{ type: "text", text }] }`,
@@ -340,6 +470,28 @@ export async function setupV2(
   // arrive without a location, so this is how the bus tells this checkout's
   // sessions from another location's on the same server.
   const replyBySessionId = new Map<string, string>();
+  // Key names from an outer `execute` script, waiting for the nested tool's
+  // `execute.after`. Names only, bounded like the reply cache, and consumed at
+  // most once; no bus, no id correlation, no file or POST.
+  const rawNamesBySessionAgent = new Map<string, string[]>();
+  const rawKey = (sessionID: string, agent: string): string => `${sessionID}\u0000${agent}`;
+  const rememberRawNames = (sessionID: string, agent: string, names: string[]): void => {
+    if (!sessionID || names.length === 0) return;
+    const key = rawKey(sessionID, agent);
+    if (!rawNamesBySessionAgent.has(key) && rawNamesBySessionAgent.size >= MAX_TRACKED_SESSIONS) {
+      const oldest = rawNamesBySessionAgent.keys().next().value;
+      if (oldest !== undefined) rawNamesBySessionAgent.delete(oldest);
+    }
+    // The extractor already sorted and bounded the names. No read at `before`:
+    // the map is consumed only by the nested `execute.after`.
+    rawNamesBySessionAgent.set(key, names);
+  };
+  const forgetRawNames = (sessionID: string): void => {
+    const prefix = `${sessionID}\u0000`;
+    for (const key of rawNamesBySessionAgent.keys()) {
+      if (key.startsWith(prefix)) rawNamesBySessionAgent.delete(key);
+    }
+  };
   const trackSession = (sessionID: string): void => {
     if (replyBySessionId.has(sessionID)) return;
     if (replyBySessionId.size >= MAX_TRACKED_SESSIONS) {
@@ -372,6 +524,12 @@ export async function setupV2(
     try {
       registrations.push(await hook("execute.before", async (event: V2ToolExecuteBeforeEvent) => {
         if (!event?.sessionID) return;
+        // Only the outer `execute` call carries the script. Deposit names here;
+        // never enrich or mutate the event at this hook.
+        const code = (event.input as Record<string, unknown> | undefined)?.code;
+        if (typeof code === "string") {
+          rememberRawNames(event.sessionID, event.agent ?? "", extractRawKeyNames(code));
+        }
         const named = event.info?.name ?? event.tool;
         if (!isClaudeMemTool(event.tool) && !WORK_STATE_WRITE_TOOL.test(named ?? "")) return;
         const input = (event.input ?? {}) as Record<string, unknown>;
@@ -413,6 +571,17 @@ export async function setupV2(
         const sessionID = event.sessionID;
         let tool = event.tool;
         if (!sessionID || !tool) return;
+        // The nested tool's after is the one consumer of the script's names:
+        // read on error, purge on any recognized status so no stale name can
+        // reach a later direct call. The outer execute after is never read.
+        const named = event.info?.name ?? tool;
+        const claudeMemCall = isClaudeMemTool(tool) || WORK_STATE_WRITE_TOOL.test(named ?? "");
+        let rawNames: string[] = [];
+        if (claudeMemCall) {
+          const key = rawKey(sessionID, event.agent ?? "");
+          if (event.status === "error") rawNames = rawNamesBySessionAgent.get(key) ?? [];
+          rawNamesBySessionAgent.delete(key);
+        }
         trackSession(sessionID);
         // Current V2 built-ins use these names; the core keeps V1's vocabulary.
         if (tool === "patch") tool = "apply_patch";
@@ -438,6 +607,11 @@ export async function setupV2(
         await core.captureTool({ tool, sessionID, args, output, failed: event.status === "error",
           ...(tool !== event.tool ? { nativeToolName: event.tool } : {}),
         });
+        // The observation above holds the host's original error; enrich only
+        // the event the model sees, after capture.
+        if (event.status === "error" && rawNames.length > 0) {
+          enrichValidationError(event, rawNames);
+        }
       }),
     );
   }
@@ -549,6 +723,7 @@ export async function setupV2(
     switch (event.type) {
       case "session.deleted":
         replyBySessionId.delete(sessionID);
+        forgetRawNames(sessionID);
         core.forgetSession(sessionID);
         return;
       case "session.text.ended":
@@ -582,6 +757,7 @@ export async function setupV2(
 
   return async () => {
     cleanupController.abort();
+    rawNamesBySessionAgent.clear();
     await disposeRegistrations();
   };
 }

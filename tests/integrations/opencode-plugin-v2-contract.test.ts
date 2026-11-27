@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   setupV2,
   extractResultText,
+  extractRawKeyNames,
   type OpenCodePluginContextV2,
   type V2BusEvent,
 } from "../../src/integrations/opencode-plugin/v2";
@@ -1016,5 +1017,184 @@ describe("OpenCode V2 setup with a context that is not a plugin context", () => 
     expect(warnings).toEqual([]);
     expect(registered).toBe(0);
     expect(worker.requests).toEqual([]);
+  });
+});
+
+/**
+ * Raw keys of a Code Mode call are visible only on the outer `execute.before`
+ * (`inputKeys:["code"]`), while the error the model sees is the nested
+ * `execute.after` (`status:"error"`, `event.error.message`). The outer
+ * `execute.after` is `status:"completed"` without an error and runs last, so
+ * it can neither read nor enrich anything.
+ */
+describe("OpenCode V2 raw keys from the execute script", () => {
+  let worker: ReturnType<typeof recordWorkerRequests>;
+  let cleanup: () => Promise<void>;
+
+  beforeEach(() => {
+    worker = recordWorkerRequests();
+    cleanup = async () => {};
+  });
+
+  afterEach(async () => {
+    await cleanup();
+    worker.restore();
+  });
+
+  async function start() {
+    const host = createV2Host();
+    cleanup = await setupV2(host.ctx);
+    return host;
+  }
+
+  const sessionID = "ses_raw_keys";
+  const agent = "primary";
+
+  function outerBefore(code: string, input: Record<string, unknown> = { code }) {
+    return { tool: "execute", sessionID, agent, input };
+  }
+
+  function nestedEvent(
+    error: { message: string },
+    tool = "claude-mem_work_state_write",
+  ) {
+    return { tool, sessionID, agent, status: "error", error, input: { list: "x" } };
+  }
+
+  describe("literal extraction", () => {
+    it("reads top-level names only from recognized literal calls", () => {
+      const code = 'await tools["claude-mem"].work_state_write({list:"x", items:[1], "fields":{task:"y"}});';
+      expect(extractRawKeyNames(code)).toEqual(["fields", "items", "list"]);
+    });
+
+    it("names another claude-mem tool's real keys, without a hard-coded list", () => {
+      const code = 'tools["claude-mem"].observation_add({content:"x", secret:"do-not-log"});';
+      // `secret` is a key *name* here; the value `do-not-log` is never returned.
+      expect(extractRawKeyNames(code)).toEqual(["content", "secret"]);
+    });
+
+    it("ignores dynamic inputs, computed keys, unrelated tools and oversized scripts", () => {
+      expect(extractRawKeyNames('const input = {items:1}; tools["claude-mem"].work_state_write(input);')).toEqual([]);
+      expect(extractRawKeyNames('tools["claude-mem"].work_state_write({[key]:1});')).toEqual([]);
+      expect(extractRawKeyNames('shell({items:1});')).toEqual([]);
+      expect(extractRawKeyNames(`tools["claude-mem"].work_state_write({items:1});${" ".repeat(8 * 1024)}`)).toEqual([]);
+    });
+  });
+
+  it("names the raw key at the nested after, never the value, and captures the original error first", async () => {
+    const host = await start();
+    const error = { message: "Invalid arguments for tool: unexpected key" };
+    const warn = spyOn(console, "warn");
+
+    await host.call("tool.execute.before", outerBefore(
+      'tools["claude-mem"].work_state_write({list:"x", items:[{secret:"do-not-log"}]})',
+    ));
+    await host.call("tool.execute.after", nestedEvent(error));
+
+    const warning = warn.mock.calls.flat().join(" ");
+    warn.mockRestore();
+    expect(error.message).toContain("items");
+    expect(error.message).not.toContain("do-not-log");
+    expect(warning).not.toContain("do-not-log");
+    // The observation keeps the message the host gave us before enrichment.
+    expect(worker.to("/api/sessions/observations")[0].body!.tool_response).toEqual({
+      is_error: true,
+      error: "Invalid arguments for tool: unexpected key",
+    });
+  });
+
+  it("adds no name for a non-literal script", async () => {
+    const host = await start();
+    const code = 'const payload = {items:1}; tools["claude-mem"].work_state_write(payload);';
+    await host.call("tool.execute.before", outerBefore(code));
+    const error = { message: "Invalid arguments" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toBe("Invalid arguments");
+  });
+
+  it("merges names from several offending calls and bounds the merged list to three", async () => {
+    const host = await start();
+    const code = [
+      'await tools["claude-mem"].work_state_write({list:"x", zeta:1});',
+      'await tools["claude-mem"].work_state_write({list:"x", beta:2});',
+      'await tools["claude-mem"].work_state_write({list:"x", alpha:3, gamma:4});',
+    ].join("\n");
+    await host.call("tool.execute.before", outerBefore(code));
+    const error = { message: "Invalid arguments" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    for (const name of ["alpha", "beta", "gamma"]) expect(error.message).toContain(name);
+    expect(error.message).not.toContain("zeta");
+  });
+
+  it("names the real key of another claude-mem tool from its own script", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", outerBefore(
+      'tools["claude-mem"].observation_add({content:"x", secret:"do-not-log"})',
+    ));
+    const error = { message: "Invalid arguments" };
+    await host.call("tool.execute.after", nestedEvent(error, "claude-mem_observation_add"));
+    expect(error.message).toContain("content");
+    // The second literal key is named too; only its *value* stays out.
+    expect(error.message).toContain("secret");
+    expect(error.message).not.toContain("do-not-log");
+  });
+
+  it("runs before -> nested error after -> outer completed after, and consumes the entry once", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", outerBefore('tools["claude-mem"].work_state_write({items:1})'));
+
+    const error = { message: "nested failure" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    const afterNested = error.message;
+    expect(afterNested).toContain("items");
+
+    // The outer execute.after is status:"completed" and must not enrich.
+    const outerResult = { content: [{ type: "text", text: "done" }] };
+    await host.call("tool.execute.after", {
+      tool: "execute", sessionID, agent, status: "completed", result: outerResult,
+    });
+    expect(error.message).toBe(afterNested);
+    expect(outerResult.content[0].text).toBe("done");
+
+    // No stale entry survives the nested after: a later direct call is untouched.
+    const later = { message: "direct failure" };
+    await host.call("tool.execute.after", nestedEvent(later));
+    expect(later.message).toBe("direct failure");
+  });
+
+  it("purges an unconsumed entry on a completed nested claude-mem after", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", outerBefore('tools["claude-mem"].work_state_write({items:1})'));
+    await host.call("tool.execute.after", {
+      tool: "claude-mem_work_state_write", sessionID, agent, status: "completed",
+      result: { content: [] },
+    });
+    const error = { message: "later failure" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toBe("later failure");
+  });
+
+  it("never sources names from session.tool.called", async () => {
+    const host = await start();
+    host.stream.send({
+      type: "session.tool.called",
+      data: { sessionID, agent, input: { items: 1 } },
+      location: { directory: "/work/project" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const error = { message: "bus-only failure" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toBe("bus-only failure");
+    expect(readFileSync("src/integrations/opencode-plugin/v2.ts", "utf8")).not.toContain("session.tool.called");
+  });
+
+  it("clears a pending entry when the session is deleted", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", outerBefore('tools["claude-mem"].work_state_write({items:1})'));
+    host.stream.send(busEvent("session.deleted", sessionID, {}, null));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const error = { message: "after delete" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toBe("after delete");
   });
 });
