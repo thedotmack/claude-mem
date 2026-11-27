@@ -372,6 +372,62 @@ describe("OpenCode V2 hook registration", () => {
     expect(unrelated).toBe("");
   });
 
+  it("includes a bounded, value-free schema hint in the pre-validation warning", async () => {
+    const warn = spyOn(console, "warn");
+    const { ctx, hookCallbacks } = createV2Context();
+    ctx.tool!.list = async () => [{
+      id: "claude-mem_work_state_write",
+      input: {
+        type: "object",
+        required: ["list"],
+        properties: {
+          list: {
+            type: "array",
+            description: "A very long description that must be cut down to the schema guidance bound because the trace must stay short and single line",
+            enum: ["one", "two", "three"],
+            format: "csv",
+            minItems: 1,
+            maxItems: 99,
+            items: { type: "string" },
+          },
+        },
+      },
+    }] as any;
+    await setupV2(ctx);
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "claude-mem_work_state_write", sessionID: "s1-hint", agent: "primary",
+      input: { unrelated: "plans-do-not-log" },
+    });
+    const line = warn.mock.calls.flat().join(" ");
+    warn.mockRestore();
+    const hint = line.split(" hint=")[1] ?? "";
+    expect(line).toContain("missing=list");
+    expect(hint).toContain("array");
+    expect(hint).toContain("minItems: 1");
+    expect(hint.length).toBeLessThanOrEqual(200);
+    expect(hint).not.toContain("\n");
+    expect(line).not.toContain("plans-do-not-log");
+  });
+
+  it("omits the hint when the schema has no shape for the missing key", async () => {
+    const warn = spyOn(console, "warn");
+    const { ctx, hookCallbacks } = createV2Context();
+    ctx.tool!.list = async () => [{
+      id: "claude-mem_work_state_write",
+      input: { type: "object", required: ["mystery"] },
+    }] as any;
+    await setupV2(ctx);
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "claude-mem_work_state_write", sessionID: "s1-nohint", agent: "primary",
+      input: { unrelated: "secret-do-not-log" },
+    });
+    const line = warn.mock.calls.flat().join(" ");
+    warn.mockRestore();
+    expect(line).toContain("missing=mystery");
+    expect(line).not.toContain("hint=");
+    expect(line).not.toContain("secret-do-not-log");
+  });
+
   it("disposes every registration and stops the event stream on cleanup", async () => {
     const { ctx, disposeCount } = createV2Context();
     const cleanup = await setupV2(ctx);
@@ -1082,6 +1138,29 @@ describe("OpenCode V2 raw keys from the execute script", () => {
       expect(extractRawKeyNames('shell({items:1});')).toEqual([]);
       expect(extractRawKeyNames(`tools["claude-mem"].work_state_write({items:1});${" ".repeat(8 * 1024)}`)).toEqual([]);
     });
+
+    it("ignores a literal call written in a line comment", () => {
+      const code = [
+        '// tools["claude-mem"].work_state_write({commented:1});',
+        'const input = {real:1}; tools["claude-mem"].work_state_write(input);',
+      ].join("\n");
+      expect(extractRawKeyNames(code)).toEqual([]);
+    });
+
+    it("ignores a literal call written in a string", () => {
+      const code = `const note = 'tools["claude-mem"].work_state_write({quoted:1})'; const input = {real:1}; tools["claude-mem"].work_state_write(input);`;
+      expect(extractRawKeyNames(code)).toEqual([]);
+    });
+
+    it("ignores a literal call written in a block comment or a plain template", () => {
+      expect(extractRawKeyNames('/* tools["claude-mem"].work_state_write({blocked:1}) */ const input = {}; tools["claude-mem"].work_state_write(input);')).toEqual([]);
+      expect(extractRawKeyNames('`tools["claude-mem"].work_state_write({templated:1})`')).toEqual([]);
+    });
+
+    it("keeps a real call inside a template interpolation", () => {
+      const code = '`prefix ${tools["claude-mem"].work_state_write({interpolated:1})}`';
+      expect(extractRawKeyNames(code)).toEqual(["interpolated"]);
+    });
   });
 
   it("names the raw key at the nested after, never the value, and captures the original error first", async () => {
@@ -1163,6 +1242,30 @@ describe("OpenCode V2 raw keys from the execute script", () => {
     const later = { message: "direct failure" };
     await host.call("tool.execute.after", nestedEvent(later));
     expect(later.message).toBe("direct failure");
+  });
+
+  it("drops a previous script's names when the next script yields none", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", outerBefore('tools["claude-mem"].work_state_write({first:1})'));
+    await host.call("tool.execute.before", outerBefore(
+      'const input = {second:1}; tools["claude-mem"].work_state_write(input);',
+    ));
+    const error = { message: "Invalid arguments" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toBe("Invalid arguments");
+    expect(error.message).not.toContain("first");
+  });
+
+  it("purges an unconsumed entry when the outer execute finishes", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", outerBefore('tools["claude-mem"].work_state_write({items:1})'));
+    await host.call("tool.execute.after", {
+      tool: "execute", sessionID, agent, status: "completed",
+      result: { content: [{ type: "text", text: "done" }] },
+    });
+    const error = { message: "later failure" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toBe("later failure");
   });
 
   it("purges an unconsumed entry on a completed nested claude-mem after", async () => {

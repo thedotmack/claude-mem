@@ -375,18 +375,93 @@ function literalObjectKeys(code: string, open: number): string[] | undefined {
 }
 
 /**
+ * Same-length copy of a script with comments and string contents blanked, so
+ * a call written in prose is never mistaken for a live call. Quoted bracket
+ * members stay readable because they are path segments the call matcher must
+ * see, and `${...}` expressions stay readable because they are code. Indexes
+ * are unchanged, so keys can still be read from the original script.
+ */
+function maskNonCode(code: string): string {
+  const out = code.split("");
+  const blank = (start: number, end: number): void => {
+    for (let at = start; at < end; at++) {
+      if (out[at] !== "\n" && out[at] !== "\r") out[at] = " ";
+    }
+  };
+  type Frame = { type: "template" | "expr"; depth: number };
+  const stack: Frame[] = [];
+  let index = 0;
+  while (index < code.length) {
+    const char = code[index];
+    const next = code[index + 1];
+    const top = stack[stack.length - 1];
+    if (top?.type === "template") {
+      if (char === "\\") { blank(index, Math.min(index + 2, code.length)); index += 2; continue; }
+      if (char === "$" && next === "{") { stack.push({ type: "expr", depth: 0 }); index += 2; continue; }
+      if (char === "`") { stack.pop(); index++; continue; }
+      blank(index, index + 1);
+      index++;
+      continue;
+    }
+    if (char === "/" && next === "/") {
+      const start = index;
+      index += 2;
+      while (index < code.length && code[index] !== "\n" && code[index] !== "\r") index++;
+      blank(start, index);
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      const start = index;
+      index += 2;
+      while (index < code.length && !(code[index] === "*" && code[index + 1] === "/")) index++;
+      if (index < code.length) index += 2;
+      blank(start, index);
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      const quote = char;
+      const start = index;
+      index++;
+      while (index < code.length && code[index] !== quote) {
+        if (code[index] === "\\") index += 2;
+        else index++;
+      }
+      if (index < code.length) index++;
+      let left = start - 1;
+      while (left >= 0 && /\s/.test(code[left])) left--;
+      let right = index;
+      while (right < code.length && /\s/.test(code[right])) right++;
+      const bracketMember = code[left] === "[" && code[right] === "]"
+        && /^[\w.$-]+$/.test(code.slice(start + 1, index - 1));
+      if (!bracketMember) blank(start + 1, index - 1);
+      continue;
+    }
+    if (char === "`") { stack.push({ type: "template", depth: 0 }); index++; continue; }
+    if (top?.type === "expr") {
+      if (char === "{") top.depth++;
+      else if (char === "}" && top.depth > 0) top.depth--;
+      else if (char === "}") stack.pop();
+    }
+    index++;
+  }
+  return out.join("");
+}
+
+/**
  * Names the top-level keys of literal object arguments passed to claude-mem
  * tools inside a Code Mode script. The script is scanned as text: it is never
- * evaluated, repaired or replayed, and no argument value is retained. A
- * non-literal argument, a computed key, an unrelated tool or an oversized
- * script yields no names.
+ * evaluated, repaired or replayed, and no argument value is retained. Calls
+ * in comments or strings are masked out before matching. A non-literal
+ * argument, a computed key, an unrelated tool or an oversized script yields no
+ * names.
  */
 export function extractRawKeyNames(code: string): string[] {
   if (typeof code !== "string" || !code || code.length > MAX_CODE_CHARS) return [];
   const names: unknown[] = [];
+  const masked = maskNonCode(code);
   const calls = /\btools\b((?:\s*(?:\.\s*[A-Za-z_$][\w$]*|\[\s*['"][^'"]+['"]\s*\]))+)\s*\(/g;
   const segments = /(\.\s*([A-Za-z_$][\w$]*)|\[\s*['"]([^'"]+)['"]\s*\])/g;
-  for (let call = calls.exec(code); call !== null; call = calls.exec(code)) {
+  for (let call = calls.exec(masked); call !== null; call = calls.exec(masked)) {
     const path = call[1] ?? "";
     const parts: string[] = [];
     segments.lastIndex = 0;
@@ -396,8 +471,8 @@ export function extractRawKeyNames(code: string): string[] {
     }
     if (parts.length === 0 || !isClaudeMemTool(parts.join("."))) continue;
     let cursor = call.index + call[0].length;
-    while (cursor < code.length && /\s/.test(code[cursor])) cursor++;
-    if (code[cursor] !== "{") continue;
+    while (cursor < masked.length && /\s/.test(masked[cursor])) cursor++;
+    if (masked[cursor] !== "{") continue;
     const keys = literalObjectKeys(code, cursor);
     if (keys) names.push(...keys);
   }
@@ -556,8 +631,11 @@ export async function setupV2(
   const rawNamesBySessionAgent = new Map<string, string[]>();
   const rawKey = (sessionID: string, agent: string): string => `${sessionID}\u0000${agent}`;
   const rememberRawNames = (sessionID: string, agent: string, names: string[]): void => {
-    if (!sessionID || names.length === 0) return;
+    if (!sessionID) return;
     const key = rawKey(sessionID, agent);
+    // A later script with no literal call must not inherit the previous one's
+    // names: replace the entry, including with an empty one that drops it.
+    if (names.length === 0) { rawNamesBySessionAgent.delete(key); return; }
     if (!rawNamesBySessionAgent.has(key) && rawNamesBySessionAgent.size >= MAX_TRACKED_SESSIONS) {
       const oldest = rawNamesBySessionAgent.keys().next().value;
       if (oldest !== undefined) rawNamesBySessionAgent.delete(oldest);
@@ -638,7 +716,12 @@ export async function setupV2(
         }
         const missing = missingRequiredKeys(schema, input);
         if (missing.length === 0) return; // before validation: the call may still be repaired or refused by policy
-        console.warn(`[claude-mem] pre-validation: ${event.tool} session=${event.sessionID} missing=${missing.sort().join(",")}`);
+        const sorted = missing.sort();
+        // Schema-derived shape only: never the argument bag. One line, bounded,
+        // so a verbose description cannot turn the trace into a log flood.
+        const hint = schema == null ? undefined : hintForPath(schema, sorted[0] ?? "");
+        const boundedHint = hint?.replace(/[\r\n]+/g, " ").slice(0, 200);
+        console.warn(`[claude-mem] pre-validation: ${event.tool} session=${event.sessionID} missing=${sorted.join(",")}${boundedHint ? ` hint=${boundedHint}` : ""}`);
       }));
     } catch (error: unknown) {
       // Best effort: a beta host may not expose this hook yet.
@@ -654,6 +737,10 @@ export async function setupV2(
         const sessionID = event.sessionID;
         let tool = event.tool;
         if (!sessionID || !tool) return;
+        // The outer execute deposits names at `before`; when it finishes, its
+        // nested after hooks have run. Drop anything they did not consume so a
+        // later direct call cannot inherit this script's keys.
+        if (tool === "execute") rawNamesBySessionAgent.delete(rawKey(sessionID, event.agent ?? ""));
         // The nested tool's after is the one consumer of the script's names:
         // read on error, purge on any recognized status so no stale name can
         // reach a later direct call. The outer execute after is never read.
