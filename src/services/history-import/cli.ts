@@ -50,6 +50,17 @@ export async function runHistoricalChatImport(args: string[]): Promise<void> {
     return JSON.stringify([namespace, chat.projectId ?? chat.project]);
   }));
   console.log(`${conversations.size} chats across ${projects.size} projects; ${turns} dated turns in the last 30 days. ${skipped} source records skipped.`);
+  if (turns) {
+    // Both readers return messages ordered by source time within each project.
+    let earliest = Infinity;
+    let latest = -Infinity;
+    for (const { messages } of chats) {
+      if (!messages.length) continue;
+      earliest = Math.min(earliest, messages[0].timestampMs);
+      latest = Math.max(latest, messages[messages.length - 1].timestampMs);
+    }
+    console.log(`Source messages span ${new Date(earliest).toISOString()} to ${new Date(latest).toISOString()}.`);
+  }
   if (!values.apply || !turns) {
     if (!values.apply) console.log('Preview complete. Add --apply to generate observations with a local Ollama model.');
     return;
@@ -79,6 +90,10 @@ export async function runHistoricalChatImport(args: string[]): Promise<void> {
       }
     });
     console.log(`${result.stored} new observations, ${result.existing} previously processed turns, ${result.skipped} turns without a new observation; ${result.calls} model calls.`);
+    if (result.unverified) {
+      console.log(`Partial import. ${result.unverified} turns lacked a verified observation and remain retryable. Rerun with --model NAME to fill the gaps with another installed local chat model.`);
+      process.exitCode = 2;
+    }
     if (result.limited) console.log('Reached --limit. Rerun to continue from the next unprocessed turn.');
   } finally {
     store.close();

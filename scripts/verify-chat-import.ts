@@ -96,9 +96,11 @@ let sessions = open();
 try {
   const mode = ModeManager.getInstance().loadMode('code');
   const receiptIds = new Set<number>();
+  const completed = new Set<string>();
   let turnsWithoutObservation = 0;
   const first = await replayHistoricalChats(selection, new HistoryReplayStore(sessions),
-    () => localChatObserver(values.model), mode, Infinity, (_unit, receipt) => {
+    () => localChatObserver(values.model), mode, Infinity, (unit, receipt) => {
+      completed.add(sourceKey(unit.source, unit.conversationId, unit.messageId));
       if (!receipt.ids.length) turnsWithoutObservation++;
       for (const id of receipt.ids) {
         if (receiptIds.has(id)) throw new Error('An observation ID occurred more than once in the replay proof.');
@@ -113,7 +115,6 @@ try {
     'SELECT id, project, created_at, created_at_epoch, metadata FROM observations ORDER BY created_at_epoch, id'
   ).all();
   const rows = saved();
-  if (!rows.length) throw new Error('The observer produced no observations for these turns. No timeline dates could be verified.');
   if (rows.length !== receiptIds.size || rows.some(row => !receiptIds.has(row.id))) {
     throw new Error('The saved observations differ from the selected turns. Use a dedicated checkpoint for each selection.');
   }
@@ -138,7 +139,13 @@ try {
     const day = row.created_at.slice(0, 10);
     byDay.set(day, (byDay.get(day) ?? 0) + 1);
   }
-  const again = await replayHistoricalChats(selection, new HistoryReplayStore(sessions),
+  // Gaps have no receipts and remain retryable. Only completed turns may be replayed without inference.
+  const pending = expected.size - completed.size;
+  const repeatSelection = selection.map(chat => ({
+    ...chat,
+    messages: chat.messages.filter(message => completed.has(sourceKey(chat.source, chat.id, message.id))),
+  }));
+  const again = await replayHistoricalChats(repeatSelection, new HistoryReplayStore(sessions),
     async () => { throw new Error('Repeat requested inference for an already completed message.'); }, mode, Infinity, () => {});
   if (again.stored || again.calls || JSON.stringify(rows) !== JSON.stringify(saved())) {
     throw new Error('Replaying the same turns changed their saved observations.');
@@ -149,6 +156,10 @@ try {
     recognizedTurns: recognized,
     skippedSourceRecords: skipped,
     selectedTurns: expected.size,
+    completedTurns: completed.size,
+    unverifiedTurns: pending,
+    completeSelection: pending === 0,
+    timelineChecked: rows.length > 0,
     selectedChats: new Set(selection.map(conversationKey)).size,
     selectedProjects: new Set(selection.map(chat => chat.projectId || chat.project)).size,
     turnsWithoutObservation,
@@ -158,9 +169,11 @@ try {
     exactTimestampMatches: rows.length,
     matchedOriginalJsonlTimestamps: rawDateMatches,
     observationsByDayUTC: Object.fromEntries(byDay),
+    repeatCheckedTurns: completed.size,
     repeatModelCalls: again.calls,
     repeatNewObservations: again.stored,
   }, null, 2));
+  if (pending || !rows.length) process.exitCode = 2;
 } finally {
   sessions.close();
   if (!checkpoint) rmSync(dir, { recursive: true, force: true });

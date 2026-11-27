@@ -89,7 +89,7 @@ ${getPrompt(mode, 'footer')}`;
  * continuation greeting, dates, project names) follows it: every generation,
  * session and user then shares one cacheable start.
  */
-export function observerInstructions(mode: ModeConfig): string {
+function observerInstructions(mode: ModeConfig): string {
   return `${getPrompt(mode, 'system_identity')}
 
 ${getPrompt(mode, 'observer_role')}

@@ -32,7 +32,7 @@ Select a ChatGPT or Claude export, or a local Claude Code or Codex JSONL session
 
 ## Compare the original date with the timeline
 
-For a quick test, start Ollama with a locally installed chat model. Substitute its name from `ollama list` for `MODEL_NAME`. This verifier runs the first four eligible messages from each selected file through the observer, closes and reopens a disposable database, and checks each saved observation against its source message and project timeline. It then repeats those same messages and checks for duplicate observations and inference calls. Its report contains counts and UTC dates.
+For a quick test, start Ollama with a locally installed chat model. Substitute its name from `ollama list` for `MODEL_NAME`. This verifier runs the first four eligible messages from each selected file through the observer, closes and reopens a disposable database, and checks each saved observation against its source message and project timeline. It then repeats those same messages and checks for duplicate observations and inference calls. Its report contains counts and UTC dates. A partial report lists unverified turns and checks repeat behavior only for completed turns. An unverified turn remains eligible for another local model.
 
 ```sh
 bun scripts/verify-chat-import.ts "/path/to/your/export" --model MODEL_NAME
@@ -48,4 +48,4 @@ node dist/npx-cli/index.js import chats "/path/to/your/export" --apply --limit 4
 
 ## Tell us how it went
 
-Comment on the PR with the source app and export format, the counts you expected and saw, whether dates and projects matched, and any setup step that was unclear. If you saw a duplicate or an unexpected skip, include the counts before and after a rerun. Keep your chat text, private project names, exports and the detailed local proof in your own workspace.
+Privately compare a few titles and facts with the original messages. Check whether the observer described a request as a request, recorded any unsupported outcome, or turned routine chatter into a memory. Comment on the PR with the source app and export format, the local model, the counts you expected and saw, whether dates and projects matched, and any setup step that was unclear. If you saw a duplicate or an unexpected skip, include the counts before and after a rerun. Keep your chat text, private project names, exports and the detailed local proof in your own workspace.

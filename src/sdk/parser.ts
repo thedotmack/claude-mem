@@ -381,7 +381,7 @@ function unwrapLabelWrappedTitle(title: string | null): string | null {
 // Decode only after extracting markup: an escaped tag is character data, not
 // another element. A single replacement pass keeps &amp;lt; as literal &lt;.
 const XML_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
-function decodeXmlReferences(value: string): string {
+export function decodeXmlReferences(value: string): string {
   return value.replace(/<!\[CDATA\[[\s\S]*?\]\]>|&(?:amp|lt|gt|quot|apos|#(?:x[0-9a-fA-F]+|[0-9]+));/g, reference => {
     if (reference.startsWith('<![CDATA[')) return reference;
     const name = reference.slice(1, -1);
