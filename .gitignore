@@ -76,3 +76,6 @@ __pycache__/
 
 # Fixture homes written by tests (tests/services/prompt-import/token-usage.test.ts)
 tests/**/.generated/
+
+# bun test --coverage output
+coverage/
