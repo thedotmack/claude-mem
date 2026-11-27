@@ -3,23 +3,16 @@
 import { existsSync } from 'fs';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../src/shared/paths.js';
-import { formatHostForUrl } from '../src/shared/worker-url.js';
+import { formatHostForUrl, normalizeWorkerBaseUrl } from '../src/shared/worker-url.js';
 import { readJsonFileWithBom } from '../src/shared/atomic-json.js';
 import { WORKER_JSON_BODY_LIMIT_BYTES } from '../src/shared/worker-http-limits.js';
 import { normalizePlatformSource } from '../src/shared/platform-source.js';
 
-const workerSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-// loadFromFile already applies env overrides and normalizes 'localhost' to
-// 127.0.0.1 (#2992); a raw process.env read here would bypass both.
-const WORKER_HOST = workerSettings.CLAUDE_MEM_WORKER_HOST;
-const WORKER_PORT = process.env.CLAUDE_MEM_WORKER_PORT || workerSettings.CLAUDE_MEM_WORKER_PORT;
-const WORKER_URL = `http://${formatHostForUrl(WORKER_HOST)}:${WORKER_PORT}`;
-
 const IMPORT_KINDS = ['sessions', 'summaries', 'observations', 'prompts'] as const;
 type ImportKind = typeof IMPORT_KINDS[number];
 
-async function postImport(body: string) {
-  const response = await fetch(`${WORKER_URL}/api/import`, {
+async function postImport(baseUrl: string, body: string) {
+  const response = await fetch(`${baseUrl}/api/import`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
   });
   if (!response.ok) {
@@ -28,9 +21,9 @@ async function postImport(body: string) {
   return response.json();
 }
 
-async function importExportRows(payload: Record<ImportKind, any[]>) {
+async function importExportRows(baseUrl: string, payload: Record<ImportKind, any[]>) {
   const body = JSON.stringify(payload);
-  if (Buffer.byteLength(body) <= WORKER_JSON_BODY_LIMIT_BYTES) return postImport(body);
+  if (Buffer.byteLength(body) <= WORKER_JSON_BODY_LIMIT_BYTES) return postImport(baseUrl, body);
 
   // A file may contain many individually importable rows. Size requests by
   // encoded bytes, without truncating records or raising the worker's limit.
@@ -91,7 +84,7 @@ async function importExportRows(payload: Record<ImportKind, any[]>) {
         }
         rows.push(row); bytes += size; end++;
       }
-      const result = await postImport(prefix + rows.join(',') + ']}');
+      const result = await postImport(baseUrl, prefix + rows.join(',') + ']}');
       for (const [key, value] of Object.entries(result.stats)) stats[key] = (stats[key] ?? 0) + Number(value);
       for (const [key, entries] of Object.entries(result.rejected ?? {})) {
         (rejected[key] ??= []).push(...(entries as Array<{ index: number; reason: string }>)
@@ -116,6 +109,9 @@ async function importMemories(inputFile: string) {
     process.exit(1);
   }
 
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  const baseUrl = normalizeWorkerBaseUrl(settings.CLAUDE_MEM_WORKER_URL)
+    || `http://${formatHostForUrl(settings.CLAUDE_MEM_WORKER_HOST)}:${settings.CLAUDE_MEM_WORKER_PORT}`;
   const exportData = readJsonFileWithBom<any>(inputFile);
 
   console.log(`📦 Import file: ${inputFile}`);
@@ -129,19 +125,19 @@ async function importMemories(inputFile: string) {
   console.log('');
 
   try {
-    const healthCheck = await fetch(`${WORKER_URL}/api/stats`);
+    const healthCheck = await fetch(`${baseUrl}/api/stats`);
     if (!healthCheck.ok) {
       throw new Error('Worker not responding');
     }
   } catch (error) {
-    console.error(`❌ Worker not running at ${WORKER_URL}`);
+    console.error(`❌ Worker not running at ${baseUrl}`);
     console.error('   Please ensure the claude-mem worker is running.');
     process.exit(1);
   }
 
   console.log('🔄 Importing via worker API...');
 
-  const result = await importExportRows({
+  const result = await importExportRows(baseUrl, {
     sessions: exportData.sessions || [],
     summaries: exportData.summaries || [],
     observations: exportData.observations || [],

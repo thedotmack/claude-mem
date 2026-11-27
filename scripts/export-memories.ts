@@ -6,7 +6,7 @@ import { pathToFileURL } from 'url';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../src/shared/paths.js';
 import { writeJsonFileAtomic } from '../src/shared/atomic-json.js';
-import { formatHostForUrl } from '../src/shared/worker-url.js';
+import { formatHostForUrl, normalizeWorkerBaseUrl } from '../src/shared/worker-url.js';
 import type {
   ObservationRecord,
   SdkSessionRecord,
@@ -94,8 +94,8 @@ export async function exportMemories(query: string, outputFile: string, project?
   const settings = SettingsDefaultsManager.loadFromFile(join(resolveDataDir(), 'settings.json'), true, {
     warn: stdioTarget === process.stderr.fd ? progress : undefined,
   });
-  const port = parseWorkerPort(settings.CLAUDE_MEM_WORKER_PORT);
-  const baseUrl = `http://${formatHostForUrl(settings.CLAUDE_MEM_WORKER_HOST)}:${port}`;
+  const baseUrl = normalizeWorkerBaseUrl(settings.CLAUDE_MEM_WORKER_URL)
+    || `http://${formatHostForUrl(settings.CLAUDE_MEM_WORKER_HOST)}:${parseWorkerPort(settings.CLAUDE_MEM_WORKER_PORT)}`;
 
   progress(`🔍 Searching for: "${query}"${project ? ` (project: ${project})` : ' (all projects)'}`);
 
