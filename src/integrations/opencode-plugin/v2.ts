@@ -374,12 +374,54 @@ function literalObjectKeys(code: string, open: number): string[] | undefined {
   return undefined;
 }
 
+const REGEX_AFTER_KEYWORDS = new Set([
+  "return", "throw", "case", "delete", "typeof", "void", "instanceof",
+  "in", "of", "new", "yield", "await", "else", "do",
+]);
+
 /**
- * Same-length copy of a script with comments and string contents blanked, so
- * a call written in prose is never mistaken for a live call. Quoted bracket
- * members stay readable because they are path segments the call matcher must
- * see, and `${...}` expressions stay readable because they are code. Indexes
- * are unchanged, so keys can still be read from the original script.
+ * A `/` opens a regex literal only where an expression can start. After an
+ * operand — an identifier, a number, a closing bracket, a quote, a template or
+ * an increment — it is division and must stay readable.
+ */
+function startsRegexLiteral(code: string, at: number): boolean {
+  let previous = at - 1;
+  while (previous >= 0 && /\s/.test(code[previous])) previous--;
+  if (previous < 0) return true;
+  const char = code[previous];
+  if ((char === "+" || char === "-") && code[previous - 1] === char) return false;
+  if ("([{,;:=!?&|+-*%<>~^".includes(char)) return true;
+  if (/[A-Za-z_$]/.test(char)) {
+    let start = previous;
+    while (start > 0 && /[\w$]/.test(code[start - 1])) start--;
+    return REGEX_AFTER_KEYWORDS.has(code.slice(start, previous + 1));
+  }
+  return false;
+}
+
+/** Index just past a regex literal's closing `/`, or undefined if unterminated. */
+function regexEnd(code: string, at: number): number | undefined {
+  let index = at + 1;
+  let inClass = false;
+  while (index < code.length) {
+    const char = code[index];
+    if (char === "\n" || char === "\r") return undefined;
+    if (char === "\\") { index += 2; continue; }
+    if (char === "[") { inClass = true; index++; continue; }
+    if (char === "]") { inClass = false; index++; continue; }
+    if (char === "/" && !inClass) return index + 1;
+    index++;
+  }
+  return undefined;
+}
+
+/**
+ * Same-length copy of a script with comments, regex literals and string
+ * contents blanked, so a call written in prose is never mistaken for a live
+ * call. Quoted bracket members stay readable because they are path segments
+ * the call matcher must see, and `${...}` expressions stay readable because
+ * they are code. Indexes are unchanged, so keys can still be read from the
+ * original script.
  */
 function maskNonCode(code: string): string {
   const out = code.split("");
@@ -417,6 +459,19 @@ function maskNonCode(code: string): string {
       if (index < code.length) index += 2;
       blank(start, index);
       continue;
+    }
+    // A regex is consumed whole, before any quote or `//` inside it can start
+    // a string or comment. `/` stays literal inside `[...]` and `\/` is escaped;
+    // an unterminated `/` is left alone instead of eating the rest of the line.
+    if (char === "/" && next !== "/" && next !== "*" && startsRegexLiteral(code, index)) {
+      const end = regexEnd(code, index);
+      if (end !== undefined) {
+        let afterFlags = end;
+        while (afterFlags < code.length && /[A-Za-z]/.test(code[afterFlags])) afterFlags++;
+        blank(index, afterFlags);
+        index = afterFlags;
+        continue;
+      }
     }
     if (char === "'" || char === '"') {
       const quote = char;

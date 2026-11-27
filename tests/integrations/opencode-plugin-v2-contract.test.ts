@@ -1161,6 +1161,31 @@ describe("OpenCode V2 raw keys from the execute script", () => {
       const code = '`prefix ${tools["claude-mem"].work_state_write({interpolated:1})}`';
       expect(extractRawKeyNames(code)).toEqual(["interpolated"]);
     });
+
+    it("keeps a real call after a regex containing quotes", () => {
+      const code = `const pattern = /['"]/; tools["claude-mem"].work_state_write({items:1});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
+
+    it("keeps a real call after a regex with a slash inside a character class", () => {
+      const code = `const pattern = /[a/b]/; tools["claude-mem"].work_state_write({items:2});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
+
+    it("keeps a real call after a regex with an escaped slash", () => {
+      const code = String.raw`const pattern = /a\/b/; tools["claude-mem"].work_state_write({items:3});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
+
+    it("treats a division as code, not as the start of a regex", () => {
+      const code = `const ratio = width / height; tools["claude-mem"].work_state_write({items:4});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
+
+    it("ignores a pseudo-call written inside a regex literal", () => {
+      const code = `const pattern = /tools["claude-mem"].work_state_write({list:1})/; const input = {real:1}; tools["claude-mem"].work_state_write(input);`;
+      expect(extractRawKeyNames(code)).toEqual([]);
+    });
   });
 
   it("names the raw key at the nested after, never the value, and captures the original error first", async () => {
