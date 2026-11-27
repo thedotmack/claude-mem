@@ -90,8 +90,16 @@ export function readTranscriptTail(transcriptPath: string, maxBytes: number): { 
   try {
     const size = fstatSync(fd).size;
     const start = Math.max(0, size - maxBytes);
-    const buffer = Buffer.alloc(size - start);
-    readSync(fd, buffer, 0, buffer.length, start);
+    const allocated = Buffer.alloc(size - start);
+    let bytesRead = 0;
+    while (bytesRead < allocated.length) {
+      const count = readSync(fd, allocated, bytesRead, allocated.length - bytesRead, start + bytesRead);
+      if (count === 0) break;
+      bytesRead += count;
+    }
+    // A successful read may be short, and the file may shrink after fstat.
+    // Decode only actual bytes, after completing the bounded read.
+    const buffer = allocated.subarray(0, bytesRead);
     if (start === 0) {
       return { text: buffer.toString('utf-8'), startOffset: 0 };
     }
