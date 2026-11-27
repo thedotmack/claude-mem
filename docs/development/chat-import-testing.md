@@ -40,7 +40,7 @@ For a quick test, start Ollama with a locally installed chat model. Substitute i
 bun scripts/verify-chat-import.ts "/path/to/your/export" --model MODEL_NAME
 ```
 
-Pass a second path to compare two real projects. `--per-file 8` checks a longer prefix of each input. For a historical archive, `--as-of YYYY-MM-DDT23:59:59Z` sets the end of the verification window. The source timestamps are preserved.
+Pass a second path to compare two real projects. `--per-file 8` checks a longer prefix of each input. For a historical archive, `--as-of YYYY-MM-DDT23:59:59Z` sets the end of the verification window. The source timestamps are preserved. To keep completed results while trying another model, create a private directory with `mktemp -d` and pass the same path with `--checkpoint-dir` on each verifier run. That directory contains the local test database and selected passages.
 
 To try the normal CLI, use the isolated data directory above. `--limit` caps new model calls per run. Running it again continues from the next eligible message. `--proof` displays observation IDs, projects, source message IDs and original dates locally. Open an observation in your local timeline to read its selected excerpt.
 
