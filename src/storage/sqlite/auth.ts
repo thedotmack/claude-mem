@@ -171,12 +171,15 @@ export class AuthRepository {
 
   // Salted hashes are no longer deterministic per raw key, so verification
   // narrows candidates by the (non-secret) key prefix before doing a slow,
-  // timing-safe scrypt comparison against each candidate hash.
+  // timing-safe scrypt comparison against each candidate hash. The LIMIT keeps
+  // the per-request derivation count bounded when many rows share a prefix,
+  // matching the Postgres lookup.
   listActiveApiKeysByPrefix(prefix: string): ApiKey[] {
     const rows = this.db.prepare(`
       SELECT * FROM api_keys
       WHERE status = 'active' AND prefix = ?
       ORDER BY created_at_epoch DESC
+      LIMIT 8
     `).all(prefix) as ApiKeyRow[];
     return rows.map(mapApiKeyRow);
   }
