@@ -1,7 +1,8 @@
 
 import path from 'path';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync } from 'fs';
 import { toBmpSafe } from './bmp-safe.js';
+import { writeTextFileAtomic } from '../shared/atomic-json.js';
 
 export const CONTEXT_TAG_OPEN = '<claude-mem-context>';
 export const CONTEXT_TAG_CLOSE = '</claude-mem-context>';
@@ -120,12 +121,12 @@ export function injectContextIntoMarkdownFile(
       existingContent = existingContent.trimEnd() + '\n\n' + wrappedContent + '\n';
     }
 
-    writeFileSync(filePath, existingContent, 'utf-8');
+    writeTextFileAtomic(filePath, existingContent);
   } else {
     if (headerLine) {
-      writeFileSync(filePath, `${headerLine}\n\n${wrappedContent}\n`, 'utf-8');
+      writeTextFileAtomic(filePath, `${headerLine}\n\n${wrappedContent}\n`);
     } else {
-      writeFileSync(filePath, wrappedContent + '\n', 'utf-8');
+      writeTextFileAtomic(filePath, wrappedContent + '\n');
     }
   }
 }
