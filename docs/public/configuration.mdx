@@ -219,6 +219,12 @@ For `CLAUDE_MEM_PROVIDER=openai-compatible`: any endpoint that speaks `/chat/com
 
 See [OpenAI-Compatible Provider](usage/openai-compatible-provider) for presets and setup.
 
+#### Troubleshooting — host model sources
+
+When `CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST=true`, the host configuration is read from several files, merged in increasing precedence: global config, then the machine's system config directories, then the project config found from the working directory (nearest wins), then the file named by `OPENCODE_CONFIG`, which always wins. A project config stays ahead of the global one. Within the same directory, `opencode.jsonc` overrides `opencode.json`. Both V2 `providers` and V1 `provider` are accepted; when both are present, V2 `providers` wins and V1 `provider` is only a fallback.
+
+`OPENCODE_DISABLE_PROJECT_CONFIG` is not read by claude-mem — OpenCode V2 ignores it — so setting it does not hide the project config. The switch for this feature is `CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST=false`. If a configuration file is unreadable, the worker logs an `SDK` warning with the path and the reason; check the worker log for those warnings before concluding that the host model was ignored.
+
 ### My Work Summary Settings
 
 My Work can generate readable card wording using the configured OpenRouter or OpenAI-compatible chat-completions endpoint. By default it runs only when the primary observer provider is OpenRouter, as before; it never uses another endpoint or a quota-fallback key on its own. Select a provider explicitly to use that endpoint for summaries, including an OpenAI-compatible primary or a provider configured only as a fallback. Explicit selection can incur the endpoint's usual charges. Generated wording is presentation-only; recorded work and status remain unchanged.
