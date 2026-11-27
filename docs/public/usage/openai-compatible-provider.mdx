@@ -119,6 +119,7 @@ endpoint or model you pinned yourself.
 | `aigrow` | `https://aigrow.gg/v1` | yes |
 | `straitly` | `https://api.straitly.ai/v1` | yes |
 | `teamorouter` | `https://api.teamorouter.com/v1` | yes |
+| `llmtr` | `https://llmtr.com/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `opencode-go` | `https://opencode.ai/inference/go/openai/v1` | yes |
 | `opencode-zen` | `https://opencode.ai/inference/openai/v1` | yes |
@@ -671,6 +672,31 @@ reasonably necessary on servers in Hong Kong, and deletes it on request.
   "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "teamorouter",
   "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your TeamoRouter key>",
   "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "glm-5.3-flash"
+}
+```
+
+## LLMTR
+
+[LLMTR](https://llmtr.com) is a prepaid OpenAI-compatible gateway for Qwen,
+GLM, MiniMax, Claude, GPT and other models behind one key, at
+`https://llmtr.com/v1`. Model ids carry a vendor prefix, such as
+`qwen/qwen3.8-flash` (the preset's default) or `qwen/qwen3.8-max`, and are
+passed verbatim. `GET https://llmtr.com/v1/models` lists every id and needs
+no key; keys come from the API keys page in the
+[LLMTR dashboard](https://llmtr.com/dashboard/keys). Setup notes are in
+[the LLMTR docs](https://llmtr.com/docs/en/).
+
+LLMTR's [privacy policy](https://llmtr.com/privacy) says prompt and response
+bodies are not permanently written to its usage and billing database. Some
+models run on LLMTR infrastructure in Türkiye; others are forwarded to
+third-party providers, as the [terms](https://llmtr.com/terms) describe.
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "llmtr",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your LLMTR key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "qwen/qwen3.8-flash"
 }
 ```
 
