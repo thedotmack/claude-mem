@@ -269,6 +269,23 @@ describe('server-owned sqlite storage boundary', () => {
     expect(parseJsonArray('{not-json')).toEqual([]);
   });
 
+  it('does not log the malformed column value when JSON parsing fails', () => {
+    const warnSpy = spyOn(logger, 'warn');
+    try {
+      expect(parseJsonObject('{"marker":"serde-secret"} trailing')).toEqual({});
+      expect(parseJsonArray('["serde-secret"] trailing')).toEqual([]);
+      expect(warnSpy).toHaveBeenCalled();
+      for (const call of warnSpy.mock.calls) {
+        const logged = call
+          .map(arg => (arg instanceof Error ? `${arg.message} ${arg.stack}` : JSON.stringify(arg)))
+          .join(' ');
+        expect(logged).not.toContain('serde-secret');
+      }
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it('treats FTS5 operator words as literal search terms', () => {
     withDb(db => {
       const projects = new ProjectsRepository(db);
