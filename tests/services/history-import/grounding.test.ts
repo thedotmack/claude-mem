@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import type { ModeConfig } from '../../../src/services/domain/types.js';
-import { historicalObserverInstructions, isFlowOnlyMessage, observationsFromReply } from '../../../src/services/history-import/replay.js';
+import { historicalObserverInstructions, isFlowOnlyMessage, observationsFromReply, sourcePassages } from '../../../src/services/history-import/replay.js';
 
 const mode: ModeConfig = JSON.parse(readFileSync(new URL('../../../plugin/modes/code.json', import.meta.url), 'utf8'));
 // Exercise the reply format on actual repository text, independent of any transcript or model-generated memory.
@@ -45,4 +45,24 @@ test('bounds excerpt size and preserves complete graphemes in a shortened title'
   expect(obs?.[0].facts).toEqual([unicode]);
   const long = passage.repeat(15);
   expect(observationsFromReply(xml('<source_quote>' + long + '</source_quote>'), long, 'user', mode)).toBeNull();
+});
+
+test('numbered choices resolve exact current-turn passages and reject other turns and ambiguous references', () => {
+  const source = mode.prompts.skip_guidance;
+  const choices = sourcePassages(source, source, 7);
+  expect(choices.length).toBeGreaterThan(0);
+  expect(choices.every(passage => source.includes(passage.text))).toBe(true);
+  const ref = (id: string) => '<source_id>' + id + '</source_id>';
+  const select = (body: string) => observationsFromReply(xml(body), source, 'user', mode, source, choices);
+  expect(select(ref(choices[0].id))?.[0].facts).toEqual([choices[0].text]);
+  const repeated = xml(ref(choices[0].id)) + xml(ref(choices[0].id)).replace('discovery', 'decision');
+  expect(observationsFromReply(repeated, source, 'user', mode, source, choices)).toHaveLength(1);
+  expect(select(ref('T6.1'))).toBeNull();
+  expect(select(ref('T7.999'))).toBeNull();
+  expect(select(ref(choices[0].id) + quote)).toBeNull();
+});
+
+test('a clipped display fragment cannot become a selectable passage', () => {
+  const clipped = passage.slice(2, -2);
+  expect(sourcePassages(passage, clipped, 1)).toEqual([]);
 });

@@ -70,20 +70,49 @@ The JSON contains prior conversation for context and the current message as evid
 Use previous messages only to resolve references. Skip routine chatter, repetitions, empty status checks, and turns with nothing durable.
 ${mode.prompts.skip_guidance}
 Choose a type from ${mode.observation_types.map(type => type.id).join(', ')}.
-Return only <skip/> or one to four <observation> blocks. Each block selects a short, exact, contiguous excerpt from current.text. Select a complete clause with enough context to stand on its own, preferably five to thirty words. Preserve the speaker's wording, qualifiers, and punctuation. Never stitch phrases together. Copy the excerpt without adding quotation marks. Use XML escaping for literal markup.
-The selected words will be the observation's evidence. Use just these two fields:
+Return only <skip/> or one to four <observation> blocks. Select the passage in current.passages that best captures each new durable finding or request, with the speaker's qualifiers. Copy its ID into <source_id>. Claude-Mem will recover the original words. Use a <source_quote> with a short contiguous excerpt from current.text only if there is no suitable numbered passage. Use one source field per block.
 <observation>
-<source_quote></source_quote>
+<source_id></source_id>
 <type></type>
 </observation>`;
 }
 
 const EXACT_MODE_SKIP = new RegExp('^' + SKIP_SUMMARY_TAG.source + '$', 'i');
 const QUOTE_BLOCK = /<source_quote\s*>([\s\S]*?)<\/source_quote\s*>/gi;
+const ID_BLOCK = /<source_id\s*>([\s\S]*?)<\/source_id\s*>/gi;
 const TYPE_BLOCK = /<type\s*>([\s\S]*?)<\/type\s*>/gi;
 const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 const MAX_EXCERPT_GRAPHEMES = 320;
 const MAX_TITLE_EXCERPT_GRAPHEMES = 76;
+
+const sentences = new Intl.Segmenter(undefined, { granularity: 'sentence' });
+const MAX_PASSAGES = 32;
+export interface SourcePassage { id: string; text: string }
+
+function fitsExcerpt(text: string): boolean {
+  return Buffer.byteLength(text, 'utf8') <= 2048 && [...graphemes.segment(text)].length <= MAX_EXCERPT_GRAPHEMES;
+}
+
+/** Segment original text so neither a display truncation marker nor a cut-off sentence can become evidence. */
+export function sourcePassages(source: string, visible: string, turn: number): SourcePassage[] {
+  const choices = new Set<string>();
+  for (const line of source.split(/\r\n|[\r\n]/u)) {
+    for (const { segment } of sentences.segment(line)) {
+      const sentence = segment.trim();
+      // When a full sentence will not fit, use written clause boundaries; do not cut by character count.
+      const parts = fitsExcerpt(sentence) ? [sentence] : sentence.split(/(?<=[,;:])\s+|(?<=[，；：、])/u);
+      for (const part of parts) {
+        const text = part.trim();
+        if (text.length >= Math.min(12, source.length) && /[\p{L}\p{N}]/u.test(text) &&
+            fitsExcerpt(text) && visible.includes(text)) choices.add(text);
+      }
+    }
+  }
+  const all = [...choices];
+  const bounded = all.length <= MAX_PASSAGES ? all : [...all.slice(0, MAX_PASSAGES / 2), ...all.slice(-MAX_PASSAGES / 2)];
+  // Deliberately expose only the current turn's IDs to the model and accept only this set in its reply.
+  return bounded.map((text, index) => ({ id: `T${turn}.${index + 1}`, text }));
+}
 
 function evidenceTitle(excerpt: string, role: HistoricalMessage['role']): string {
   const firstLine = excerpt.split(/[\r\n]/u, 1)[0];
@@ -95,7 +124,7 @@ function evidenceTitle(excerpt: string, role: HistoricalMessage['role']): string
 
 /** Only the source speaker's verified words become factual content. Generated prose is never evidence. */
 export function observationsFromReply(reply: string, currentText: string, role: HistoricalMessage['role'],
-  mode: ModeConfig, sourceText = currentText): ParsedObservation[] | null {
+  mode: ModeConfig, sourceText = currentText, passages: SourcePassage[] = []): ParsedObservation[] | null {
   const raw = stripCodeFences(reply).trim();
   if (/^<skip\s*\/>$/i.test(raw) || EXACT_MODE_SKIP.test(raw)) return [];
   const markup = maskXmlLiteralMarkup(raw);
@@ -105,18 +134,27 @@ export function observationsFromReply(reply: string, currentText: string, role: 
   for (const block of blocks) {
     const xml = raw.slice(block.index, block.index + block[0].length);
     const quotes = [...block[0].matchAll(QUOTE_BLOCK)];
+    const refs = [...block[0].matchAll(ID_BLOCK)];
     const types = [...block[0].matchAll(TYPE_BLOCK)];
-    if (quotes.length !== 1 || types.length !== 1) return null;
+    if (quotes.length + refs.length !== 1 || types.length !== 1) return null;
     const type = types[0][1].trim();
     if (!mode.observation_types.some(allowed => allowed.id === type)) return null;
-    const quote = quotes[0];
-    const start = quote.index + quote[0].indexOf('>') + 1;
-    const body = xml.slice(start, start + quote[1].length).trim();
-    const cdata = /^<!\[CDATA\[([\s\S]*)\]\]>$/.exec(body);
-    const excerpt = (cdata ? cdata[1] : decodeXmlReferences(body)).trim();
+    let excerpt: string;
+    if (refs.length) {
+      const passage = passages.find(candidate => candidate.id === refs[0][1].trim());
+      if (!passage) return null;
+      excerpt = passage.text;
+    } else {
+      const quote = quotes[0];
+      const start = quote.index + quote[0].indexOf('>') + 1;
+      const body = xml.slice(start, start + quote[1].length).trim();
+      const cdata = /^<!\[CDATA\[([\s\S]*)\]\]>$/.exec(body);
+      excerpt = (cdata ? cdata[1] : decodeXmlReferences(body)).trim();
+    }
     if (excerpt.length < Math.min(12, currentText.trim().length) || !/[\p{L}\p{N}]/u.test(excerpt) ||
         !currentText.includes(excerpt) || !sourceText.includes(excerpt)) return null;
-    if (Buffer.byteLength(excerpt, 'utf8') > 2048 || [...graphemes.segment(excerpt)].length > MAX_EXCERPT_GRAPHEMES) return null;
+    if (!fitsExcerpt(excerpt)) return null;
+    if (verified.some(observation => observation.facts[0] === excerpt)) continue;
     verified.push({
       type, title: evidenceTitle(excerpt, role), subtitle: null, facts: [excerpt], narrative: null,
       concepts: [], files_read: [], files_modified: [],
@@ -131,11 +169,13 @@ export async function replayHistoricalChats(chats: HistoricalChat[], store: Repl
   report: (unit: ReplayUnit, receipt: ReplayReceipt) => void) {
   const system = historicalObserverInstructions(mode);
   let observer: ChatObserver | undefined;
+  let turnNumber = 0;
   let calls = 0, stored = 0, existing = 0, skipped = 0, unverified = 0;
   for (const turns of chronologicalConversations(chats)) {
     const previous: Array<{role: string; at: string; text: string}> = [];
     const remembered: string[] = [];
     for (const { chat, message } of turns) {
+      turnNumber++;
       const text = stripMemoryTags(message.text);
       if (!text.trim()) { skipped++; continue; }
       const unit: ReplayUnit = {
@@ -153,8 +193,9 @@ export async function replayHistoricalChats(chats: HistoricalChat[], store: Repl
           if (calls >= limit) return {calls, stored, existing, skipped, unverified, limited: true};
           observer ??= await observerForRun();
           calls++;
-          const raw = await observer.observe(system, JSON.stringify({ previous, remembered, current: event }));
-          observations = observationsFromReply(raw, event.text, message.role, mode, text);
+          const passages = sourcePassages(text, event.text, turnNumber);
+          const raw = await observer.observe(system, JSON.stringify({ previous, remembered, current: { ...event, passages } }));
+          observations = observationsFromReply(raw, event.text, message.role, mode, text, passages);
         }
         if (observations === null) {
           // Leave the turn retryable. Its original words still belong to the next turn's conversation context.
