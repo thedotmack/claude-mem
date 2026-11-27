@@ -14,7 +14,7 @@ export interface WorkStateAttribution {
   enqueuedAtEpochMs?: number;
 }
 
-const PLATFORMS = new Set(['claude', 'codex', 'cursor', 'devin', 'kimi', 'antigravity-cli', 'gemini', GROK_BUILD_PLATFORM_SOURCE, 'opencode', 'openclaw', 'omp', 'pi', 'qwen', 'windsurf', 'zcode']);
+const PLATFORMS = new Set(['claude', 'codex', 'cursor', 'devin', 'kimi', 'mcode', 'antigravity-cli', 'gemini', GROK_BUILD_PLATFORM_SOURCE, 'opencode', 'openclaw', 'omp', 'pi', 'qwen', 'windsurf', 'zcode']);
 
 /** No default to Claude: missing host attribution really is unknown. */
 export function workStatePlatform(value?: string): string {

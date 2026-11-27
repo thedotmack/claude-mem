@@ -1,0 +1,71 @@
+---
+title: MiniMax Code Integration
+description: Memory for MiniMax Code (mcode) — hook-based observation recording, session-start context, session summaries and MCP memory search
+icon: terminal
+---
+
+## Overview
+
+The MiniMax Code integration gives the `mcode` agent the same memory as Claude Code. It does four things:
+
+1. **Observation recording**: MiniMax Code's lifecycle hooks send each tool call to the Claude-Mem worker, and the observer writes observations about it
+2. **Context**: the `SessionStart` hook returns your memory as `hookSpecificOutput.additionalContext`
+3. **Session summaries**: the `Stop` hook writes a summary from the last assistant message MiniMax Code sends
+4. **MCP search tools**: the Claude-Mem MCP server gives MiniMax Code the `mcp__claude-mem__*` memory search tools
+
+<Info>
+MiniMax Code reads user hooks from `hooks.json` and MCP servers from `mcp.json` in its data directory, `$MINIMAX_DATA_DIR` (default `~/.minimax`). The installer adds Claude-Mem's hooks to the first and the `claude-mem` MCP server to the second. Your other hooks and MCP servers stay.
+</Info>
+
+## Requirements
+
+- MiniMax Code 0.7.10 (`npm install -g @minimax-ai/code`), the version tested, on Linux.
+- Any MiniMax Code model or provider. The hooks do not depend on the model.
+
+## Installation
+
+```bash
+npx claude-mem install --ide mcode
+```
+
+Or manage the integration directly:
+
+```bash
+npx claude-mem mcode install
+npx claude-mem mcode status
+npx claude-mem mcode uninstall
+```
+
+The installer saves a backup of `hooks.json` next to it (`hooks.json.bak-YYYYMMDD`, once per day). If `hooks.json` is not a JSON object, the installer stops and changes nothing. Start a new MiniMax Code session to load the hooks.
+
+## Verify
+
+1. Run `npx claude-mem mcode status`. It prints `MiniMax Code hooks: installed`.
+2. Start a new `mcode` session in a project and ask the agent to read a file.
+3. Watch the observation arrive in the viewer.
+4. In a new session, the `Hook · SessionStart` notice shows the injected memory. Ask `mcode` to search your memory; it uses the `mcp__claude-mem__*` tools.
+
+## Event mapping
+
+| MiniMax Code hook event | Claude-Mem event | Notes |
+| --- | --- | --- |
+| `SessionStart` | worker start, then `context` | memory is returned as `hookSpecificOutput.additionalContext` |
+| `UserPromptSubmit` | `session-init` | |
+| `PostToolUse` | `observation` | `read`, `write`, `edit`, `bash`, `grep`, `glob` and other built-in tools are recorded under their Claude Code names |
+| `Stop` | `summarize` | uses `last_assistant_message` |
+
+## Limits
+
+- **10 second hook timeout**: MiniMax Code skips any hook whose `timeout` is over 10 seconds, so every hook uses 10.
+- **One switch for all hooks**: MiniMax Code runs the hooks in `hooks.json` only when its top-level `enabled` is `true`, and a missing key means off. The installer sets it to `true` when it is missing, which also turns on any hooks of your own in that file. It keeps your `false`, and `status` then says `disabled`.
+- **No `PreToolUse`**: its output can block or rewrite tool calls, so Claude-Mem does not register it.
+- **No transcript**: MiniMax Code removes the hook's `transcript_path` file when the session ends, so Claude-Mem does not read it.
+- **User scope only**: project hooks (`.minimax/hooks.json`) and project MCP (`.mcp.json`) are not changed.
+
+## Uninstall
+
+```bash
+npx claude-mem mcode uninstall
+```
+
+This removes only Claude-Mem's hooks from `hooks.json` and the `claude-mem` server from `mcp.json`. `npx claude-mem uninstall` does the same as part of a full uninstall. Your memory in `~/.claude-mem/` is not deleted.
