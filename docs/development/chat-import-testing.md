@@ -30,9 +30,11 @@ node dist/npx-cli/index.js import chats "/path/to/your/export"
 
 Select a ChatGPT or Claude export, or a local Claude Code or Codex JSONL session. The preview reports how many chats, projects and dated messages it recognizes in the last 30 days. If your export omits a project association, you can supply a fallback with `--project "Project name"`.
 
+With `--apply`, the local model selects short passages after Claude-Mem applies your configured privacy filters. Each saved fact quotes the original speaker, carries the source message’s date, and follows your existing Cloud Sync settings. Use the isolated data directory above for a private test.
+
 ## Compare the original date with the timeline
 
-For a quick test, start Ollama with a locally installed chat model. Substitute its name from `ollama list` for `MODEL_NAME`. This verifier runs the first four eligible messages from each selected file through the observer, closes and reopens a disposable database, and checks each saved observation against its source message and project timeline. It then repeats those same messages and checks for duplicate observations and inference calls. Its report contains counts and UTC dates. A partial report lists unverified turns and checks repeat behavior only for completed turns. An unverified turn remains eligible for another local model.
+For a quick test, start Ollama with a locally installed chat model. Substitute its name from `ollama list` for `MODEL_NAME`. This verifier runs the first four eligible messages from each selected file through the observer, closes and reopens a disposable database, and checks the date, quoted passage and speaker of each saved observation against its source message and project timeline. Passing an original Claude Code JSONL file also checks the passage and timestamp directly against the unmodified file. It then repeats those same messages and checks for duplicate observations and inference calls. Its report contains counts and UTC dates. A partial report lists unverified turns and checks repeat behavior only for completed turns. An unverified turn remains eligible for another local model.
 
 ```sh
 bun scripts/verify-chat-import.ts "/path/to/your/export" --model MODEL_NAME
@@ -40,7 +42,7 @@ bun scripts/verify-chat-import.ts "/path/to/your/export" --model MODEL_NAME
 
 Pass a second path to compare two real projects. `--per-file 8` checks a longer prefix of each input. For a historical archive, `--as-of YYYY-MM-DDT23:59:59Z` sets the end of the verification window. The source timestamps are preserved.
 
-To try the normal CLI, use the isolated data directory above. `--limit` caps new model calls per run. Running it again continues from the next eligible message. `--proof` displays titles, projects, message IDs and original dates **locally**.
+To try the normal CLI, use the isolated data directory above. `--limit` caps new model calls per run. Running it again continues from the next eligible message. `--proof` displays observation IDs, projects, source message IDs and original dates locally. Open an observation in your local timeline to read its selected excerpt.
 
 ```sh
 node dist/npx-cli/index.js import chats "/path/to/your/export" --apply --limit 4 --model MODEL_NAME --proof
@@ -48,4 +50,4 @@ node dist/npx-cli/index.js import chats "/path/to/your/export" --apply --limit 4
 
 ## Tell us how it went
 
-Privately compare a few titles and facts with the original messages. Check whether the observer described a request as a request, recorded any unsupported outcome, or turned routine chatter into a memory. Comment on the PR with the source app and export format, the local model, the counts you expected and saw, whether dates and projects matched, and any setup step that was unclear. If you saw a duplicate or an unexpected skip, include the counts before and after a rerun. Keep your chat text, private project names, exports and the detailed local proof in your own workspace.
+Privately compare a few titles and facts with the original messages. Check whether the excerpt is useful on its own, retains the speaker’s qualifiers, and lands in the correct project. Comment on the PR with the source app and export format, the local model, the counts you expected and saw, whether dates and projects matched, and any setup step that was unclear. If you saw a duplicate or an unexpected skip, include the counts before and after a rerun. Keep your chat text, private project names, exports and the detailed local proof in your own workspace.

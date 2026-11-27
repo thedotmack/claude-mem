@@ -1,10 +1,7 @@
-import { afterEach, expect, mock, spyOn, test } from 'bun:test';
+import { expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import { ModeManager } from '../../../src/services/domain/ModeManager.js';
 import type { ModeConfig } from '../../../src/services/domain/types.js';
 import { historicalObserverInstructions, isFlowOnlyMessage, observationsFromReply } from '../../../src/services/history-import/replay.js';
-
-afterEach(() => mock.restore());
 
 const mode: ModeConfig = JSON.parse(readFileSync(new URL('../../../plugin/modes/code.json', import.meta.url), 'utf8'));
 // Exercise the reply format on actual repository text, independent of any transcript or model-generated memory.
@@ -24,15 +21,28 @@ test('uses the configured ontology and skip policy without technical worked exam
   expect(instructions).not.toContain('Authentication now supports');
 });
 
-test('requires current source evidence for every block and omits the proof excerpt from persisted fields', () => {
-  spyOn(ModeManager.getInstance(), 'getActiveMode').mockReturnValue(mode);
-  const result = observationsFromReply(xml(quote), passage);
+test('stores only one verified excerpt and an attributed title, ignoring unsupported fields in model XML', () => {
+  const generated = xml(quote).replace('</observation>', '<narrative>unsupported</narrative><facts><fact>unsupported</fact></facts><files_modified><file>unsupported</file></files_modified></observation>');
+  const result = observationsFromReply(generated, passage, 'assistant', mode);
   expect(result).toHaveLength(1);
-  expect(JSON.stringify(result)).not.toContain(passage);
-  expect(observationsFromReply(xml(quote) + xml(''), passage)).toBeNull();
-  expect(observationsFromReply(xml(quote), mode.name)).toBeNull();
-  expect(observationsFromReply(xml(quote), passage, mode.name)).toBeNull();
-  expect(observationsFromReply(xml(quote + quote), passage)).toBeNull();
-  expect(observationsFromReply('<skip_summary reason="noise" />', passage)).toEqual([]);
-  expect(observationsFromReply('<skip/>', passage)).toEqual([]);
+  expect(result![0].title!.startsWith('Assistant said “')).toBe(true);
+  expect(result![0]).toMatchObject({ type: 'discovery', facts: [passage], narrative: null, subtitle: null, concepts: [], files_read: [], files_modified: [] });
+  expect(JSON.stringify(result)).not.toContain('unsupported');
+  expect(JSON.stringify(result)).not.toContain('Mode identity');
+  expect(observationsFromReply(xml(quote) + xml(''), passage, 'user', mode)).toBeNull();
+  expect(observationsFromReply(xml(quote), mode.name, 'user', mode)).toBeNull();
+  expect(observationsFromReply(xml(quote), passage, 'user', mode, mode.name)).toBeNull();
+  expect(observationsFromReply(xml(quote + quote), passage, 'user', mode)).toBeNull();
+  expect(observationsFromReply(xml(quote).replace('discovery', 'unknown-category'), passage, 'user', mode)).toBeNull();
+  expect(observationsFromReply('<skip_summary reason="noise" />', passage, 'user', mode)).toEqual([]);
+  expect(observationsFromReply('<skip/>', passage, 'user', mode)).toEqual([]);
+});
+
+test('bounds excerpt size and preserves complete graphemes in a shortened title', () => {
+  const unicode = 'a'.repeat(75) + '🧑🏽‍💻' + 'bc';
+  const obs = observationsFromReply(xml('<source_quote>' + unicode + '</source_quote>'), unicode, 'user', mode);
+  expect(obs?.[0].title).toEqual('User said “' + 'a'.repeat(75) + '🧑🏽‍💻…”');
+  expect(obs?.[0].facts).toEqual([unicode]);
+  const long = passage.repeat(15);
+  expect(observationsFromReply(xml('<source_quote>' + long + '</source_quote>'), long, 'user', mode)).toBeNull();
 });

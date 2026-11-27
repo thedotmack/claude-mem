@@ -17,7 +17,7 @@ const HELP = [
   'claude-mem import chats (--workspace | <export file or folder> [--project <fallback>]) [--apply] [--model <local Ollama model>] [--limit <new turns>] [--proof]',
   '--workspace finds Claude Code and Codex chats for the current working directory.',
   'Preview the last 30 days without inference or database writes. --apply generates dated observations in the local Claude-Mem database.',
-  'Replay uses a locally installed Ollama chat model. Saved observations follow your existing Cloud Sync settings. Completed turns are reused when you rerun. --proof prints local observation IDs, dates, projects and titles.',
+  'Replay uses a locally installed Ollama chat model. Saved observations follow your existing Cloud Sync settings. Completed turns are reused when you rerun. --proof prints local observation IDs, source message IDs, dates and projects.',
 ].join('\n');
 
 export async function runHistoricalChatImport(args: string[]): Promise<void> {
@@ -79,12 +79,12 @@ export async function runHistoricalChatImport(args: string[]): Promise<void> {
       return observer;
     }, mode, limit, (unit, receipt) => {
       if (values.proof) {
-        for (const [index, id] of receipt.ids.entries()) {
+        for (const id of receipt.ids) {
           if (reportedIds.has(id)) continue;
           reportedIds.add(id);
           console.log(JSON.stringify({
             observationId: id, occurredAt: new Date(unit.at).toISOString(), project: unit.project,
-            source: unit.source, messageId: unit.messageId, title: receipt.titles[index],
+            source: unit.source, messageId: unit.messageId,
           }));
         }
       }

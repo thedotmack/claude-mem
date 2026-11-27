@@ -32,8 +32,10 @@ function sourceKey(provider: string, chatId: string, messageId: string): string 
   return JSON.stringify([provider, chatId, messageId]);
 }
 
-// Read native IDs and timestamps independently of the importer. Any disagreement fails the test.
-async function readRawClaudeDates(path: string, dates: Map<string, number>): Promise<number> {
+type OriginalMessage = { timestamp: number; role: string; text: string };
+
+// Verify selected native messages independently without keeping the rest of the raw export in memory.
+async function readOriginalClaudeMessages(path: string, selected: Set<string>, original: Map<string, OriginalMessage>): Promise<number> {
   const lines = createInterface({ input: createReadStream(path, { encoding: 'utf8' }), crlfDelay: Infinity });
   let records = 0;
   for await (const line of lines) {
@@ -42,18 +44,23 @@ async function readRawClaudeDates(path: string, dates: Map<string, number>): Pro
     const row = JSON.parse(line);
     if (typeof row.uuid !== 'string' || typeof row.sessionId !== 'string' || typeof row.timestamp !== 'string') continue;
     const key = sourceKey('claude-code', row.sessionId, row.uuid);
+    if (!selected.has(key)) continue;
     const timestamp = Date.parse(row.timestamp);
-    if (dates.has(key) && dates.get(key) !== timestamp) {
+    if (original.has(key) && original.get(key)?.timestamp !== timestamp) {
       throw new Error('Conflicting timestamps for one original Claude Code message.');
     }
-    dates.set(key, timestamp);
+    const content = row.message?.content;
+    const text = typeof content === 'string' ? content : (Array.isArray(content) ? content : [])
+      .filter((part: { type?: string; text?: string }) => part?.type === 'text' && typeof part.text === 'string')
+      .map((part: { text: string }) => part.text.trim()).filter(Boolean).join('\n');
+    original.set(key, { timestamp, role: row.type, text });
   }
   return records;
 }
 
 const selection: HistoricalChat[] = [];
-const expected = new Map<string, { timestamp: number; project: string }>();
-const rawClaudeDates = new Map<string, number>();
+const expected = new Map<string, OriginalMessage & { project: string }>();
+const originals = new Map<string, OriginalMessage>();
 const checkRaw = new Set<string>();
 let recognized = 0;
 let skipped = 0;
@@ -62,7 +69,6 @@ for (const path of positionals) {
   const input = await readChatExports(path, { now: windowEnd });
   skipped += input.skipped;
   const nativeFile = path.toLowerCase().endsWith('.jsonl') && input.chats.some(chat => chat.source === 'claude-code');
-  if (nativeFile) nativeRecords += await readRawClaudeDates(path, rawClaudeDates);
 
   // A single session can move among projects. Select its true chronological prefix across all groups.
   const dated = input.chats.flatMap(chat => chat.messages.map(message => ({ chat, message })));
@@ -73,11 +79,12 @@ for (const path of positionals) {
     const key = sourceKey(chat.source, chat.id, message.id);
     if (nativeFile && chat.source === 'claude-code') checkRaw.add(key);
     if (expected.has(key)) continue;
-    expected.set(key, { timestamp: message.timestampMs, project: chat.project });
+    expected.set(key, { timestamp: message.timestampMs, project: chat.project, role: message.role, text: message.text });
     const group = groups.get(chat) ?? { ...chat, messages: [] };
     group.messages.push(message);
     groups.set(chat, group);
   }
+  if (nativeFile) nativeRecords += await readOriginalClaudeMessages(path, checkRaw, originals);
   selection.push(...groups.values());
 }
 if (!selection.length) throw new Error('No selected dated messages in the 30-day window.');
@@ -91,7 +98,10 @@ if (checkpoint) {
   }
 }
 const open = () => new SessionStore(new Database(join(dir, 'proof.db')));
-type Row = { id: number; project: string; created_at: string; created_at_epoch: number; metadata: string };
+type Row = {
+  id: number; project: string; created_at: string; created_at_epoch: number; metadata: string;
+  title: string; facts: string; subtitle: string | null; narrative: string | null;
+};
 let sessions = open();
 try {
   const mode = ModeManager.getInstance().loadMode('code');
@@ -112,7 +122,7 @@ try {
   sessions.close();
   sessions = open();
   const saved = () => sessions.db.query<Row, []>(
-    'SELECT id, project, created_at, created_at_epoch, metadata FROM observations ORDER BY created_at_epoch, id'
+    'SELECT id, project, created_at, created_at_epoch, metadata, title, facts, subtitle, narrative FROM observations ORDER BY created_at_epoch, id'
   ).all();
   const rows = saved();
   if (rows.length !== receiptIds.size || rows.some(row => !receiptIds.has(row.id))) {
@@ -128,8 +138,22 @@ try {
         new Date(source.timestamp).toISOString() !== row.created_at || meta.occurredAt !== row.created_at) {
       throw new Error('A persisted observation does not match its source message, project and original timestamp.');
     }
+    const facts: unknown = JSON.parse(row.facts);
+    if (!Array.isArray(facts) || facts.length !== 1 || typeof facts[0] !== 'string' ||
+        !facts[0] || !source.text.includes(facts[0]) || row.narrative || row.subtitle) {
+      throw new Error('The saved observation contains wording outside the selected source passage.');
+    }
+    const rolePrefix = source.role === 'user' ? 'User said “' : 'Assistant said “';
+    const titlePassage = row.title.slice(rolePrefix.length, -1);
+    if (!row.title.startsWith(rolePrefix) || !row.title.endsWith('”') || !titlePassage ||
+        !(facts[0].startsWith(titlePassage) || (titlePassage.endsWith('…') && facts[0].startsWith(titlePassage.slice(0, -1))))) {
+      throw new Error('The saved title is not attributed to the speaker and their selected words.');
+    }
     if (checkRaw.has(key)) {
-      if (rawClaudeDates.get(key) !== row.created_at_epoch) throw new Error('The saved date differs from the original JSONL timestamp.');
+      const raw = originals.get(key);
+      if (!raw || raw.timestamp !== row.created_at_epoch || raw.role !== source.role || !raw.text.includes(facts[0])) {
+        throw new Error('The saved date, speaker or passage differs from the original JSONL message.');
+      }
       rawDateMatches++;
     }
     const timeline = sessions.getTimelineAroundObservation(row.id, source.timestamp, 0, 0, row.project);
@@ -167,7 +191,10 @@ try {
     newModelCalls: first.calls,
     confirmedTimelineObservations: rows.length,
     exactTimestampMatches: rows.length,
+    matchedSourcePassages: rows.length,
+    matchedSpeakerAttributions: rows.length,
     matchedOriginalJsonlTimestamps: rawDateMatches,
+    matchedOriginalJsonlPassages: rawDateMatches,
     observationsByDayUTC: Object.fromEntries(byDay),
     repeatCheckedTurns: completed.size,
     repeatModelCalls: again.calls,
