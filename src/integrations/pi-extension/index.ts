@@ -281,11 +281,13 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
     if (!session || !ownsCapture(session, ctx)) return;
     return enqueue(session, ctx, async () => {
       if (!session.anchored || session.excluded || !session.needsSummary) return;
+      // Consume the live handoff before sending: later lifecycle callbacks must
+      // not replay this turn after a refusal or an ambiguous transport failure.
+      session.needsSummary = false;
       await worker.post('/api/sessions/summarize', {
         contentSessionId: session.id, cwd: session.cwd, platformSource: 'pi',
         last_assistant_message: session.lastAssistant,
       });
-      session.needsSummary = false;
     });
   };
   pi.on('agent_end', summarize);
@@ -334,3 +336,4 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(params), signal,
     }));
 }
+
