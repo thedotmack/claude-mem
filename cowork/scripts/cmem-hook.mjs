@@ -21,7 +21,7 @@
  */
 
 import { readFileSync, appendFileSync, writeFileSync, existsSync, renameSync, mkdirSync, rmSync, unlinkSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve, win32 } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
@@ -575,16 +575,26 @@ async function mcpRpc(methodName, params, id) {
 }
 
 function viewerPort() {
-  // the worker port lives in claude-mem's own config (env wins, as in claude-mem);
-  // the uid formula is only the documented default for installs that never set one
+  // Match the local worker's data directory, settings precedence, and default port.
   const envPort = Number(process.env.CLAUDE_MEM_WORKER_PORT);
   if (Number.isFinite(envPort) && envPort > 0) return envPort;
+  const home = homedir();
+  const rawData = process.env.CLAUDE_MEM_DATA_DIR || join(home, '.claude-mem');
+  const data = rawData === '~' ? home : rawData.startsWith('~/') || (process.platform === 'win32' && rawData.startsWith('~\\'))
+    ? join(home, rawData.slice(2)) : rawData;
   try {
-    const st = JSON.parse(readFileSync(join(process.env.HOME || '', '.claude-mem', 'settings.json'), 'utf8'));
+    const doc = JSON.parse(readFileSync(join(data, 'settings.json'), 'utf8').replace(/^\uFEFF/, ''));
+    const nested = doc?.env;
+    const st = nested && typeof nested === 'object' && !Array.isArray(nested)
+      && Object.keys(nested).some(key => key.startsWith('CLAUDE_MEM_')) ? nested : doc;
     const p = Number(st.CLAUDE_MEM_WORKER_PORT ?? st.workerPort ?? st.worker_port ?? st.port ?? (st.worker && st.worker.port));
     if (Number.isFinite(p) && p > 0) return p;
   } catch { /* no local settings — use default formula */ }
-  try { return 37700 + ((process.getuid?.() ?? 0) % 100); } catch { return 37700; }
+  let uid = null;
+  try { uid = process.getuid?.() ?? null; } catch { /* no uid */ }
+  if (uid !== null) return 37700 + (((uid % 100) + 100) % 100);
+  const folder = process.platform === 'win32' ? win32.resolve(data).toLowerCase() : resolve(data);
+  return 37700 + (createHash('sha256').update(folder, 'utf8').digest().readUInt32BE(0) % 100);
 }
 
 // Local-first: on a machine with a local claude-mem install this plugin does
