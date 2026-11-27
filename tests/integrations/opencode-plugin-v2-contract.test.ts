@@ -1186,6 +1186,31 @@ describe("OpenCode V2 raw keys from the execute script", () => {
       const code = `const pattern = /tools["claude-mem"].work_state_write({list:1})/; const input = {real:1}; tools["claude-mem"].work_state_write(input);`;
       expect(extractRawKeyNames(code)).toEqual([]);
     });
+
+    it("keeps a real call after a regex introduced by if (...)", () => {
+      const code = `if (flag) /['"]/.test(s); tools["claude-mem"].work_state_write({items:1});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
+
+    it("keeps a real call after a regex introduced by while (...)", () => {
+      const code = `while (flag) /['"]/.test(s); tools["claude-mem"].work_state_write({items:2});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
+
+    it("keeps a division after a parenthesized calculation", () => {
+      const code = `const ratio = (a + b) / c; tools["claude-mem"].work_state_write({items:3});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
+
+    it("keeps a division after a call", () => {
+      const code = `const ratio = foo() / 2; tools["claude-mem"].work_state_write({items:4});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
+
+    it("ignores a pseudo-call in a regex introduced by if (...)", () => {
+      const code = `if (flag) /tools["claude-mem"].work_state_write({list:1})/.test(s); const input = {real:1}; tools["claude-mem"].work_state_write(input);`;
+      expect(extractRawKeyNames(code)).toEqual([]);
+    });
   });
 
   it("names the raw key at the nested after, never the value, and captures the original error first", async () => {

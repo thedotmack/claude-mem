@@ -379,6 +379,33 @@ const REGEX_AFTER_KEYWORDS = new Set([
   "in", "of", "new", "yield", "await", "else", "do",
 ]);
 
+const REGEX_AFTER_BLOCK_KEYWORDS = new Set(["if", "while", "for", "switch", "catch", "with"]);
+
+/**
+ * A closing bracket can also precede an expression: `if (flag) /re/`. Walk
+ * back to the matching opener and accept only a structural keyword, so a call
+ * or a parenthesized calculation stayed a division. No opener means division.
+ */
+function startsAfterControlBlock(code: string, at: number, open: string, close: string): boolean {
+  let depth = 0;
+  let index = at;
+  while (index >= 0) {
+    const char = code[index];
+    if (char === close) depth++;
+    else if (char === open) {
+      depth--;
+      if (depth === 0) break;
+    }
+    index--;
+  }
+  if (index < 0) return false;
+  let wordEnd = index - 1;
+  while (wordEnd >= 0 && /\s/.test(code[wordEnd])) wordEnd--;
+  let wordStart = wordEnd;
+  while (wordStart >= 0 && /[\w$]/.test(code[wordStart])) wordStart--;
+  return REGEX_AFTER_BLOCK_KEYWORDS.has(code.slice(wordStart + 1, wordEnd + 1));
+}
+
 /**
  * A `/` opens a regex literal only where an expression can start. After an
  * operand — an identifier, a number, a closing bracket, a quote, a template or
@@ -395,6 +422,9 @@ function startsRegexLiteral(code: string, at: number): boolean {
     let start = previous;
     while (start > 0 && /[\w$]/.test(code[start - 1])) start--;
     return REGEX_AFTER_KEYWORDS.has(code.slice(start, previous + 1));
+  }
+  if (char === ")" || char === "}") {
+    return startsAfterControlBlock(code, previous, char === ")" ? "(" : "{", char);
   }
   return false;
 }
