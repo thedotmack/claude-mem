@@ -8,6 +8,7 @@ import {
   OpenAICompatProvider,
   resetRefusedHostModelsForTesting,
   HOST_MODEL_NOT_SERVED_CODE,
+  OWN_MODEL_NOT_SERVED_CODE,
 } from '../../src/services/worker/OpenAICompatProvider.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
@@ -316,16 +317,15 @@ describe('a session model the observer endpoint does not serve', () => {
     expect(isOpenAICompatAvailable(undefined, ENDPOINT_MODEL)).toBe(true);
   });
 
-  it('configured-model-404-unchanged: a 404 for the configured model still names the base URL and _MODEL', async () => {
+  it('configured-model-404-with-model-marker-is-remembered: a model-specific 404 is a refusal, a bare route 404 is not', async () => {
     const h = harness({ globalModel: MISSING_MODEL });
     // The session's id is the configured one, so nothing is left to go back to.
     const failure = await h.provider.startSession(h.makeSession({ observerModel: MISSING_MODEL })).catch((error: unknown) => error);
 
-    expect(failure).toMatchObject({ kind: 'unrecoverable' });
-    expect((failure as { code?: string }).code).toBeUndefined();
-    expect((failure as { action: string }).action).toContain('CLAUDE_MEM_OPENAI_COMPAT_BASE_URL and _MODEL');
+    expect(failure).toMatchObject({ kind: 'unrecoverable', code: OWN_MODEL_NOT_SERVED_CODE });
+    expect((failure as { action: string }).action).toContain('CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL');
 
     await h.provider.startSession(h.makeSession({ observerModel: MISSING_MODEL })).catch(() => undefined);
-    expect(h.requests.map(request => request.model)).toEqual([MISSING_MODEL, MISSING_MODEL]);
+    expect(h.requests.map(request => request.model)).toEqual([MISSING_MODEL]);
   });
 });

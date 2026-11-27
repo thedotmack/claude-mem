@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import {
   HOST_MODEL_NOT_SERVED_CODE,
+  OWN_MODEL_NOT_SERVED_CODE,
   OpenAICompatProvider,
   resetRefusedHostModelsForTesting,
   resetServedModelsForTesting,
@@ -98,6 +99,14 @@ interface HarnessOptions {
   summaryModel?: string;
   /** Refuse a listed model only from this request number on (1-based). */
   refuseFromRequest?: number;
+  /** Implicit default override (CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL) under test. */
+  defaultModelOverride?: string;
+  /** Own ids the fake endpoint refuses with a 403 model-refusal envelope. */
+  refusedOwnModels?: string[];
+  /** Explicit CLAUDE_MEM_OPENAI_COMPAT_MODEL, for refusals of a pinned id. */
+  observerModelSetting?: string;
+  /** Send the init prompt as its own request (the shape Greptile flagged). */
+  observeBarePrompts?: boolean;
 }
 
 function harness(opts: HarnessOptions = {}) {
@@ -134,9 +143,12 @@ function harness(opts: HarnessOptions = {}) {
       const body = (await request.json()) as WireRequest;
       const requestNumber = requests.length + 1;
       requests.push({ model: body.model, messages: body.messages });
-      if (opts.refusedModels?.includes(body.model)
-        && (opts.refuseFromRequest === undefined || requestNumber >= opts.refuseFromRequest)) {
-        const status = opts.refusedStatus ?? 404;
+      const ownRefusal = opts.refusedOwnModels?.includes(body.model) === true;
+      if (ownRefusal || (opts.refusedModels?.includes(body.model)
+        && (opts.refuseFromRequest === undefined || requestNumber >= opts.refuseFromRequest))) {
+        // A refused own id is the live Go incident: 403 with a model-refusal
+        // envelope, not a credential or billing complaint.
+        const status = ownRefusal ? 403 : opts.refusedStatus ?? 404;
         const refusalBody = status === 403
           ? { error: { message: 'Model access is disabled', type: 'invalid_request_error', code: 'model_access_disabled' } }
           : { error: { message: `The model \`${body.model}\` does not exist`, type: 'invalid_request_error', code: 'model_not_found' } };
@@ -158,7 +170,8 @@ function harness(opts: HarnessOptions = {}) {
     CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: `http://127.0.0.1:${server.port}/v1`,
     // Empty explicit model: the host translated id (or the preset) is the
     // effective model. This is the production shape when relying on host mode.
-    CLAUDE_MEM_OPENAI_COMPAT_MODEL: '',
+    CLAUDE_MEM_OPENAI_COMPAT_MODEL: opts.observerModelSetting ?? '',
+    CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL: opts.defaultModelOverride ?? '',
     CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST: fromHost ? 'true' : 'false',
     CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION: fromSession ? 'true' : 'false',
     // Non-empty fixture keys keep config resolution away from the real .env.
@@ -166,7 +179,7 @@ function harness(opts: HarnessOptions = {}) {
     CLAUDE_MEM_OPENAI_COMPAT_API_KEYS: 'fixture-key-2',
     // One real paid request: the observation turn carries the init prompt, and
     // the init turn itself sends nothing.
-    CLAUDE_MEM_OBSERVE_BARE_PROMPTS: 'false',
+    CLAUDE_MEM_OBSERVE_BARE_PROMPTS: opts.observeBarePrompts ? 'true' : 'false',
     CLAUDE_MEM_OBSERVER_ENABLED: 'true',
     CLAUDE_MEM_TIER_ROUTING_ENABLED: opts.withSummary ? 'true' : 'false',
     CLAUDE_MEM_TIER_SUMMARY_MODEL: opts.summaryModel ?? '',
@@ -529,6 +542,119 @@ describe('a refused model equal to the preset default is never re-sent', () => {
     const second = await h.provider.startSession(h.makeSession()).catch((error: unknown) => error);
     expect(second).toBeInstanceOf(Error);
     expect(h.requests.map(request => request.model)).toEqual([PRESET_MODEL]);
+  });
+});
+
+/**
+ * An id we chose ourselves (here the implicit preset-default override) can be
+ * refused too. It joins the same refusal family as a host id: classified as
+ * unserved, remembered on the endpoint, and never sent again. No auth cooldown,
+ * no second paid send, no silent switch to another provider.
+ */
+describe('a refused own default id is not re-sent', () => {
+  it('refused-own-default-is-not-resent: the ghost id is sent once and never resolved again', async () => {
+    const h = harness({
+      fromHost: false,
+      fromSession: false,
+      defaultModelOverride: 'ghost-own',
+      refusedOwnModels: ['ghost-own'],
+    });
+
+    const first = await h.provider.startSession(h.makeSession()).catch((error: unknown) => error);
+    expect(first).toMatchObject({ kind: 'unrecoverable', code: OWN_MODEL_NOT_SERVED_CODE });
+    expect(h.requests.map(request => request.model)).toEqual(['ghost-own']);
+
+    const resolved = resolveOpenAICompatConfig();
+    expect(resolved.model).toBe('');
+    expect(resolved.allModelsRefused).toBe(true);
+
+    const second = await h.provider.startSession(h.makeSession()).catch((error: unknown) => error);
+    expect(second).toBeInstanceOf(Error);
+    // The second generation stops before the socket: no retry, no rotation to
+    // a second key, and no reintroduced implicit default.
+    expect(h.requests).toHaveLength(1);
+    expect(h.requests.map(request => request.model)).toEqual(['ghost-own']);
+  });
+});
+
+/**
+ * Greptile P1: an explicit `_MODEL` a refused-id record already holds used to
+ * win over every fallback in resolveOpenAICompatConfig(), so each later
+ * generation sent the same doomed id and discarded its pending input again.
+ */
+describe('a refused explicit model is not re-sent', () => {
+  it('refused-explicit-model-is-not-resent: resolution drops the pinned id and the next generation pays for a served one', async () => {
+    const explicit = 'ghost-explicit';
+    const h = harness({
+      fromHost: false,
+      fromSession: false,
+      observerModelSetting: explicit,
+      refusedOwnModels: [explicit],
+    });
+
+    const first = await h.provider.startSession(h.makeSession()).catch((error: unknown) => error);
+    expect(first).toMatchObject({ kind: 'unrecoverable', code: OWN_MODEL_NOT_SERVED_CODE });
+    expect(h.requests.map(request => request.model)).toEqual([explicit]);
+
+    const resolved = resolveOpenAICompatConfig();
+    // The explicit setting is set aside like any other refused id: the preset
+    // default is what resolution returns, not the ghost id.
+    expect(resolved.model).toBe(PRESET_MODEL);
+
+    const sent = h.requests.length;
+    await h.provider.startSession(h.makeSession());
+    expect(h.requests.slice(sent).map(request => request.model)).not.toContain(explicit);
+    expect(h.requests.map(request => request.model)).toEqual([explicit, PRESET_MODEL]);
+  });
+});
+
+/**
+ * Greptile P1: CLAUDE_MEM_TIER_SUMMARY_MODEL is read after config resolution,
+ * so a refused summary id bypassed the shared refusal record on every turn.
+ */
+describe('a refused summary model is not re-sent', () => {
+  it('refused-summary-model-is-not-resent: the tier falls back instead of paying for the refused id again', async () => {
+    const summaryModel = 'ghost-summary';
+    const h = harness({
+      fromHost: false,
+      fromSession: false,
+      withSummary: true,
+      summaryModel,
+      refusedOwnModels: [summaryModel],
+    });
+
+    const first = await h.provider.startSession(h.makeSession()).catch((error: unknown) => error);
+    expect(first).toMatchObject({ kind: 'unrecoverable', code: OWN_MODEL_NOT_SERVED_CODE });
+    expect(h.requests.map(request => request.model)).toEqual([PRESET_MODEL, summaryModel]);
+
+    const sent = h.requests.length;
+    await h.provider.startSession(h.makeSession());
+    expect(h.requests.slice(sent).map(request => request.model)).not.toContain(summaryModel);
+    expect(h.requests.map(request => request.model)).toEqual([PRESET_MODEL, summaryModel, PRESET_MODEL, PRESET_MODEL]);
+  });
+});
+
+/**
+ * Greptile P1 (wave 6, R66): with `none` and a usable host model, the pinned
+ * init config has no model. The init request is deferred so the first real
+ * observation can resolve the host id with the observed session's cwd; the
+ * init prompt stays the generation's opening user turn.
+ */
+describe('bare init with none and a usable host model', () => {
+  it('bare-init-is-deferred-when-none-leaves-no-model-and-host-is-on', async () => {
+    const h = harness({
+      fromHost: true,
+      defaultModelOverride: 'none',
+      observeBarePrompts: true,
+    });
+    const session = h.makeSession();
+
+    await h.provider.startSession(session);
+
+    expect(h.requests.map(request => request.model)).toEqual([HOST_ENDPOINT_MODEL]);
+    expect(session.lastModelId).toBe(HOST_ENDPOINT_MODEL);
+    expect(session.conversationHistory[0].role).toBe('user');
+    expect(session.conversationHistory[0].content).toContain('observed_from_primary_session');
   });
 });
 

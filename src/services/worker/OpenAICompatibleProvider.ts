@@ -4,7 +4,7 @@ import { createHash } from 'crypto';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import {
   buildInitPrompt,
@@ -20,7 +20,7 @@ import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
 import { accumulateObserverUsage, observerUsageLogFields } from './observer-usage.js';
-import { DEADLINE_EXCEEDED_CODE, HOST_MODEL_NOT_SERVED_CODE, PAID_SEND_BUDGET_EXHAUSTED_CODE, isClassified, paidSendOutcomeOf, type ClassifiedProviderError } from './provider-errors.js';
+import { DEADLINE_EXCEEDED_CODE, DEFAULT_MODEL_DISABLED_CODE, HOST_MODEL_NOT_SERVED_CODE, OWN_MODEL_NOT_SERVED_CODE, PAID_SEND_BUDGET_EXHAUSTED_CODE, isClassified, paidSendOutcomeOf, type ClassifiedProviderError } from './provider-errors.js';
 import { paidSendBudgetForClaimedBatch, type PaidSendBudget } from './paid-send-budget.js';
 import {
   shouldRecycleConversation,
@@ -186,6 +186,16 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   }
 
   /**
+   * A provider whose pinned config cannot serve an init request while a later
+   * turn may resolve one returns true here. The init prompt still seeds the
+   * generation; only the doomed request is skipped. Default false keeps every
+   * other provider's init exactly as it was.
+   */
+  protected deferInitRequest(_config: TConfig): boolean {
+    return false;
+  }
+
+  /**
    * Issue the actual HTTP request and normalize its response.
    * `perAttemptTimeoutMs` overrides the CLAUDE_MEM_LLM_TIMEOUT_MS per-attempt
    * deadline for callers racing their own, longer deadline (the field pass).
@@ -264,6 +274,15 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     return resolveObserverMaxOutputTokens();
   }
 
+  /**
+   * The model a summary-tier turn pays for. A provider whose endpoint has
+   * already refused an id can narrow the choice; `model-aliases` keeps the one
+   * precedence rule for everyone else.
+   */
+  protected resolveSummaryModel(config: TConfig, settings: SettingsDefaults): string {
+    return resolveSummaryTierModel(config.model, settings, config.summaryModel);
+  }
+
   /** Format a stored summary through this provider's normal summary-model query path. */
   async formatTelegramWrapup(
     input: TelegramWrapupFormatterInput,
@@ -274,7 +293,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       throw this.missingApiKeyError();
     }
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const model = resolveSummaryTierModel(activeModelId ?? config.model, settings);
+    const model = this.resolveSummaryModel({ ...config, model: activeModelId ?? config.model }, settings);
     const summaryConfig = { ...config, model, plainText: true };
     const result = await this.query(
       [{ role: 'user', content: buildTelegramWrapupPrompt(input.summaryText) }],
@@ -452,7 +471,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     // By default the init prompt is not a request of its own: it stays the
     // generation's opening user turn, and the first observation or summary
     // request carries it (consecutive user turns merge on the wire).
-    if (observesBarePrompts()) {
+    if (observesBarePrompts() && !this.deferInitRequest(config)) {
       if (await this.stopIfCaptureDisabled(session)) return;
       try {
         session.lastPromptSentAt = Date.now();
@@ -734,7 +753,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     // Resolve the paying model FIRST: tier routing (and the host's smallModel)
     // can pick a summary window narrower than the observation one.
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const summaryModel = resolveSummaryTierModel(config.model, settings, config.summaryModel);
+    const summaryModel = this.resolveSummaryModel(config, settings);
     const summaryConfig = summaryModel === config.model ? config : { ...config, model: summaryModel };
     if (summaryConfig !== config) {
       logger.debug('SESSION', 'Tier routing: summary model', {
@@ -902,12 +921,18 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       // credentials that are fixed by /login are no more fatal than a 429.
       case 'auth_invalid':
         return `auth:${error.kind}`;
-      // An endpoint that does not serve a host-chosen model must discard its
-      // pending inputs like any auth stop, but it is not a refused credential:
-      // the `auth` category makes the exit discard without arming GeneratorRunner's
-      // auth_invalid cooldown (which would stop the configured model too).
+      // An endpoint that does not serve a model id — host-chosen or our own —
+      // must discard its pending inputs like any auth stop, but it is not a
+      // refused credential: the `auth` category makes the exit discard without
+      // arming GeneratorRunner's auth_invalid cooldown (which would stop the
+      // configured model too). A deliberately disabled default stops the same
+      // way: no request, no key to rotate, no later paid rescue. All three
+      // codes share the one reason; no new status.
       case 'unrecoverable':
-        return error.code === HOST_MODEL_NOT_SERVED_CODE ? 'auth:host_model_not_served' : null;
+        return error.code === HOST_MODEL_NOT_SERVED_CODE || error.code === OWN_MODEL_NOT_SERVED_CODE
+          || error.code === DEFAULT_MODEL_DISABLED_CODE
+          ? 'auth:host_model_not_served'
+          : null;
       // A timeout or network fault that outlived the retry policy. Finalizing
       // would turn it into permanent data loss — the same reasoning as the
       // observer-text transport path in ResponseProcessor (#3752). Our own

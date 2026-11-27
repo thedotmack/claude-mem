@@ -133,6 +133,8 @@ export const settingsPtBr: Record<string, string> = {
   "Leave blank to use the preset's endpoint": 'Deixe em branco para usar o endpoint da predefinição',
   'Model': 'Modelo',
   "Model id, passed verbatim. Leave blank to use the preset's default": 'ID do modelo, enviado como informado. Deixe em branco para usar o padrão da predefinição',
+  'Implicit default model override': 'Substituição do modelo padrão implícito',
+  'empty keeps the current fallback chain (last served model, then the preset default); `none` removes every implicit default; any other id replaces both and is sent verbatim.': 'vazio mantém a cadeia de substituição atual (último modelo usado, depois o padrão da predefinição); `none` remove todos os padrões implícitos; qualquer outro ID substitui ambos e é enviado literalmente.',
   'Reasoning': 'Raciocínio',
   'Off (default) sends reasoning disabled so a reasoning model cannot spend the output cap thinking. On leaves it to the endpoint. A server that rejects the field is retried once without it.': 'Desativado (padrão) pede ao modelo que não use raciocínio, para que ele não gaste o limite de saída pensando. Ativado deixa a decisão ao endpoint. Se o servidor rejeitar o campo, a solicitação será reenviada uma vez sem ele.',
   'My Work summary provider': 'Provedor dos resumos de Meu trabalho',

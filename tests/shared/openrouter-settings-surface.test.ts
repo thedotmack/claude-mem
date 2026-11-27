@@ -56,6 +56,19 @@ describe('openai-compatible settings surface', () => {
     expect(writeList).not.toContain("'CLAUDE_MEM_OPENAI_COMPAT_API_KEYS'");
   });
 
+  it('exposes the implicit default override as an editable setting', () => {
+    expect(modalSource()).toContain("updateSetting('CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL'");
+    expect(modalSource()).toContain('effectiveDefault');
+    // La copie locale doit exprimer les trois cas de la règle partagée, pas seulement exister.
+    expect(modalSource()).toContain('.trim()');
+    expect(modalSource()).toContain(".toLowerCase() === 'none'");
+    expect(modalSource()).toContain('defaultOverride || presetOption.defaultModel');
+    expect(modalSource()).toContain('last served model, then the preset default');
+    const routeSource = readFileSync('src/services/worker/http/routes/SettingsRoutes.ts', 'utf-8');
+    const writeList = routeSource.slice(routeSource.indexOf('const settingKeys = ['), routeSource.indexOf('];', routeSource.indexOf('const settingKeys = [')));
+    expect(writeList).toContain("'CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL'");
+  });
+
   it('offers exactly the worker\'s presets, in the same order', () => {
     expect(OPENAI_COMPAT_PRESET_OPTIONS.map(({ id, label, baseUrl, defaultModel }) => ({ id, label, baseUrl, defaultModel })))
       .toEqual(OPENAI_COMPAT_PRESETS.map(({ id, label, baseUrl, defaultModel }) => ({ id, label, baseUrl, defaultModel })));

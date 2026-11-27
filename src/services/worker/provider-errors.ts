@@ -47,6 +47,25 @@ export const CODEX_AUTH_FROM_EXIT_TEXT_CODE = 'codex_auth_from_exit_text';
 export const HOST_MODEL_NOT_SERVED_CODE = 'host_model_not_served';
 
 /**
+ * `code` on the same unrecoverable refusal when the model id was ours — an
+ * explicit setting, a preset-default override or the preset default itself.
+ * The endpoint answered 400/403/422 with a model refusal and no credential or
+ * billing marker. Like the host case it is deliberately not `auth_invalid`: a
+ * healthy key must not be rotated or retired over a bad id. It shares the
+ * `auth:host_model_not_served` abort reason, so pending inference inputs are
+ * discarded without an auth cooldown or a later paid rescue.
+ */
+export const OWN_MODEL_NOT_SERVED_CODE = 'own_model_not_served';
+
+/**
+ * `code` on the unrecoverable stop when `CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL`
+ * deliberately disabled the implicit default and no other model remains. The
+ * endpoint is configured; the operator chose not to send anything. It shares
+ * the `auth:host_model_not_served` abort reason and never rotates a key.
+ */
+export const DEFAULT_MODEL_DISABLED_CODE = 'default_model_disabled';
+
+/**
  * What one paid send ended as, for the "never pay twice" rule (xAI SDK retry
  * rules; retry.ts decides from it):
  *  - `refused_before_work`: the backend said no before doing anything (a 429,

@@ -374,6 +374,19 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
 export const DEFAULT_OPENAI_COMPAT_PRESET_ID = 'custom';
 
 /**
+ * Operator override of the implicit default chain (last served model, then the
+ * preset default): empty keeps it, `none` removes both, any other id replaces
+ * both verbatim.
+ * Shared with `npx claude-mem doctor` so a disabled default is never reported
+ * as available.
+ */
+export function resolvePresetDefaultModel(rawOverride: string | undefined, presetDefault: string): string {
+  const override = (rawOverride ?? '').trim();
+  if (override.toLowerCase() === 'none') return '';
+  return override || presetDefault;
+}
+
+/**
  * Look up a preset by id. An unknown or empty id resolves to `custom` rather
  * than throwing: a typo in settings.json should degrade to "configure it by
  * hand", which then fails with a message naming the base URL, not to a crash

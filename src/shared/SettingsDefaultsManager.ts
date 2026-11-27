@@ -296,6 +296,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENAI_COMPAT_API_KEYS: string;
   CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: string;
   CLAUDE_MEM_OPENAI_COMPAT_MODEL: string;
+  CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL: string;
   CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION: string;
   CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST: string;
   CLAUDE_MEM_OPENAI_COMPAT_REASONING: string;
@@ -640,6 +641,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENAI_COMPAT_API_KEYS: '',  // Optional extra keys (newline/comma separated) for the openai-compatible provider.
     CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: '',  // OpenAI-compatible base URL, e.g. https://integrate.api.nvidia.com/v1. Overrides the preset's base URL when set.
     CLAUDE_MEM_OPENAI_COMPAT_MODEL: '',  // Model id passed verbatim. Empty = the preset's default model.
+    CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL: '',  // Override of the implicit default chain (last served, then preset.defaultModel): empty keeps it, 'none' removes both, any other id replaces both.
     CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION: 'false',  // opt-in: use the model selected in the host session
     CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST: 'false',  // opt-in: read host configured model
     CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT: '',

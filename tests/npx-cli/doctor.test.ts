@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -1007,6 +1007,24 @@ describe('npx doctor observerProviderCheck (#5359)', () => {
       fragments: ['no model is configured'],
     },
     {
+      name: 'validates openai-compatible provider configurations: a disabled default stays selected',
+      input: { provider: 'openai-compatible',
+        openaiCompat: { hasEndpoint: true, hasModel: false, hasKey: true, requiresKey: true, defaultDisabled: true, endpointUrl: 'https://custom.example.com/v1' } }, status: 'warn',
+      fragments: ['CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL=none', 'provider stays selected'],
+    },
+    {
+      name: 'none-with-usable-host-model-reports-the-served-id',
+      input: { provider: 'openai-compatible',
+        openaiCompat: { hasEndpoint: true, hasModel: false, hasKey: true, requiresKey: true, defaultDisabled: true, hostServedModel: 'endpoint-main', endpointUrl: 'https://custom.example.com/v1' } }, status: 'ok',
+      fragments: ['endpoint-main', 'host model'],
+    },
+    {
+      name: 'none-with-missing-key-names-the-key-remedy',
+      input: { provider: 'openai-compatible',
+        openaiCompat: { hasEndpoint: true, hasModel: false, hasKey: false, requiresKey: true, defaultDisabled: true, hostServedModel: 'endpoint-main', endpointUrl: 'https://custom.example.com/v1' } }, status: 'warn',
+      fragments: ['CLAUDE_MEM_OPENAI_COMPAT_API_KEY', 'OPENAI_COMPAT_API_KEY'],
+    },
+    {
       name: 'validates openai-compatible provider configurations (#5359): missingKey',
       input: { provider: 'openai-compatible',
         openaiCompat:
@@ -1048,6 +1066,20 @@ describe('npx doctor observerProviderCheck (#5359)', () => {
     expect(result).toMatchObject({ name: 'Observer provider', status, required: false });
     if (detail !== undefined) expect(result.detail).toBe(detail);
     for (const fragment of fragments ?? []) expect(result.detail).toContain(fragment);
+  });
+
+  it('reports a disabled implicit default without duplicating the resolver', () => {
+    const source = readFileSync('src/npx-cli/commands/doctor.ts', 'utf-8');
+    expect(source).toContain('resolvePresetDefaultModel(');
+    expect(source).toContain('CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL');
+    expect(source).not.toContain('compatConfiguredModel || compatPreset.defaultModel');
+    expect(source).toContain('fallbackModel: compatModel');
+    expect(source).not.toContain('fallbackModel: compatPreset.defaultModel');
+    expect(source.indexOf('const compatModel =')).toBeLessThan(source.indexOf('diagnoseHostModel('));
+    // The disabled-default wording is derived from the shared resolver, not a
+    // second copy of the `none` rule, and reaches the provider row.
+    expect(source).toMatch(/defaultDisabled[,:]/);
+    expect(source.indexOf('const defaultDisabled =')).toBeLessThan(source.lastIndexOf('observerProviderCheck('));
   });
 });
 
@@ -1290,6 +1322,7 @@ describe('npx doctor Host model row', () => {
   let claudeConfigDirectory: string;
   let savedEnv: Record<string, string | undefined>;
   let savedExitCode: number | undefined;
+  let hostModelSettings: ReturnType<typeof SettingsDefaultsManager.getAllDefaults>;
 
   beforeEach(() => {
     mkdirSync(scratchRoot, { recursive: true });
@@ -1307,11 +1340,11 @@ describe('npx doctor Host model row', () => {
     spyOn(workerUtils, 'resolvePluginRoot').mockReturnValue(null);
     // A hosted preset gives the diagnosis a real fallback model, as in a live
     // install; the 'custom' default would leave that field blank.
-    const settings = {
+    hostModelSettings = {
       ...SettingsDefaultsManager.getAllDefaults(),
       CLAUDE_MEM_OPENAI_COMPAT_PRESET: 'nvidia-nim',
     };
-    spyOn(SettingsDefaultsManager, 'loadFromFile').mockReturnValue(settings);
+    spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => hostModelSettings);
   });
 
   afterEach(() => {
@@ -1370,5 +1403,74 @@ describe('npx doctor Host model row', () => {
     const input = diagnose.mock.calls[0][0] as { settings: { CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST: string }; fallbackModel: string };
     expect(input.settings.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST).toBe('false');
     expect(input.fallbackModel.length).toBeGreaterThan(0);
+  });
+
+  it('none-is-not-a-refusal-in-doctor: a disabled default is not blamed on the endpoint', async () => {
+    hostModelSettings = {
+      ...hostModelSettings,
+      CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST: 'true',
+      CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL: 'none',
+    };
+
+    const output = await doctorOutputLines();
+    const row = output.find(line => line.includes(' Host model '));
+    expect(row).toBeDefined();
+    expect(row).toContain('no model');
+    expect(row).not.toContain('refused');
+  });
+
+  /** Greptile P2: doctor must name the model the worker actually sends. */
+  const writeUsableHost = (): void => {
+    writeFileSync(process.env.OPENCODE_CONFIG!, JSON.stringify({
+      model: 'host/main',
+      provider: { host: { models: { main: { modelID: 'endpoint-main' } } } },
+    }));
+  };
+  const noneSettings = (apiKey: string) => ({
+    ...hostModelSettings,
+    CLAUDE_MEM_PROVIDER: 'openai-compatible',
+    CLAUDE_MEM_OPENAI_COMPAT_PRESET: 'custom',
+    CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: 'https://custom.example.com/v1',
+    CLAUDE_MEM_OPENAI_COMPAT_API_KEY: apiKey,
+    CLAUDE_MEM_OPENAI_COMPAT_MODEL: '',
+    CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST: 'true',
+    CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL: 'none',
+  });
+  const providerRow = async (): Promise<string> => {
+    const output = await doctorOutputLines();
+    const row = output.find(line => line.includes(' Observer provider '));
+    expect(row).toBeDefined();
+    return row!;
+  };
+
+  it('none-with-usable-host-model-does-not-claim-capture-stopped', async () => {
+    writeUsableHost();
+    hostModelSettings = noneSettings('fixture-key');
+
+    const row = await providerRow();
+    expect(row).toContain('endpoint-main');
+    expect(row).toContain('host model');
+    expect(row).not.toContain('stops without sending');
+    expect(row).not.toContain('no model is configured');
+  });
+
+  it('none-with-missing-key-names-the-key-remedy', async () => {
+    writeUsableHost();
+    hostModelSettings = noneSettings('');
+
+    const row = await providerRow();
+    expect(row).toContain('CLAUDE_MEM_OPENAI_COMPAT_API_KEY');
+    expect(row).toContain('OPENAI_COMPAT_API_KEY');
+    expect(row).not.toContain('stops without sending');
+    expect(row).not.toContain('no model is configured');
+  });
+
+  it('none-without-any-model-still-reports-the-stop', async () => {
+    // No host config file was written: the disable sentinel is the only state.
+    hostModelSettings = { ...noneSettings('fixture-key'), CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST: 'false' };
+
+    const row = await providerRow();
+    expect(row).toContain('stops without sending');
+    expect(row).toContain('CLAUDE_MEM_OPENAI_COMPAT_MODEL');
   });
 });

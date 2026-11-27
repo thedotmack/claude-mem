@@ -176,6 +176,69 @@ describe('diagnoseHostModel', () => {
     expect(diagnostic.line).toContain('real-fallback');
   });
 
+  it('refused-explicit-model-falls-back-to-usable-host: the host id is no longer masked', () => {
+    writeHost({
+      model: 'host/main',
+      provider: { host: { models: { main: { modelID: 'endpoint-main' } } } },
+    });
+    const settings = settingsFor('true', 'refused-explicit');
+
+    const diagnostic = diagnoseHostModel({
+      settings,
+      fallbackModel: 'preset-model',
+      apiUrl: NVIDIA_URL,
+      isRefused: id => id === 'refused-explicit',
+    });
+
+    expect(diagnostic.status).toBe('resolved');
+    expect(diagnostic.endpointId).toBe('endpoint-main');
+    expect(diagnostic.line).not.toContain('hides');
+    expect(diagnostic.line).toContain('refused-explicit');
+    expect(diagnostic.line).toContain('endpoint-main');
+  });
+
+  it('masked-explicit-model-still-hides-host: a usable explicit id keeps the old behavior', () => {
+    writeHost({
+      model: 'host/main',
+      provider: { host: { models: { main: { modelID: 'endpoint-main' } } } },
+    });
+    const settings = settingsFor('true', 'usable-explicit');
+
+    const diagnostic = diagnoseHostModel({
+      settings,
+      fallbackModel: 'preset-model',
+      apiUrl: NVIDIA_URL,
+      isRefused: id => id === 'refused-explicit',
+    });
+
+    expect(diagnostic.status).toBe('masked');
+    expect(diagnostic.endpointId).toBeUndefined();
+    expect(diagnostic.line).toContain('usable-explicit');
+    expect(diagnostic.line).toContain('hides the host model');
+  });
+
+  it('none-is-not-a-refusal: a disabled default produces neutral wording', () => {
+    writeHost({});
+
+    const disabled = diagnoseHostModel({
+      settings: settingsFor('true'),
+      fallbackModel: '',
+      fallbackReason: 'none',
+    });
+
+    expect(disabled.status).toBe('none');
+    expect(disabled.line).toContain('no model');
+    expect(disabled.line).not.toContain('refused');
+
+    // A real exhaustion of every candidate keeps the endpoint-blaming wording.
+    const refused = diagnoseHostModel({
+      settings: settingsFor('true'),
+      fallbackModel: '',
+      fallbackReason: 'refused',
+    });
+    expect(refused.line).toContain('refused every fallback');
+  });
+
   it('words the whole status union once', () => {
     // No status list is restated here: the Record is the definition. Adding a
     // status to the union must make its declaration fail the typecheck.

@@ -458,6 +458,11 @@ export function ContextSettingsModal({
     : undefined;
   const keepImages = formState.CLAUDE_MEM_MEDIA_CAPTURE_ENABLED === 'true';
   const presetOption = openAICompatPresetOption(formState.CLAUDE_MEM_OPENAI_COMPAT_PRESET);
+  // The placeholder must follow the implicit default, which may come from the override or the preset.
+  const defaultOverride = (formState.CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL ?? '').trim();
+  const effectiveDefault = defaultOverride.toLowerCase() === 'none'
+    ? ''
+    : defaultOverride || presetOption.defaultModel;
 
   const panel = (section: SettingsSection, children: React.ReactNode) => (
     <section
@@ -853,6 +858,16 @@ export function ContextSettingsModal({
                     {control => (
                       <input {...control} type="text" value={formState.CLAUDE_MEM_OPENAI_COMPAT_MODEL || ''}
                         onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_COMPAT_MODEL', e.target.value)}
+                        placeholder={effectiveDefault || t('model id')} />
+                    )}
+                  </FormField>
+                  <FormField
+                    label={t('Implicit default model override')}
+                    help={t('empty keeps the current fallback chain (last served model, then the preset default); `none` removes every implicit default; any other id replaces both and is sent verbatim.')}
+                  >
+                    {control => (
+                      <input {...control} type="text" value={formState.CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL ?? ''}
+                        onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL', e.target.value)}
                         placeholder={presetOption.defaultModel || t('model id')} />
                     )}
                   </FormField>

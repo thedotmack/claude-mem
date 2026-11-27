@@ -133,6 +133,8 @@ export const settingsFr: Record<string, string> = {
   'Leave blank to use the preset\'s endpoint': 'Laissez vide pour utiliser le point de terminaison du préréglage',
   'Model': 'Modèle',
   'Model id, passed verbatim. Leave blank to use the preset\'s default': 'Identifiant du modèle, transmis tel quel. Laissez vide pour utiliser le modèle par défaut du préréglage.',
+  'Implicit default model override': 'Remplacement du modèle implicite par défaut',
+  'empty keeps the current fallback chain (last served model, then the preset default); `none` removes every implicit default; any other id replaces both and is sent verbatim.': 'vide conserve la chaîne de repli actuelle (dernier modèle servi, puis le modèle par défaut du préréglage) ; `none` supprime tout défaut implicite ; tout autre identifiant remplace les deux et est envoyé tel quel.',
   'Reasoning': 'Raisonnement',
   'Off (default) sends reasoning disabled so a reasoning model cannot spend the output cap thinking. On leaves it to the endpoint. A server that rejects the field is retried once without it.': 'Désactivé (par défaut) empêche le modèle de consacrer sa limite de sortie au raisonnement. Activé laisse le point de terminaison décider. Si le serveur rejette ce champ, la requête est relancée une fois sans celui-ci.',
   'My Work summary provider': 'Fournisseur des résumés My Work',

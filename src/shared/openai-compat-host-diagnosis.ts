@@ -56,6 +56,9 @@ export interface HostModelDiagnostic {
   smallModelNotice?: { hostId: string; line: string };
 }
 
+/** Why there is no fallback id: an operator setting, or refusals by the endpoint. */
+export type HostModelFallbackReason = 'none' | 'refused';
+
 export interface HostModelDiagnosisInput {
   settings: SettingsDefaults;
   fallbackModel: string;
@@ -63,11 +66,13 @@ export interface HostModelDiagnosisInput {
   apiUrl?: string;
   /** A host-chosen id this endpoint already refused is not usable. */
   isRefused?: (id: string) => boolean;
+  /** Only used when `fallbackModel` is empty; never blames the endpoint for `none`. */
+  fallbackReason?: HostModelFallbackReason;
 }
 
 /** Describe the host's observer model without changing or retrying anything. */
 export function diagnoseHostModel(input: HostModelDiagnosisInput): HostModelDiagnostic {
-  const { settings, fallbackModel, hostOptions, apiUrl, isRefused } = input;
+  const { settings, fallbackModel, hostOptions, apiUrl, isRefused, fallbackReason } = input;
   const worded = (status: HostModelStatus, detail: string): HostModelDiagnostic => ({
     status,
     line: `${HOST_MODEL_STATUS_WORDS[status].label} ${detail}`,
@@ -90,7 +95,11 @@ export function diagnoseHostModel(input: HostModelDiagnosisInput): HostModelDiag
     : '';
   const fallback = fallbackModel
     ? `"${fallbackModel}"`
-    : 'no model (this endpoint refused every fallback)';
+    : fallbackReason === 'refused'
+      ? 'no model (this endpoint refused every fallback)'
+      : fallbackReason === 'none'
+        ? 'no model (CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL is none)'
+        : 'no model available';
 
   // The small model serves the summary tier independently of the observer
   // model, so it is translated even when the main id is masked or unusable.
@@ -117,7 +126,10 @@ export function diagnoseHostModel(input: HostModelDiagnosisInput): HostModelDiag
   }
 
   const explicit = settings.CLAUDE_MEM_OPENAI_COMPAT_MODEL?.trim();
-  if (explicit) {
+  // A pinned id this endpoint refused cannot hide the host model any more: it
+  // is dropped from resolution, so it must not keep masking a usable host id.
+  const explicitRefused = explicit ? isRefused?.(explicit) === true : false;
+  if (explicit && !explicitRefused) {
     return {
       ...worded('masked', `CLAUDE_MEM_OPENAI_COMPAT_MODEL="${explicit}" hides the host model "${hostId}"${sourcePhrase}`),
       hostId,
@@ -126,13 +138,16 @@ export function diagnoseHostModel(input: HostModelDiagnosisInput): HostModelDiag
       ...withNotice,
     };
   }
+  const refusedPinned = explicitRefused
+    ? `CLAUDE_MEM_OPENAI_COMPAT_MODEL="${explicit}" was refused by this endpoint; `
+    : '';
 
   const resolved = resolveEndpointModelIdWithIdentity(hostId, host.provider, apiUrl);
   const identity = resolved?.identity === true;
   if (!resolved || isRefused?.(resolved.id)) {
     const detail = resolved
-      ? `host model "${hostId}" resolves to "${resolved.id}", which this endpoint refused; keeping ${fallback}`
-      : `host model "${hostId}" is not declared in the OpenCode provider config; keeping ${fallback}`;
+      ? `${refusedPinned}host model "${hostId}" resolves to "${resolved.id}", which this endpoint refused; keeping ${fallback}`
+      : `${refusedPinned}host model "${hostId}" is not declared in the OpenCode provider config; keeping ${fallback}`;
     return {
       ...worded('unmapped', detail),
       hostId,
@@ -142,9 +157,9 @@ export function diagnoseHostModel(input: HostModelDiagnosisInput): HostModelDiag
     };
   }
 
-  const detail = identity
+  const detail = `${refusedPinned}${identity
     ? `host model "${hostId}" is not declared in the OpenCode provider config, but its provider points at this endpoint; assuming the model key is endpoint-ready and sending "${resolved.id}"${sourcePhrase}`
-    : `host model "${hostId}" resolves to endpoint id "${resolved.id}"${sourcePhrase}`;
+    : `host model "${hostId}" resolves to endpoint id "${resolved.id}"${sourcePhrase}`}`;
   return {
     ...worded(identity ? 'identity' : 'resolved', detail),
     hostId,
