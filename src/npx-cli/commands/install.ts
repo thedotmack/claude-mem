@@ -764,6 +764,21 @@ async function setupIDEs(selectedIDEs: string[], summary: InstallSummary, dshPro
   return summary.failedIDEs;
 }
 
+/** Enable the selected host after sync setup provisioned the common local runtime. */
+export async function installSyncCaptureHost(host: string): Promise<void> {
+  if (host === 'gemini-cli') {
+    const { handleGeminiCommand } = await import('../../services/integrations/GeminiHooksInstaller.js');
+    if (await handleGeminiCommand('install') !== 0) throw new Error('Could not configure Gemini CLI hooks.');
+    return;
+  }
+  if (host === 'claude-code') {
+    registerMarketplace();
+    registerPlugin(readPluginVersion());
+    enablePluginInClaudeSettings();
+  }
+  await setupIDEs([host === 'antigravity-cli' ? 'antigravity' : host], createInstallSummary());
+}
+
 function applyClaudeCodePathSetupIfNeeded(): void {
   // Claude Code's native installer drops `claude` in ~/.local/bin; only then
   // does this caller need ~/.local/bin on PATH. The appender itself is shared

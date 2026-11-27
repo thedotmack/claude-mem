@@ -40,13 +40,13 @@
 // (stamp/DELETE). Any malformed or incomplete 200 response is rejected
 // before acknowledgment state changes and enters the normal backoff path.
 
-import { syncablePromptSql } from '../prompt-import/transcript-origin.mjs';
+import { syncablePromptSql, workspaceAccountSql } from '../prompt-import/transcript-origin.mjs';
 import type { Database } from 'bun:sqlite';
 import { hostname } from 'os';
 import { randomUUID } from 'crypto';
 import { logger } from '../../utils/logger.js';
 import { updateSettingsDocument } from '../../shared/settings-document.js';
-import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
+import { CANONICAL_CLOUD_SYNC_HUB_URL, SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { isSharedWorkList, sharedWorkListSql } from '../work-view/shared-records.mjs';
 import {
@@ -346,7 +346,7 @@ function jsonPayloadColumn(value: unknown, name: string, expected: 'array' | 'ob
   return parsed;
 }
 
-const KINDS: KindSpec[] = [
+const contentKindSpecs = (accountSql?: string): KindSpec[] => [
   {
     kind: 'observation',
     localTable: 'observations',
@@ -454,7 +454,7 @@ const KINDS: KindSpec[] = [
         s.memory_session_id AS memory_session_id, s.project AS project,
         s.platform_source AS platform_source
       FROM user_prompts up LEFT JOIN sdk_sessions s ON up.session_db_id = s.id
-      WHERE up.synced_at IS NULL AND up.origin_device_id IS NULL AND ${syncablePromptSql('up.native_prompt_id')}
+      WHERE up.synced_at IS NULL AND up.origin_device_id IS NULL AND ${syncablePromptSql('up.native_prompt_id', accountSql)}
       ORDER BY up.id LIMIT ?`,
     selectOneSql: `
       SELECT CAST(up.id AS TEXT) AS id, CAST(up.sync_rev AS TEXT) AS sync_rev,
@@ -464,7 +464,7 @@ const KINDS: KindSpec[] = [
         s.memory_session_id AS memory_session_id, s.project AS project,
         s.platform_source AS platform_source
       FROM user_prompts up LEFT JOIN sdk_sessions s ON up.session_db_id = s.id
-      WHERE up.id = ? AND up.origin_device_id IS NULL AND ${syncablePromptSql('up.native_prompt_id')}`,
+      WHERE up.id = ? AND up.origin_device_id IS NULL AND ${syncablePromptSql('up.native_prompt_id', accountSql)}`,
     toBody: (r) => ({
       content_session_id: r.content_session_id ?? null,
       prompt_number: decimalPayload(r.prompt_number, 'prompt_number'),
@@ -506,10 +506,16 @@ const KINDS: KindSpec[] = [
 ];
 
 /** Shared recovery/repair reader uses precisely the normal upload canonical mapping. */
-export const CONTENT_KIND_SPECS = KINDS;
-export function getNativeContentOperation(db: Database, kind: ContentKind, id: string, deviceId: string, revision?: string) {
-  const spec = KINDS.find(item => item.kind === kind);
+export const CONTENT_KIND_SPECS = contentKindSpecs();
+export function nativeContentSpec(db: Database, kind: ContentKind, account?: string) {
+  const specs = kind === 'prompt' ? contentKindSpecs(workspaceAccountSql(db, account)) : CONTENT_KIND_SPECS;
+  const spec = specs.find(item => item.kind === kind);
   if (!spec) throw new Error('Unsupported content kind');
+  return spec;
+}
+
+export function getNativeContentOperation(db: Database, kind: ContentKind, id: string, deviceId: string, revision?: string, account?: string) {
+  const spec = nativeContentSpec(db, kind, account);
   const row = db.prepare(spec.selectOneSql).get(assertCanonicalDecimal(id)) as LocalRow | undefined;
   if (!row) return null;
   const localRevision = assertCanonicalDecimal(row.sync_rev, { positive: true });
@@ -608,11 +614,18 @@ export function isCloudSyncConfigured(settings: Pick<SettingsDefaults, 'CLAUDE_M
     && (settings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL ?? '').trim() !== '';
 }
 
+/** Checkout authorizes personal prompt history at exactly the cmem.ai SyncHub. */
+export function workspaceSyncDestinationAccount(hubUrl: string, userId: string): string {
+  return hubUrl.trim().replace(/\/+$/, '') === CANONICAL_CLOUD_SYNC_HUB_URL ? userId : '';
+}
+
 export class CloudSync {
   readonly recovery: SyncRecovery;
   private readonly db: Database;
   private readonly token: string;
   private readonly userId: string;
+  private readonly accountSql: string | undefined;
+  private readonly contentKinds: KindSpec[];
   private readonly hubUrl: string;
   private readonly deviceName: string;
   private readonly sharedWorkWritesEnabled: boolean;
@@ -698,6 +711,8 @@ export class CloudSync {
     // Launch contract: the Hub URL has no default. Empty means sync is off;
     // there is no application-API or per-kind fallback lane.
     this.hubUrl = (settings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL ?? '').trim().replace(/\/+$/, '');
+    this.accountSql = workspaceAccountSql(db, this.workspaceSyncAccount());
+    this.contentKinds = contentKindSpecs(this.accountSql);
     // Human-readable device label for the dashboard's Devices panel.
     this.deviceName = (settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME || hostname() || '').slice(0, 80);
     this.sharedWorkWritesEnabled = settings.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === 'true';
@@ -724,9 +739,8 @@ export class CloudSync {
       this.deviceId = this.resolveDeviceId(settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID ?? '');
     }
     this.recovery = new SyncRecovery(db, this.deviceId, {
-      snapshotNative: (kind, id) => getNativeContentOperation(db, kind, id, this.deviceId),
-      flags: () => ({ deviceId: this.deviceId, sharedWorkWritesEnabled: this.sharedWorkWritesEnabled,
-        workStateSupported: this.hubAcceptsKind('work_state') }),
+      snapshotNative: (kind, id) => getNativeContentOperation(db, kind, id, this.deviceId, undefined, this.workspaceSyncAccount()),
+      flags: () => this.recoveryFlags(),
     });
   }
 
@@ -735,8 +749,10 @@ export class CloudSync {
     return this.token !== '' && this.userId !== '' && this.hubUrl !== '';
   }
 
+  workspaceSyncAccount(): string { return workspaceSyncDestinationAccount(this.hubUrl, this.userId); }
+
   recoveryFlags(): SyncQueueFlags {
-    return { deviceId: this.deviceId, sharedWorkWritesEnabled: this.sharedWorkWritesEnabled,
+    return { deviceId: this.deviceId, workspaceAccount: this.workspaceSyncAccount(), sharedWorkWritesEnabled: this.sharedWorkWritesEnabled,
       workStateSupported: this.hubAcceptsKind('work_state') };
   }
 
@@ -865,7 +881,7 @@ export class CloudSync {
         let progressed: boolean;
         do {
           progressed = await this.drainMutationPage();
-          for (const kind of KINDS) {
+          for (const kind of this.contentKinds) {
             if (this.stopped) return;
             if (this.hubAcceptsKind(kind.kind)) progressed = await this.drainContentPage(kind) || progressed;
           }
@@ -928,8 +944,7 @@ export class CloudSync {
         tombstones: this.countPendingTombstones(),
       },
       queue: {
-        ...this.queueEvidenceReader.getSnapshot({ sharedWorkWritesEnabled: this.sharedWorkWritesEnabled,
-          workStateSupported: this.hubAcceptsKind('work_state'), deviceId: this.deviceId }),
+        ...this.queueEvidenceReader.getSnapshot(this.recoveryFlags()),
         blockedMutation: this.blockedMutation ? { ...this.blockedMutation } : null,
         progress: structuredClone(this.queueProgress),
         backfill: { configured: this.recovery.available || !!this.selectBackfillPage, pageBudget: this.contentBatchSize, selected: this.backfillSelected },
@@ -1159,6 +1174,7 @@ export class CloudSync {
       const signal = AbortSignal.timeout(this.statusTimeoutMs);
       const response = await this.fetchImpl(`${this.hubUrl}/v1/sync/status`, {
         method: 'GET',
+        ...(this.workspaceSyncAccount() ? { redirect: 'error' as const } : {}),
         headers: {
           'Authorization': `Bearer ${this.token}`,
           'X-User-Id': this.userId,
@@ -1346,6 +1362,8 @@ export class CloudSync {
     return this.db.prepare(`
       SELECT o.body, o.operation_sha256 FROM sync_content_outbox o
       WHERE o.kind = ? AND ${eligible}
+        ${kind === 'prompt' ? `AND (o.deleted = 1 OR EXISTS (SELECT 1 FROM user_prompts p WHERE p.id = o.origin_local_id
+          AND p.origin_device_id IS NULL AND ${syncablePromptSql('p.native_prompt_id', this.accountSql)}))` : ''}
         AND (o.kind != 'work_state' OR ${this.sharedWorkAllowedSql("CASE WHEN json_valid(o.body) THEN json_extract(o.body, '$.payload.list_name') END")})
       ORDER BY o.deleted DESC, ${prerequisite} o.id LIMIT ?
     `).all(kind, ...(this.blockedMutationScope
@@ -1516,7 +1534,7 @@ export class CloudSync {
       const discarded = this.db.prepare(`
         DELETE FROM sync_content_outbox AS o WHERE kind = 'prompt' AND deleted = 0
           AND NOT EXISTS (SELECT 1 FROM user_prompts p WHERE p.id = o.origin_local_id
-            AND p.origin_device_id IS NULL AND ${syncablePromptSql('p.native_prompt_id')})
+            AND p.origin_device_id IS NULL AND ${syncablePromptSql('p.native_prompt_id', this.accountSql)})
         RETURNING entity_id, origin_local_id, entity_rev
       `).all() as Array<{ entity_id: string; origin_local_id: string; entity_rev: string }>;
       for (const row of discarded) {
@@ -1561,7 +1579,7 @@ export class CloudSync {
     let selected = 0;
     let settled = this.recovery.itemsSettledByLastPage;
     for (const selection of selections) {
-      const kind = KINDS.find(item => item.kind === selection.kind);
+      const kind = this.contentKinds.find(item => item.kind === selection.kind);
       if (!kind || !this.hubAcceptsKind(kind.kind)) continue;
       this.db.transaction(() => {
         const row = this.db.prepare(kind.selectOneSql).get(assertCanonicalDecimal(selection.originLocalId)) as LocalRow | undefined;
@@ -1975,6 +1993,7 @@ export class CloudSync {
     }
     const res = await this.fetchImpl(`${this.hubUrl}/v1/sync/ops`, {
       method: 'POST',
+      ...(this.workspaceSyncAccount() ? { redirect: 'error' as const } : {}),
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${this.token}`,
@@ -2208,7 +2227,7 @@ export class CloudSync {
     now: number,
   ): void {
     if (body.kind === 'mutation' || body.origin_local_id === null) return;
-    const spec = KINDS.find(item => item.kind === body.kind);
+    const spec = this.contentKinds.find(item => item.kind === body.kind);
     if (!spec) return;
     const current = this.db.prepare(spec.selectOneSql).get(body.origin_local_id) as LocalRow | undefined;
 
@@ -2335,7 +2354,7 @@ export class CloudSync {
   private countPending(table: string): number {
     const row = this.db.prepare(
       `SELECT COUNT(*) AS n FROM ${table} WHERE synced_at IS NULL AND origin_device_id IS NULL
-      ${table === 'user_prompts' ? `AND ${syncablePromptSql('native_prompt_id')}` : ''}
+      ${table === 'user_prompts' ? `AND ${syncablePromptSql('native_prompt_id', this.accountSql)}` : ''}
       ${table === 'work_state_entries' ? `AND ${this.sharedWorkAllowedSql('list_name')}` : ''}`
     ).get() as { n: number };
     return row.n;

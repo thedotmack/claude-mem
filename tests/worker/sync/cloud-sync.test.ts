@@ -11,6 +11,7 @@ import { Database } from 'bun:sqlite';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { CANONICAL_CLOUD_SYNC_HUB_URL } from '../../../src/shared/SettingsDefaultsManager.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import {
   CloudSync,
@@ -1037,6 +1038,44 @@ describe('CloudSync', () => {
     expect(JSON.stringify(calls)).not.toContain(secret);
     expect(db.prepare('SELECT prompt_text, synced_at FROM user_prompts WHERE id=1').get()).toEqual({ prompt_text: secret, synced_at: null });
     expect(sync.status().pending.prompts).toBe(0);
+  });
+
+  it('publishes only the explicitly selected turn to the approved account, even after a frozen retry', async () => {
+    const turn = (id: string) => ({ platformSource: 'codex', contentSessionId: 'workspace-session', project: 'sample',
+      nativePromptId: id, promptText: id + ' prompt', createdAtEpoch: Date.now(), claimedHookRowIds: new Set<number>(), hookMatchWindowMs: 1000 });
+    const selected = turn('selected');
+    store.importTranscriptUserPrompt(selected);
+    store.importTranscriptUserPrompt(turn('unselected'));
+    db.exec("UPDATE user_prompts SET synced_at=1; INSERT INTO sync_launch_exclusions VALUES ('prompt','1','1'), ('prompt','2','1')");
+    const id = store.importWorkspaceSyncPrompt(selected, 'user-42')!;
+    expect(store.workspacePromptSyncCounts(new Set([id]))).toEqual({ queued: 1, confirmed: 0, failed: 0 });
+    expect(db.query("SELECT origin_local_id FROM sync_launch_exclusions WHERE kind='prompt'").all()).toEqual([{origin_local_id:'2'}]);
+    const personalHub = { CLAUDE_MEM_CLOUD_SYNC_HUB_URL: CANONICAL_CLOUD_SYNC_HUB_URL };
+    const offline = makeCloudSync(makeFetchMock(() => new Error('offline')).impl, personalHub, { backoffInitialMs: 60_000 });
+    await offline.flush();
+    offline.stop();
+    expect(db.query("SELECT COUNT(*) AS n FROM sync_content_outbox WHERE kind='prompt'").get()).toEqual({ n: 1 });
+    const custom = makeFetchMock();
+    const customHub = makeCloudSync(custom.impl);
+    expect(customHub.workspaceSyncAccount()).toBe('');
+    expect(customHub.recoveryFlags().workspaceAccount).toBe('');
+    await customHub.flush();
+    expect(custom.calls).toHaveLength(0);
+    const other = makeFetchMock();
+    await makeCloudSync(other.impl, { ...personalHub, CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'other-account' }).flush();
+    expect(other.calls).toHaveLength(0);
+
+    const hub = makeFetchMock();
+    const sync = makeCloudSync(hub.impl, personalHub);
+    await sync.flush();
+    expect(hub.calls.flatMap(call => call.parsed.ops).map(op => op.body.prompt_text)).toEqual(['selected prompt']);
+    expect(store.workspacePromptSyncCounts(new Set([id]))).toEqual({ queued: 0, confirmed: 1, failed: 0 });
+    expect(store.importWorkspaceSyncPrompt(selected, 'user-42')).toBe(id);
+    await sync.flush();
+    expect(hub.calls).toHaveLength(1);
+    expect(() => store.importWorkspaceSyncPrompt({ ...selected, promptText: 'Changed body' }, 'user-42')).toThrow();
+    sync.queueDelete('prompt', String(id));
+    expect(store.importWorkspaceSyncPrompt(selected, 'user-42')).toBeNull();
   });
 
   it('cuts a prompt that fits as raw bytes but not once JSON-escaped', async () => {

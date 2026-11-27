@@ -1,6 +1,6 @@
 import type { Database } from 'bun:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
-import { CONTENT_KIND_SPECS } from './CloudSync.js';
+import { CONTENT_KIND_SPECS, workspaceSyncDestinationAccount } from './CloudSync.js';
 import { assertCanonicalDecimal, buildContentOperation, canonicalJson, compareCanonicalDecimals,
   incrementCanonicalDecimal, parseCanonicalOperation, stableDocumentId,
   type CanonicalWireOp, type ContentKind } from './CanonicalContent.js';
@@ -67,12 +67,12 @@ export class SyncConflictRecovery {
   }
 
   private local(kind: ContentKind, originLocalId: string) {
-    return readLocalConflictEvidence(this.db, this.config.deviceId, kind, originLocalId, { validateBodies: false });
+    return readLocalConflictEvidence(this.db, this.config.deviceId, kind, originLocalId, { validateBodies: false, workspaceAccount: workspaceSyncDestinationAccount(this.config.hubUrl, this.config.userId) });
   }
 
   private async readLocal(kind: ContentKind, originLocalId: string): Promise<LocalConflictEvidence> {
     return this.config.readEvidence ? this.config.readEvidence(kind, originLocalId)
-      : readLocalConflictEvidence(this.db, this.config.deviceId, kind, originLocalId);
+      : readLocalConflictEvidence(this.db, this.config.deviceId, kind, originLocalId, { validateBodies: true, workspaceAccount: workspaceSyncDestinationAccount(this.config.hubUrl, this.config.userId) });
   }
 
   private async request(path: string, body: unknown): Promise<any> {

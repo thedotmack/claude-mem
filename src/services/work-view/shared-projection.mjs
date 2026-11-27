@@ -3,7 +3,7 @@
 import { conversationKey, copiesOpeningAsk, requestText } from './request-projection.mjs';
 import { productsFromToolUse, productsFromObservation, productsFromDeliverable, mergeProducts, safeWebUrl, localProductId, servableFile, bucketFileAvailable, copyCoversSource } from './work-product.mjs';
 import { createHumanCopyInput, humanCopyFingerprint, validateHumanCopy } from './human-copy.mjs';
-import { syncablePromptSql } from '../prompt-import/transcript-origin.mjs';
+import { syncablePromptSql, workspaceAccountSql } from '../prompt-import/transcript-origin.mjs';
 import { isIP } from 'node:net';
 import { basename } from 'node:path';
 import { isSharedReviewValue } from './shared-review-value.mjs';
@@ -308,6 +308,8 @@ function groupRecords(rows, keyOf) {
 export function buildSharedProjectionUpdates(database, { ledger, records = {}, view = {}, deviceId, copyEntries = {} } = {}) {
   if (!deviceId) return [];
   decorateSharedView(view, { database, deviceId, records });
+  // Personal history grants do not authorize disclosure through a shared Work View.
+  const accountSql = database ? workspaceAccountSql(database) : undefined;
   const liveOpenings = new Map();
   const liveOpening = key => {
     if (!conversation(key)) return null;
@@ -315,7 +317,7 @@ export function buildSharedProjectionUpdates(database, { ledger, records = {}, v
       const [, platform, contentId] = JSON.parse(key);
       const prompt = get(database, `SELECT p.prompt_text FROM sdk_sessions s JOIN user_prompts p ON p.session_db_id = s.id
         WHERE s.platform_source = ? AND s.content_session_id = ? AND p.prompt_text = s.user_prompt
-          AND p.origin_device_id IS NULL AND ${syncablePromptSql('p.native_prompt_id')} LIMIT 1`, [platform, contentId]);
+          AND p.origin_device_id IS NULL AND ${syncablePromptSql('p.native_prompt_id', accountSql)} LIMIT 1`, [platform, contentId]);
       liveOpenings.set(key, requestText(prompt?.prompt_text));
     }
     return liveOpenings.get(key);
@@ -332,7 +334,7 @@ export function buildSharedProjectionUpdates(database, { ledger, records = {}, v
       let text = ask.source === 'session-summary-request' ? ask.text : null;
       if (ask.source === 'user-prompt') {
         const prompt = get(database, `SELECT prompt_text FROM user_prompts WHERE id = ? AND origin_device_id IS NULL
-          AND ${syncablePromptSql('native_prompt_id')}`, [ask.sourceId]);
+          AND ${syncablePromptSql('native_prompt_id', accountSql)}`, [ask.sourceId]);
         text = requestText(prompt?.prompt_text);
       } else if (ask.source === 'session-initial-request') text = liveOpening(group.anchor);
       if (text && text === ask.text) portableGroup.anchorAsk = pick(ask, ['text', 'source', 'sourceId', 'url', 'promptNumber', 'atEpoch']);

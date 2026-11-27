@@ -51,6 +51,7 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'claude-mem messages acknowledge <message-id>')}   Record a local acknowledgment for a dispatched message
 
 ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed plugin):
+  ${styleText('cyan', 'npx claude-mem sync setup')}           Connect your existing Cloud Sync account and import this workspace's last 30 days of prompts
   ${styleText('cyan', 'npx claude-mem start')}                Start worker service
   ${styleText('cyan', 'npx claude-mem stop')}                 Stop worker service
   ${styleText('cyan', 'npx claude-mem restart')}              Restart worker service
@@ -197,6 +198,11 @@ async function main(): Promise<void> {
     case 'messages': {
       const { runMessagesCommand } = await import('../cli/messages-command.js');
       process.exitCode = runMessagesCommand(args.slice(1));
+      break;
+    }
+    case 'sync': {
+      const { runSyncCommand } = await import('./commands/sync-setup.js');
+      process.exitCode = await runSyncCommand(args.slice(1));
       break;
     }
     case 'import': {

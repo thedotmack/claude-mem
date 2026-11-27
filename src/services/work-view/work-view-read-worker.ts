@@ -35,12 +35,12 @@ if (workerData.kind === 'shared-work-sync') {
   parentPort.on('message', (request: { id: number; kind: 'inventory' | 'preview' | 'conflict-evidence' | 'conflict-list'; scope: RecoveryScope; flags: SyncQueueFlags; contentKind: ContentKind; originLocalId: string; limit: number }) => {
     try {
       const recovery = new SyncRecovery(db, workerData.deviceId, {
-        snapshotNative: (kind, id) => getNativeContentOperation(db, kind, id, workerData.deviceId),
+        snapshotNative: (kind, id) => getNativeContentOperation(db, kind, id, workerData.deviceId, undefined, request.flags.workspaceAccount),
         flags: () => request.flags,
       });
       const result = request.kind === 'inventory' ? recovery.inventory()
         : request.kind === 'conflict-list' ? listConflictEvidence(db, request.limit)
-        : request.kind === 'conflict-evidence' ? readLocalConflictEvidence(db, workerData.deviceId, request.contentKind, request.originLocalId)
+        : request.kind === 'conflict-evidence' ? readLocalConflictEvidence(db, workerData.deviceId, request.contentKind, request.originLocalId, { validateBodies: true, workspaceAccount: request.flags.workspaceAccount })
         : recovery.preview(request.scope);
       parentPort!.postMessage({ id: request.id, ok: true, result });
     } catch (error) {
