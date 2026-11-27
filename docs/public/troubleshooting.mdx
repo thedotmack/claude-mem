@@ -382,40 +382,31 @@ Would you like to process these pending queues? (y/n)
 
 For automation or scripting scenarios:
 
-1. **Check queue status**:
+1. **Check processing status**:
    ```bash
-   curl http://127.0.0.1:$PORT/api/pending-queue
+   curl http://127.0.0.1:$PORT/api/processing-status
    ```
 
    Response shows:
-   - `queue.totalPending`: Messages waiting to process
-   - `queue.totalProcessing`: Messages currently processing
-   - `queue.stuckCount`: Processing messages >5 minutes old
-   - `sessionsWithPendingWork`: Session IDs needing recovery
+   - `isProcessing`: Whether any session is generating
+   - `queueDepth`: Live work waiting or in flight
+   - `parkedSessions`: Sessions waiting for a concurrency slot
+   - `lastSuccessfulStoreAt`: Last successful observation store
+   - `abandonedStallSessions`: Sessions the stall pacer abandoned
+   - `expiredObserverInputs`: Inputs discarded by expiry
 
-2. **Trigger manual recovery**:
+2. **Trigger processing**:
    ```bash
-   curl -X POST http://127.0.0.1:$PORT/api/pending-queue/process \
+   curl -X POST http://127.0.0.1:$PORT/api/processing \
      -H "Content-Type: application/json" \
-     -d '{"sessionLimit": 10}'
+     -d '{"isProcessing": false}'
    ```
 
-   Response includes:
-   - `totalPendingSessions`: Total sessions with pending messages
-   - `sessionsStarted`: Number of sessions we started processing
-   - `sessionsSkipped`: Sessions already processing (not restarted)
-   - `startedSessionIds`: Database IDs of sessions started
+   The route is localhost-only and rejects a foreign browser page on another local port.
 
-#### Understanding Queue States
+#### What Recovery Can and Cannot Do
 
-Messages progress through these states:
-
-1. **pending** - Queued, waiting to process
-2. **processing** - Currently being processed by SDK agent
-3. **processed** - Completed successfully
-4. **failed** - Failed after 3 retry attempts
-
-**Stuck Detection**: Messages in `processing` state for >5 minutes are considered stuck and automatically reset to `pending` on worker startup (but not automatically reprocessed).
+`POST /api/processing` starts generators for pending sessions and retries the pauses the automatic sweep leaves alone. It does not replay inputs discarded by quota or authentication pauses, or inputs that expired out of the in-memory buffer. The Claude Code transcript JSONL remains the durable source of truth.
 
 #### Recovery Strategy
 
@@ -448,29 +439,18 @@ If recovery fails or messages remain stuck:
    sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
    ```
 
-3. **View stuck messages directly**:
+3. **Read the live processing state**:
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "
-     SELECT id, session_db_id, status, retry_count,
-            (strftime('%s', 'now') * 1000 - started_processing_at_epoch) / 60000 as age_minutes
-     FROM pending_messages
-     WHERE status = 'processing'
-     ORDER BY started_processing_at_epoch;
-   "
+   curl -s http://127.0.0.1:$PORT/api/processing-status | jq
    ```
 
-4. **Force reset stuck messages** (nuclear option):
-   ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "
-     UPDATE pending_messages
-     SET status = 'pending', started_processing_at_epoch = NULL
-     WHERE status = 'processing';
-   "
-   ```
+   `queueDepth`, `abandonedStallSessions`, and `expiredObserverInputs` tell a busy observer from a stalled one. Inputs that expired are not replayed.
 
-   Then trigger recovery:
+4. **Trigger processing**:
    ```bash
-   bun scripts/check-pending-queue.ts --process
+   curl -X POST http://127.0.0.1:$PORT/api/processing \
+     -H "Content-Type: application/json" \
+     -d '{"isProcessing": false}'
    ```
 
 5. **Check worker logs for SDK errors**:
@@ -478,52 +458,9 @@ If recovery fails or messages remain stuck:
    npm run worker:logs | grep -i error
    ```
 
-#### Understanding the Queue Table
+#### About the `pending_messages` Table
 
-The `pending_messages` table tracks all messages with these key fields:
-
-```sql
-CREATE TABLE pending_messages (
-  id INTEGER PRIMARY KEY,
-  session_db_id INTEGER,          -- Foreign key to sdk_sessions
-  claude_session_id TEXT,          -- Claude session ID
-  message_type TEXT,               -- 'observation' | 'summarize'
-  status TEXT,                     -- 'pending' | 'processing' | 'processed' | 'failed'
-  retry_count INTEGER,             -- Current retry attempt (max: 3)
-  created_at_epoch INTEGER,        -- When message was queued
-  started_processing_at_epoch INTEGER,  -- When marked 'processing'
-  completed_at_epoch INTEGER       -- When completed/failed
-)
-```
-
-**Query examples**:
-
-```bash
-# Count messages by status
-sqlite3 ~/.claude-mem/claude-mem.db "
-  SELECT status, COUNT(*)
-  FROM pending_messages
-  GROUP BY status;
-"
-
-# Find sessions with pending work
-sqlite3 ~/.claude-mem/claude-mem.db "
-  SELECT session_db_id, COUNT(*) as pending_count
-  FROM pending_messages
-  WHERE status IN ('pending', 'processing')
-  GROUP BY session_db_id;
-"
-
-# View recent failures
-sqlite3 ~/.claude-mem/claude-mem.db "
-  SELECT id, session_db_id, message_type, retry_count,
-         datetime(completed_at_epoch/1000, 'unixepoch') as failed_at
-  FROM pending_messages
-  WHERE status = 'failed'
-  ORDER BY completed_at_epoch DESC
-  LIMIT 10;
-"
-```
+`pending_messages` is a **legacy** table. The live observer keeps its buffer in memory, and the Claude Code transcript JSONL is the durable source of truth. Do not write to `pending_messages` to unstick a session; use `/api/processing-status` and `/api/processing` instead.
 
 ## Hook Issues
 

@@ -450,9 +450,9 @@ When developing new features:
 # Worker status
 npm run worker:status
 
-# Queue inspection
+# Processing status
 WORKER_PORT=$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/settings.json)
-curl http://127.0.0.1:$WORKER_PORT/api/pending-queue
+curl http://127.0.0.1:$WORKER_PORT/api/processing-status
 
 # Database integrity
 sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
@@ -490,26 +490,22 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 For manual recovery features specifically:
 
-1. **Simulate stuck messages**:
-   ```bash
-   # Manually create stuck message (for testing only)
-   sqlite3 ~/.claude-mem/claude-mem.db "
-     UPDATE pending_messages
-     SET status = 'processing',
-         started_processing_at_epoch = strftime('%s', 'now', '-10 minutes') * 1000
-     WHERE id = 123;
-   "
-   ```
-
-2. **Test recovery**:
+1. **Read the live processing state**:
    ```bash
    bun scripts/check-pending-queue.ts
    ```
 
-3. **Verify results**:
+2. **Trigger processing**:
    ```bash
    WORKER_PORT=$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/settings.json)
-   curl http://127.0.0.1:$WORKER_PORT/api/pending-queue | jq '.queue'
+   curl -X POST http://127.0.0.1:$WORKER_PORT/api/processing \
+     -H "Content-Type: application/json" \
+     -d '{"isProcessing": false}'
+   ```
+
+3. **Verify the store advances**:
+   ```bash
+   curl -s http://127.0.0.1:$WORKER_PORT/api/processing-status | jq '.lastSuccessfulStoreAt'
    ```
 
 ### Regression Testing

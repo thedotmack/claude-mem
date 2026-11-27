@@ -187,11 +187,11 @@ CREATE TABLE tool_uses (
 );
 ```
 
-**Why it exists**: `pending_messages` is the generation *queue* — rows are
-claimed, summarized, and deleted, so raw tool payloads were unrecoverable once
-an observation existed. `tool_uses` is the durable side index that survives the
-queue, and it is what the `get_tool_uses` MCP tool (progressive-disclosure layer
-4) reads.
+**Why it exists**: the former `pending_messages` generation queue held rows only
+until they were claimed, summarized, and deleted, so raw tool payloads were
+unrecoverable once an observation existed. `tool_uses` is the durable side index
+that survives the queue, and it is what the `get_tool_uses` MCP tool
+(progressive-disclosure layer 4) reads.
 
 **Not a transcript store**: the JSONL transcripts on disk and the transcript
 watcher remain the spine for session history. This table is a by-reference index
