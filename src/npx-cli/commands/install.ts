@@ -178,6 +178,7 @@ import { isInstallRunByAutoUpdate } from '../../shared/auto-update-install-run.j
 import { stripLegacyClaudeMemAliasUnlessSkipped } from './uninstall.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 import { initialIDESelection } from './ide-detection.js';
+import { isSafeBrowserUrl } from '../utils/browser-url.js';
 import { canonicalIntegrationId } from '../../shared/integration-id.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 import { claudeCodeVersionTooOldWarning, detectClaudeCodeVersion } from '../install/claude-code-version.js';
@@ -1376,11 +1377,14 @@ async function bootstrapAndPersistServerApiKey(): Promise<void> {
  * user clicks it themselves.
  */
 export function openBrowser(url: string): void {
+  if (!isSafeBrowserUrl(url)) return;
   try {
     if (process.platform === 'darwin') {
       spawnSync('open', [url], { stdio: 'ignore' });
     } else if (process.platform === 'win32') {
-      spawnSync('cmd', ['/c', 'start', '', url], { stdio: 'ignore' });
+      // explorer.exe receives the URL as one argument and does not re-parse it
+      // as a shell command, so an `&` in the URL cannot start a second command.
+      spawnSync('explorer.exe', [url], { stdio: 'ignore' });
     } else {
       spawnSync('xdg-open', [url], { stdio: 'ignore' });
     }
