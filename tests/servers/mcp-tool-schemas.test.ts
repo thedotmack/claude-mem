@@ -9,6 +9,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { formatDeepSearch } from '../../src/shared/deep-search-format.js';
 import type { DeepSearchResult } from '../../src/services/sqlite/tool-use-search.js';
 import { expectSafeMcpToolNames } from './mcp-tool-name-assertions.js';
+import { WORK_STATE_WRITE_ARGS_ERROR } from '../../src/shared/work-state-batch.js';
 
 const mcpServerPath = fileURLToPath(new URL('../../src/servers/mcp-server.ts', import.meta.url));
 
@@ -19,6 +20,7 @@ async function withServer(
   runtime: 'worker' | 'server',
   run: (client: Client, workerRequests: Array<{ path: string; body: any; query: any }>, cwd: string) => Promise<void>,
   autostart = false,
+  extraEnv: Record<string, string> = {},
 ): Promise<void> {
   const workerRequests: Array<{ path: string; body: any; query: any }> = [];
   const app = express();
@@ -35,7 +37,10 @@ async function withServer(
   });
   app.post('/api/tool-uses/batch', (_req, res) => res.json([]));
   app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
-  app.post('/api/work-state/entries', (_req, res) => res.json({ entries: [] }));
+  app.post('/api/work-state/entries', (req, res) => {
+    if (req.body?.fields?.task === 'fail') { res.status(400).json({ error: 'Worker refused item: fail' }); return; }
+    res.json({ entries: [] });
+  });
   app.get('/api/work-state', (_req, res) => res.json({ entries: [] }));
   const deckUrl = 'http://localhost/?view=review-stack';
   app.get('/api/work-view/review-stack', (_req, res) => res.json({ itemCount: 1, deckUrl }));
@@ -64,6 +69,7 @@ async function withServer(
       CLAUDE_MEM_RUNTIME: runtime,
       CLAUDE_MEM_SERVER_URL: `http://127.0.0.1:${port}`,
       CLAUDE_MEM_SERVER_API_KEY: 'schema-fixture-key',
+      ...extraEnv,
     } as Record<string, string>,
   });
   const client = new Client({ name: 'tool-schema-fixture', version: '1' });
@@ -136,6 +142,84 @@ describe('work_state tools', () => {
       expect(write?.body.cwd).toBe(cwd);
       expect(read?.query.cwd).toBe(cwd);
     });
+  }, 30_000);
+});
+
+describe('work_state_write grouped writes (opt-in)', () => {
+  // The server runs as a child process: the flag must travel in the transport env.
+  const enabled = { CLAUDE_MEM_WORK_STATE_BATCH_ENABLED: 'true' };
+  const textOf = (result: unknown) => (result as { content: Array<{ text: string }> }).content.map(block => block.text).join('\n');
+  const writes = (requests: Array<{ path: string }>) => requests.filter(request => request.path === '/api/work-state/entries');
+
+  it('advertises items and requires only list when the flag is on', async () => {
+    await withServer('server', async client => {
+      const tool = (await client.listTools()).tools.find(candidate => candidate.name === 'work_state_write') as ListedTool;
+      expect(tool.inputSchema.required).toEqual(['list']);
+      const properties = tool.inputSchema.properties as Record<string, any>;
+      expect(properties.items.type).toBe('array');
+      expect(properties.items.minItems).toBe(1);
+      expect(properties.items.maxItems).toBe(25);
+      expect(properties.items.items.type).toBe('object');
+      expect(properties.items.items.additionalProperties.type).toEqual(['string', 'number', 'boolean', 'null']);
+      expect(tool.description).toContain('Call once per entry, or pass `items` to append several entries in one call.');
+      expect(tool.description).toContain('`fields` is an object of scalar keys, not an array. Supply exactly one of `fields` or `items`.');
+    }, false, enabled);
+  }, 30_000);
+
+  it('writes both entries through the real stdio handler', async () => {
+    await withServer('worker', async (client, requests) => {
+      const result = await client.callTool({
+        name: 'work_state_write',
+        arguments: { list: 'schema-fixture', items: [{ task: 'a', status: 'todo' }, { task: 'b', status: 'todo' }] },
+      });
+      expect(result.isError).toBeFalsy();
+      const posted = writes(requests);
+      expect(posted).toHaveLength(2);
+      expect(posted.map(request => request.body.fields.task)).toEqual(['a', 'b']);
+      expect(posted.every(request => request.body.list === 'schema-fixture')).toBe(true);
+    }, false, enabled);
+  }, 30_000);
+
+  it('returns the handler error in the same turn for {list} alone, with no POST', async () => {
+    await withServer('worker', async (client, requests) => {
+      const result = await client.callTool({ name: 'work_state_write', arguments: { list: 'schema-fixture' } });
+      expect(result.isError).toBe(true);
+      expect(textOf(result).trim()).toBe(WORK_STATE_WRITE_ARGS_ERROR);
+      expect(writes(requests)).toEqual([]);
+    }, false, enabled);
+  }, 30_000);
+
+  it('refuses an unsafe integer and a reserved list before any POST', async () => {
+    await withServer('worker', async (client, requests) => {
+      const unsafe = await client.callTool({
+        name: 'work_state_write',
+        arguments: { list: 'schema-fixture', items: [{ task: 'ok' }, { status: 9007199254740993 }] },
+      });
+      const reserved = await client.callTool({
+        name: 'work_state_write',
+        arguments: { list: '__my_work_v1:entry', items: [{ task: 'ok' }] },
+      });
+      expect(unsafe.isError).toBe(true);
+      expect(reserved.isError).toBe(true);
+      expect(textOf(unsafe).trim()).toBe(WORK_STATE_WRITE_ARGS_ERROR);
+      expect(textOf(reserved).trim()).toBe(WORK_STATE_WRITE_ARGS_ERROR);
+      expect(writes(requests)).toEqual([]);
+    }, false, enabled);
+  }, 30_000);
+
+  it('names the failing index and relays the raw worker error without rollback', async () => {
+    await withServer('worker', async (client, requests) => {
+      const result = await client.callTool({
+        name: 'work_state_write',
+        arguments: { list: 'schema-fixture', items: [{ task: 'a' }, { task: 'fail' }, { task: 'never' }] },
+      });
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain('failed at item 2/3');
+      expect(textOf(result)).toContain('Earlier entries (1) are already saved');
+      expect(textOf(result)).toContain('Worker refused item: fail');
+      const posted = writes(requests);
+      expect(posted.map(request => request.body.fields.task)).toEqual(['a', 'fail']);
+    }, false, enabled);
   }, 30_000);
 });
 

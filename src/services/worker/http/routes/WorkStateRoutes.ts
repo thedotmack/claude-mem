@@ -13,8 +13,13 @@ import type { WorkStateFields } from '../../../sqlite/work-state.js';
 import { isMyRulesList } from '../../../work-view/my-rules.mjs';
 import { isForeignBrowserRead, isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { isMyFocusList } from '../../../work-view/my-focus.mjs';
-import { GOAL_KINDS, isOwnerGoalsList } from '../../../work-view/owner-goals.mjs';
-import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from '../../../work-view/work-state-limits.mjs';
+import { isOwnerGoalsList } from '../../../work-view/owner-goals.mjs';
+import {
+  isWorkStateFields,
+  isWorkStateFieldValueMap,
+  MAX_WORK_STATE_FIELDS_JSON_CHARS,
+  ownerGoalsRowRefusal,
+} from '../../../../shared/work-state-fields.js';
 import { isSharedWorkList } from '../../../work-view/shared-records.mjs';
 import { isClosedWorkStateStatus } from '../../../work-view/work-state-status.mjs';
 import { checkWorkStateWrite } from '../work-state-write-guard.js';
@@ -25,18 +30,12 @@ import {
   WORK_STATE_SECTION_CHARACTER_LIMIT,
 } from '../../../context/sections/WorkStateRenderer.js';
 
-export { MAX_WORK_STATE_FIELDS_JSON_CHARS };
+export { MAX_WORK_STATE_FIELDS_JSON_CHARS, ownerGoalsRowRefusal };
 
-// z.record intentionally drops __proto__; here every field is a primitive,
-// so validate own entries and copy with spread to keep literal data keys safely.
-// An integer past 2^53 cannot cross cloud sync's canonical JSON
-// (CanonicalContent), so it is refused here instead of quarantined later.
-const workStateFieldsSchema = z.custom<WorkStateFields>(value =>
-  value !== null && typeof value === 'object' && !Array.isArray(value)
-    && Object.entries(value).every(([key, field]) => key.length > 0 && (
-      field === null || typeof field === 'string' || typeof field === 'boolean'
-      || (typeof field === 'number' && Number.isFinite(field) && (!Number.isInteger(field) || Number.isSafeInteger(field)))
-    )),
+// The value rules live in shared/work-state-fields.ts, so the grouped-write
+// helper refuses exactly what this route refuses. The shape check is kept
+// separate to preserve the distinct zod messages for an empty or oversized map.
+const workStateFieldsSchema = z.custom<WorkStateFields>(isWorkStateFieldValueMap,
   'fields must map non-empty keys to strings, safe finite numbers, booleans or null',
 ).transform(fields => ({ ...fields }));
 
@@ -45,22 +44,10 @@ const workStateWriteSchema = z.object({
   list: z.string().trim().min(1).max(200).refine(list => !isSharedWorkList(list), 'This list is reserved for shared My Work records'),
   fields: workStateFieldsSchema
     .refine(fields => Object.keys(fields).length > 0, 'fields must set at least one key')
-    .refine(
-      fields => JSON.stringify(fields).length <= MAX_WORK_STATE_FIELDS_JSON_CHARS,
-      `fields must be at most ${MAX_WORK_STATE_FIELDS_JSON_CHARS} characters as JSON`,
-    ),
+    // An empty map already has its own message above; don't add a second one here.
+    .refine(fields => Object.keys(fields).length === 0 || isWorkStateFields(fields),
+      `fields must be at most ${MAX_WORK_STATE_FIELDS_JSON_CHARS} characters as JSON`),
 });
-
-/** Why an owner-goals row cannot be saved, or null. List state rows and a row that only closes an item need no kind. */
-export function ownerGoalsRowRefusal(fields: WorkStateFields): string | null {
-  if (fields.task == null || fields.task === '') return null;
-  const onlyCloses = Object.keys(fields).every(key => key === 'task' || key === 'status') && isClosedWorkStateStatus(fields.status);
-  if (onlyCloses && !('goal_kind' in fields)) return null;
-  if (!(GOAL_KINDS as unknown[]).includes(fields.goal_kind)) {
-    return `an owner-goals item needs goal_kind ${GOAL_KINDS.map(kind => `"${kind}"`).join(' or ')}; got ${JSON.stringify(fields.goal_kind ?? null)}.`;
-  }
-  return null;
-}
 
 /**
  * Surface for `work_state_entries`, the agent's canonical to-do lists and

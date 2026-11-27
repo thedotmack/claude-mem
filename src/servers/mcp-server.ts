@@ -66,7 +66,8 @@ import {
 } from './mcp-tool-visibility.js';
 import { loadFromFileOnce, readLocalApiToken } from '../shared/hook-settings.js';
 import { teamBrainConnection } from '../shared/teambrain.js';
-import { isWorkStateEnabled } from '../shared/work-state-setting.js';
+import { isWorkStateBatchEnabled, isWorkStateEnabled } from '../shared/work-state-setting.js';
+import { parseWorkStateWriteArgs } from '../shared/work-state-batch.js';
 import { getProjectContext, type ProjectContext } from '../utils/project-name.js';
 import { withCheckoutProjects } from './checkout-search-scope.js';
 import { parseProjectList, projectsQueryValues } from '../shared/project-list.js';
@@ -526,6 +527,92 @@ interface McpToolDefinition {
   handler: (args: any) => any;
 }
 
+/**
+ * The two advertised forms of work_state_write, built from one shared base.
+ * The host's argument validator does not handle `anyOf`, so the `fields`/`items`
+ * alternative is carried by the enabled handler, not by a union in the schema.
+ */
+type BatchEnabled = 'false' | 'true';
+
+async function workStateWriteOnce(args: any): Promise<McpTextResult> {
+  return callWorker('/api/work-state/entries', {
+    body: { cwd: getRequestCwd(), list: args?.list, fields: args?.fields },
+    text: true,
+  });
+}
+
+async function workStateWriteGrouped(args: any): Promise<McpTextResult> {
+  const parsed = parseWorkStateWriteArgs(args);
+  if (parsed.kind === 'error') return mcpTextResult(parsed.message, true);
+
+  const entries = parsed.kind === 'single' ? [parsed.fields] : parsed.items;
+  let result: McpTextResult = mcpTextResult('');
+  for (const [index, fields] of entries.entries()) {
+    result = await callWorker('/api/work-state/entries', {
+      body: { cwd: getRequestCwd(), list: args?.list, fields },
+      text: true,
+    });
+    if (!result.isError) continue;
+    // No retry and no rollback. Say exactly how much was already saved, with
+    // the worker's own words, in this same tool result.
+    const progress = index === 0
+      ? 'Nothing was saved by this call.'
+      : `Earlier entries (${index}) are already saved; grouped writes are not transactional and are not retried.`;
+    const workerText = result.content.map(block => block.text).join('\n').trim();
+    return mcpTextResult(
+      `Work-state write failed at item ${index + 1}/${entries.length}. ${progress}\n${workerText}`,
+      true,
+    );
+  }
+  return result;
+}
+
+const WORK_STATE_WRITE_FORMS: Record<BatchEnabled, McpToolDefinition> = (() => {
+  const base = {
+    name: 'work_state_write',
+    description: 'Your canonical to-do list and working state for this project, kept across sessions: whatever is still open is shown at the start of every session. Each call appends one entry to a list. To-do item: fields {"task": "<name>", "status": "todo" | "doing" | "done" | "dropped", ...details}. State on the list itself: any other fields (the latest value of each key wins; null clears a key; "status": "done" closes the list). Returns what is still open in the list. Params: list (required), fields (required).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        list: { type: 'string', description: 'The to-do list or tracked thing this entry belongs to, e.g. "release" or "auth-refactor"' },
+        fields: {
+          type: 'object',
+          description: 'Keys to set. Include "task" to update a to-do item. Values are strings, numbers, booleans, or null to clear a key.',
+          additionalProperties: { type: ['string', 'number', 'boolean', 'null'] },
+        },
+      },
+      required: ['list', 'fields'],
+      additionalProperties: false,
+    },
+  };
+  return {
+    false: { ...base, handler: workStateWriteOnce },
+    true: {
+      ...base,
+      description: `${base.description} Call once per entry, or pass \`items\` to append several entries in one call. \`fields\` is an object of scalar keys, not an array. Supply exactly one of \`fields\` or \`items\`.`,
+      inputSchema: {
+        ...base.inputSchema,
+        properties: {
+          ...base.inputSchema.properties,
+          items: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 25,
+            items: {
+              type: 'object',
+              description: 'One entry: an object of scalar keys, e.g. {"task":"a","status":"todo"}.',
+              additionalProperties: { type: ['string', 'number', 'boolean', 'null'] },
+            },
+            description: 'Append up to 25 entries in one call, in order. Validation is complete before the first write; a later worker failure leaves earlier entries saved.',
+          },
+        },
+        required: ['list'],
+      },
+      handler: workStateWriteGrouped,
+    },
+  };
+})();
+
 const tools: McpToolDefinition[] = [
   {
     name: 'dumb_search',
@@ -784,27 +871,7 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
       ? mcpTextResult('Use your hosted Claude-Mem MCP connection to add cards to the account’s Review Stack.', true)
       : callWorker('/api/work-view/review-stack/import', { body: { cards: args.cards }, idempotencyKey: randomUUID() }),
   },
-  {
-    name: 'work_state_write',
-    description: 'Your canonical to-do list and working state for this project, kept across sessions: whatever is still open is shown at the start of every session. Each call appends one entry to a list. To-do item: fields {"task": "<name>", "status": "todo" | "doing" | "done" | "dropped", ...details}. State on the list itself: any other fields (the latest value of each key wins; null clears a key; "status": "done" closes the list). Returns what is still open in the list. Params: list (required), fields (required).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        list: { type: 'string', description: 'The to-do list or tracked thing this entry belongs to, e.g. "release" or "auth-refactor"' },
-        fields: {
-          type: 'object',
-          description: 'Keys to set. Include "task" to update a to-do item. Values are strings, numbers, booleans, or null to clear a key.',
-          additionalProperties: { type: ['string', 'number', 'boolean', 'null'] },
-        },
-      },
-      required: ['list', 'fields'],
-      additionalProperties: false,
-    },
-    handler: async (args: any) => callWorker('/api/work-state/entries', {
-      body: { cwd: getRequestCwd(), list: args?.list, fields: args?.fields },
-      text: true,
-    }),
-  },
+  WORK_STATE_WRITE_FORMS.false,
   {
     name: 'work_state_read',
     description: "Read this project's to-do lists and working state written with work_state_write: every open item, or one list, with done and dropped items when includeClosed is true. Params: list, includeClosed.",
@@ -1231,6 +1298,10 @@ function createMcpServer(getCwd?: CwdResolver): Server {
   // Claude Code that already loads this exact text through CLAUDE.md
   // (MY-RULES.md -> RULES-AND-TOOLS.md) gets none here: one copy, not two.
   const workStateRuleIncluded = workStateEnabled();
+  // One settings read, one decision, for both the advertised form and its handler.
+  const workStateWriteForm = WORK_STATE_WRITE_FORMS[
+    isWorkStateBatchEnabled(loadFromFileOnce().CLAUDE_MEM_WORK_STATE_BATCH_ENABLED) ? 'true' : 'false'
+  ];
   const toolInstructions = mcpServerInstructions({
     runtime: selectRuntime(),
     workStateEnabled: workStateRuleIncluded,
@@ -1260,17 +1331,22 @@ function createMcpServer(getCwd?: CwdResolver): Server {
       teamBrainJoined(),
     );
     return {
-      tools: advertisedTools.map(tool => ({
-        name: tool.name,
-        description: tool.description,
-        inputSchema: tool.inputSchema,
-        annotations: tool.annotations
-      }))
+      tools: advertisedTools.map(advertised => {
+        const tool = advertised.name === 'work_state_write' ? workStateWriteForm : advertised;
+        return {
+          name: tool.name,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+          annotations: tool.annotations
+        };
+      })
     };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-    const tool = tools.find(t => t.name === request.params.name);
+    const tool = request.params.name === 'work_state_write'
+      ? workStateWriteForm
+      : tools.find(t => t.name === request.params.name);
 
     if (!tool) {
       throw new Error(`Unknown tool: ${request.params.name}`);
