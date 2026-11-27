@@ -250,6 +250,7 @@ The installer handles dependencies, plugin setup, AI provider configuration, wor
 - **[Usage Guide](https://docs.claude-mem.ai/usage/getting-started)** - How Claude-Mem works automatically
 - **[Search Tools](https://docs.claude-mem.ai/usage/search-tools)** - Query your project history with natural language
 - **[Cloud Sync](https://docs.claude-mem.ai/cloud-sync)** - Back up your memory to cmem.ai — no daemon, the worker syncs on write
+  - Already on CMEM Pro (paid, trial or complimentary) or a TeamBrain seat, but this computer has no Pro settings yet? Choose Cloud Sync in setup: it connects through your plan and keeps your current memory provider.
 
 ### Best Practices
 
