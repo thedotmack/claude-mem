@@ -332,6 +332,9 @@ export function observerCredentialOf(spawnEnv: Record<string, string | undefined
   return 'subscription';
 }
 
+/** Model name the Claude Code CLI puts on assistant messages it writes itself, such as an API error notice. */
+const SYNTHETIC_ASSISTANT_MODEL = '<synthetic>';
+
 export class ClaudeProvider {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -1182,6 +1185,9 @@ export class ClaudeProvider {
       let completed = false;
       for await (const message of result) {
         if (message.type === 'assistant') {
+          // The CLI's own notices come as assistant messages from the '<synthetic>'
+          // model. They are never model text: not condensed text, not a wrap-up.
+          if ((message as any).message.model === SYNTHETIC_ASSISTANT_MODEL) continue;
           const content = (message as any).message.content;
           out += Array.isArray(content)
             ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
