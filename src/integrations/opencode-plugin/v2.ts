@@ -432,6 +432,18 @@ export function enrichValidationError(event: V2ToolExecuteAfterEvent, rawNames: 
   const kept = ranked.slice(0, 3);
 
   const lines: string[] = [];
+  // Guidance comes from literal schema fields only; a direct call needs no
+  // raw-name claim. The primary key is the first kept issue or the raw name.
+  // It goes first: the single truncation bound must never cut the most
+  // actionable instruction after a long list of issues.
+  const primary = kept[0]?.path ?? rawNames.find((name) => typeof name === "string");
+  if (tool && primary) {
+    const [entry] = guidanceForPaths(schema, [primary]);
+    if (entry?.type) {
+      lines.push(`Reissue ${tool} with ${entry.key}: ${entry.type}${entry.description ? ` — ${entry.description}` : ""}`);
+    }
+  }
+
   for (const issue of kept) {
     const hint = hintForPath(schema, issue.path);
     lines.push(`- ${issue.path}: ${issue.message}${hint ? ` (${hint})` : ""}`);
@@ -467,20 +479,16 @@ export function enrichValidationError(event: V2ToolExecuteAfterEvent, rawNames: 
   const raw = renderKeyList(rawNames);
   if (raw) lines.push(`Raw keys from execute: ${raw}`);
 
-  // Guidance comes from literal schema fields only; a direct call needs no
-  // raw-name claim. The primary key is the first kept issue or the raw name.
-  const primary = kept[0]?.path ?? rawNames.find((name) => typeof name === "string");
-  if (tool && primary) {
-    const [entry] = guidanceForPaths(schema, [primary]);
-    if (entry?.type) {
-      lines.push(`Reissue ${tool} with ${entry.key}: ${entry.type}${entry.description ? ` — ${entry.description}` : ""}`);
-    }
-  }
-
   if (lines.length === 0) return false;
   // One emission bound; the host's prefix stays untouched and ours goes last.
-  error.message = original + `\n${lines.join("\n")}`.slice(0, MAX_ENRICHMENT_CHARS);
-  return true;
+  const addition = `\n${lines.join("\n")}`.slice(0, MAX_ENRICHMENT_CHARS);
+  try {
+    error.message = original + addition;
+    return true;
+  } catch {
+    // A frozen or accessor-backed host error must not throw out of the hook.
+    return false;
+  }
 }
 
 /**
@@ -597,10 +605,13 @@ export async function setupV2(
       registrations.push(await hook("execute.before", async (event: V2ToolExecuteBeforeEvent) => {
         if (!event?.sessionID) return;
         // Only the outer `execute` call carries the script. Deposit names here;
-        // never enrich or mutate the event at this hook.
-        const code = (event.input as Record<string, unknown> | undefined)?.code;
-        if (typeof code === "string") {
-          rememberRawNames(event.sessionID, event.agent ?? "", extractRawKeyNames(code));
+        // never enrich or mutate the event at this hook. Another tool's `code`
+        // (a shell command grepping source, for instance) is not a script.
+        if (event.tool === "execute") {
+          const code = (event.input as Record<string, unknown> | undefined)?.code;
+          if (typeof code === "string") {
+            rememberRawNames(event.sessionID, event.agent ?? "", extractRawKeyNames(code));
+          }
         }
         const named = event.info?.name ?? event.tool;
         if (!isClaudeMemTool(event.tool) && !WORK_STATE_WRITE_TOOL.test(named ?? "")) return;
@@ -800,13 +811,17 @@ export async function setupV2(
         core.forgetSession(sessionID);
         return;
       case "session.text.ended":
+        // A turn has several text.ended events and one can precede the nested
+        // after, so this is not a safe place to purge pending raw names.
         if (replyBySessionId.has(sessionID) && typeof event.data?.text === "string") {
           replyBySessionId.set(sessionID, event.data.text);
         }
         return;
-      // V1's session.idle: the turn finished.
+      // V1's session.idle: the turn (or compaction) finished. The nested after
+      // precedes execution.succeeded, so a name still here has no consumer.
       case "session.execution.succeeded":
       case "session.compaction.ended":
+        forgetRawNames(sessionID);
         if (replyBySessionId.has(sessionID)) summarize(sessionID);
         return;
       default:

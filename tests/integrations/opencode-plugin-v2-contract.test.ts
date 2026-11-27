@@ -1200,6 +1200,51 @@ describe("OpenCode V2 raw keys from the execute script", () => {
     await host.call("tool.execute.after", nestedEvent(error));
     expect(error.message).toBe("after delete");
   });
+
+  it("forgets an unconsumed entry at the end of the turn", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", outerBefore(
+      'if (false) tools["claude-mem"].work_state_write({items:1})',
+    ));
+    host.stream.send(busEvent("session.execution.succeeded", sessionID, {}, null));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const error = { message: "direct failure after the turn" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toBe("direct failure after the turn");
+  });
+
+  it("forgets an unconsumed entry when compaction ends", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", outerBefore('tools["claude-mem"].work_state_write({items:1})'));
+    host.stream.send(busEvent("session.compaction.ended", sessionID, {}, null));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const error = { message: "direct failure after compaction" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toBe("direct failure after compaction");
+  });
+
+  it("does not purge at a text.ended that precedes the nested after", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", outerBefore('tools["claude-mem"].work_state_write({items:1})'));
+    host.stream.send(busEvent("session.text.ended", sessionID, { text: "tool call coming" }, null));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const error = { message: "Invalid arguments" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toContain("items");
+  });
+
+  it("never deposits names from a non-execute tool's code", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", {
+      tool: "shell",
+      sessionID,
+      agent,
+      input: { code: 'grep -R \'tools["claude-mem"].work_state_write({list,items})\' src/' },
+    });
+    const error = { message: "Invalid arguments" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toBe("Invalid arguments");
+  });
 });
 
 /**
@@ -1346,6 +1391,13 @@ describe("OpenCode V2 validation issues enrichment", () => {
     expect(wrapped.error).toBe(error);
   });
 
+  it("does not throw when the host error cannot be mutated", () => {
+    const original = hostMessage(["- fields: Missing key"], { list: "x" });
+    const error = Object.freeze({ message: original });
+    expect(enrichValidationError(event(original, error), [])).toBe(false);
+    expect(error.message).toBe(original);
+  });
+
   it("prioritizes a missing root key and root value errors over nested paths, then the host counter", () => {
     const nestedSchema = {
       type: "object",
@@ -1392,6 +1444,7 @@ describe("OpenCode V2 validation issues enrichment", () => {
     const wideSchema = { type: "object", properties: { fields: { type: "object", description: long } } };
     const original = [
       'Invalid arguments for tool "work_state_write":',
+      "- fields: Missing key",
       ...Array.from({ length: 5 }, (_, index) => `- field${index}: ${long}`),
       "- ...and 2 more issues",
       "",
@@ -1404,6 +1457,7 @@ describe("OpenCode V2 validation issues enrichment", () => {
     expect(enrichValidationError(event(original, error, wideSchema), ["alpha", "beta", "gamma"])).toBe(true);
     const added = error.message.slice(original.length);
     expect(added.length).toBeLessThanOrEqual(MAX_ENRICHMENT_CHARS);
+    expect(added.slice(1).startsWith("Reissue work_state_write with fields: object")).toBe(true);
     expect(added).not.toContain("do-not-log");
   });
 });
