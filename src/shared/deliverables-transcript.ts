@@ -1,6 +1,7 @@
 import { existsSync } from 'fs';
 import { readTranscriptTail } from './advisor-transcript.js';
 import { stripMemoryTags, stripSystemReminderBlocks } from '../utils/tag-stripping.js';
+import { WORK_STATE_WRITE_TOOL } from './work-state-tool.js';
 
 /**
  * What a Claude Code transcript says the agent made this turn: the files its
@@ -26,9 +27,6 @@ export const DELIVERABLE_SCAN_TAIL_BYTES = 2 * 1024 * 1024;
 
 /** Tools whose call names the file they wrote: `file_path` (Write, Edit, MultiEdit) or `notebook_path` (NotebookEdit). */
 const FILE_WRITING_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
-/** claude-mem's own tool, however the host prefixes it (mcp__plugin_claude-mem_mcp-search__work_state_write). */
-const WORK_STATE_WRITE_TOOL = /(?:^|__)work_state_write$/;
-
 export interface TranscriptFileWrite {
   path: string;
   toolName: string;

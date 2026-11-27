@@ -12,7 +12,7 @@ import { expectSafeMcpToolNames } from './mcp-tool-name-assertions.js';
 
 const mcpServerPath = fileURLToPath(new URL('../../src/servers/mcp-server.ts', import.meta.url));
 
-type ListedTool = { name: string; inputSchema: { properties?: Record<string, unknown>; required?: string[] } };
+type ListedTool = { name: string; description?: string; inputSchema: { properties?: Record<string, unknown>; required?: string[] } };
 
 /** tools/list and a work_state round trip from the real stdio server, against a stub worker. */
 async function withServer(
@@ -123,6 +123,12 @@ describe('MCP tool inputSchema declarations', () => {
   it('observation_context requires nothing, so an omitted query asks for recent context (#2991)', () => {
     expect(tools.has('observation_context')).toBe(true);
     expect(required('observation_context')).toEqual([]);
+  });
+
+  it('work_state_write description states one call per entry and fields as scalar values, not tasks', () => {
+    const description = tools.get('work_state_write')?.description ?? '';
+    expect(description).toContain('one call per entry');
+    expect(description).toContain('fields is an object of scalar values, not an array of tasks');
   });
 });
 

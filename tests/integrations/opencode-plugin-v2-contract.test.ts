@@ -1,11 +1,15 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
   setupV2,
   extractResultText,
+  extractRawKeyNames,
+  enrichValidationError,
   type OpenCodePluginContextV2,
   type V2BusEvent,
+  type V2ToolExecuteAfterEvent,
 } from "../../src/integrations/opencode-plugin/v2";
+import { MAX_ENRICHMENT_CHARS } from "../../src/integrations/opencode-plugin/tool-call-guidance";
 import {
   REGISTERED_OPENCODE_V2_HOOKS,
   REAL_OPENCODE_V2_EVENT_TYPES,
@@ -123,20 +127,30 @@ function createV2Context(
   ctx: OpenCodePluginContextV2;
   hooks: RegisteredHook[];
   tools: Array<Record<string, unknown>>;
+  hookCallbacks: Map<string, (event: any) => Promise<void>>;
   disposeCount: () => number;
 } {
   const hooks: RegisteredHook[] = [];
   const tools: Array<Record<string, unknown>> = [];
+  const hookCallbacks = new Map<string, (event: any) => Promise<void>>();
   let disposed = 0;
 
   const ctx: OpenCodePluginContextV2 = {
     directory: "/tmp/x",
     client: {},
     tool: {
-      hook: async (name, _callback) => {
+      hook: async (name, callback) => {
         hooks.push({ domain: "tool", name });
+        hookCallbacks.set(`tool.${name}`, callback as (event: any) => Promise<void>);
         return { dispose: async () => { disposed++; } };
       },
+      // The host exposes its tool catalog here. The default entry reproduces
+      // the real work_state_write schema so a Code Mode call without `info`
+      // can still be matched by the execute.before fallback.
+      list: async () => [
+        { id: "claude-mem_work_state_write", name: "work_state_write",
+          input: { type: "object", required: ["list", "fields"] } },
+      ],
       transform: async (callback) => {
         hooks.push({ domain: "tool", name: "transform" });
         callback({
@@ -146,8 +160,9 @@ function createV2Context(
       },
     },
     session: {
-      hook: async (name, _callback) => {
+      hook: async (name, callback) => {
         hooks.push({ domain: "session", name });
+        hookCallbacks.set(`session.${name}`, callback as (event: any) => Promise<void>);
         return { dispose: async () => { disposed++; } };
       },
     },
@@ -161,7 +176,7 @@ function createV2Context(
     ...overrides,
   };
 
-  return { ctx, hooks, tools, disposeCount: () => disposed };
+  return { ctx, hooks, tools, hookCallbacks, disposeCount: () => disposed };
 }
 
 describe("OpenCode V2 hook registration", () => {
@@ -212,17 +227,218 @@ describe("OpenCode V2 hook registration", () => {
     expect(typeof tool.execute).toBe("function");
   });
 
+  it("registers execute.before without losing the other V2 hooks", async () => {
+    const { ctx, hooks } = createV2Context();
+    await setupV2(ctx);
+    expect(hooks.map(h => `${h.domain}.${h.name}`)).toContain("tool.execute.before");
+    expect(hooks.map(h => `${h.domain}.${h.name}`)).toContain("tool.execute.after");
+    expect(REGISTERED_OPENCODE_V2_HOOKS).toEqual(expect.arrayContaining([
+      { domain: "tool", hook: "execute.before" },
+    ]));
+  });
+
+  it("keeps every other hook when the host rejects execute.before", async () => {
+    const { ctx, hooks } = createV2Context();
+    ctx.tool!.hook = (async (name: string, callback: any) => {
+      if (name === "execute.before") throw new Error("unsupported hook");
+      hooks.push({ domain: "tool", name });
+      return { dispose: async () => {} };
+    }) as any;
+    const cleanup = await setupV2(ctx);
+    expect(hooks.map(h => `${h.domain}.${h.name}`)).toContain("session.context");
+    expect(hooks.map(h => `${h.domain}.${h.name}`)).not.toContain("tool.execute.before");
+    await cleanup();
+  });
+
+  it("warns with key names only and posts nothing to the worker", async () => {
+    const warn = spyOn(console, "warn");
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response("{}", { status: 200 }));
+    const { ctx, hookCallbacks } = createV2Context();
+    await setupV2(ctx);
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "claude-mem_work_state_write", sessionID: "s1", agent: "primary",
+      info: { name: "work_state_write", description: "write work state", input: { type: "object", required: ["list", "fields"] } },
+      input: { list: "plans", secret: "do-not-log" },
+    });
+    const line = warn.mock.calls.flat().join(" ");
+    expect(line).toContain("claude-mem_work_state_write");
+    expect(line).toContain("fields");
+    expect(line).not.toContain("do-not-log");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    warn.mockRestore();
+    fetchSpy.mockRestore();
+  });
+
+  it("stays silent on a call whose required keys are present", async () => {
+    const warn = spyOn(console, "warn");
+    const { ctx, hookCallbacks } = createV2Context();
+    await setupV2(ctx);
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "claude-mem_work_state_write", sessionID: "s1", agent: "primary",
+      info: { name: "work_state_write", input: { type: "object", required: ["list", "fields"] } },
+      input: { list: "plans", fields: { task: "x" } },
+    });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("ignores tools that do not belong to claude-mem", async () => {
+    const warn = spyOn(console, "warn");
+    const { ctx, hookCallbacks } = createV2Context();
+    await setupV2(ctx);
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "shell", sessionID: "s1", agent: "primary", input: {},
+    });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("finds the schema in the catalog when a Code Mode call has no info", async () => {
+    const warn = spyOn(console, "warn");
+    const { ctx, hookCallbacks } = createV2Context();
+    // Un outil absent du catalogue factice par défaut : sans ce repli, aucune clé ne serait nommée.
+    ctx.tool!.list = async () => [{
+      id: "claude-mem_observation_add", name: "observation_add",
+      input: { type: "object", required: ["content"] },
+    }] as any;
+    await setupV2(ctx);
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "claude-mem.observation_add", sessionID: "s1", agent: "primary",
+      input: { list: "plans" },
+    });
+    expect(warn.mock.calls.flat().join(" ")).toContain("content");
+    warn.mockRestore();
+  });
+
+  it("matches a catalog entry that only has a bare tool id", async () => {
+    const warn = spyOn(console, "warn");
+    const { ctx, hookCallbacks } = createV2Context();
+    ctx.tool!.list = async () => [{
+      id: "work_state_write",
+      input: { type: "object", required: ["fields"] },
+    }] as any;
+    await setupV2(ctx);
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "work_state_write", sessionID: "s1", agent: "primary", input: { list: "plans" },
+    });
+    const warning = warn.mock.calls.flat().join(" ");
+    warn.mockRestore();
+    expect(warning).toContain("fields");
+  });
+
+  it("does not read the catalog when info.input supplies the schema", async () => {
+    const warn = spyOn(console, "warn");
+    let listCalls = 0;
+    const { ctx, hookCallbacks } = createV2Context();
+    ctx.tool!.list = async () => {
+      listCalls++;
+      return [{ id: "claude-mem_work_state_write", input: { type: "object", required: ["never"] } }] as any;
+    };
+    await setupV2(ctx);
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "claude-mem_work_state_write", sessionID: "s1-schema", agent: "primary",
+      info: { name: "work_state_write", input: { type: "object", required: ["list", "fields"] } },
+      input: { list: "plans" },
+    });
+    const warning = warn.mock.calls.flat().join(" ");
+    warn.mockRestore();
+    // The schema from info is the only one that drives the warning.
+    expect(listCalls).toBe(0);
+    expect(warning).toContain("fields");
+    expect(warning).not.toContain("never");
+  });
+
+  it("recognises an opaque tool by info.name but ignores an unrelated info.name", async () => {
+    const warn = spyOn(console, "warn");
+    const { ctx, hookCallbacks } = createV2Context();
+    await setupV2(ctx);
+    // An opaque host tool name: only info.name identifies it as work_state_write.
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "external-host-tool", sessionID: "s1", agent: "primary",
+      info: { name: "work_state_write", input: { type: "object", required: ["fields"] } },
+      input: { list: "plans" },
+    });
+    const warning = warn.mock.calls.flat().join(" ");
+    warn.mockClear();
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "execute", sessionID: "s1", agent: "primary",
+      info: { name: "execute", input: { type: "object", required: ["fields"] } },
+      input: { list: "plans" },
+    });
+    const unrelated = warn.mock.calls.flat().join(" ");
+    warn.mockRestore();
+    expect(warning).toContain("missing=fields");
+    expect(unrelated).toBe("");
+  });
+
+  it("includes a bounded, value-free schema hint in the pre-validation warning", async () => {
+    const warn = spyOn(console, "warn");
+    const { ctx, hookCallbacks } = createV2Context();
+    ctx.tool!.list = async () => [{
+      id: "claude-mem_work_state_write",
+      input: {
+        type: "object",
+        required: ["list"],
+        properties: {
+          list: {
+            type: "array",
+            description: "A very long description that must be cut down to the schema guidance bound because the trace must stay short and single line",
+            enum: ["one", "two", "three"],
+            format: "csv",
+            minItems: 1,
+            maxItems: 99,
+            items: { type: "string" },
+          },
+        },
+      },
+    }] as any;
+    await setupV2(ctx);
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "claude-mem_work_state_write", sessionID: "s1-hint", agent: "primary",
+      input: { unrelated: "plans-do-not-log" },
+    });
+    const line = warn.mock.calls.flat().join(" ");
+    warn.mockRestore();
+    const hint = line.split(" hint=")[1] ?? "";
+    expect(line).toContain("missing=list");
+    expect(hint).toContain("array");
+    expect(hint).toContain("minItems: 1");
+    expect(hint.length).toBeLessThanOrEqual(200);
+    expect(hint).not.toContain("\n");
+    expect(line).not.toContain("plans-do-not-log");
+  });
+
+  it("omits the hint when the schema has no shape for the missing key", async () => {
+    const warn = spyOn(console, "warn");
+    const { ctx, hookCallbacks } = createV2Context();
+    ctx.tool!.list = async () => [{
+      id: "claude-mem_work_state_write",
+      input: { type: "object", required: ["mystery"] },
+    }] as any;
+    await setupV2(ctx);
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "claude-mem_work_state_write", sessionID: "s1-nohint", agent: "primary",
+      input: { unrelated: "secret-do-not-log" },
+    });
+    const line = warn.mock.calls.flat().join(" ");
+    warn.mockRestore();
+    expect(line).toContain("missing=mystery");
+    expect(line).not.toContain("hint=");
+    expect(line).not.toContain("secret-do-not-log");
+  });
+
   it("disposes every registration and stops the event stream on cleanup", async () => {
     const { ctx, disposeCount } = createV2Context();
     const cleanup = await setupV2(ctx);
 
-    // 4 hook registrations + 1 tool transform; the event stream is not a
+    // 5 hook registrations + 1 tool transform; the event stream is not a
     // registration but is aborted by the same cleanup. Nothing is disposed
     // until cleanup runs.
     expect(disposeCount()).toBe(0);
 
     await cleanup();
-    expect(disposeCount()).toBe(5);
+    expect(disposeCount()).toBe(6);
   });
 });
 
@@ -590,8 +806,8 @@ describe("OpenCode V2 setup failure", () => {
       },
       session: {
         hook: (name: string) => {
-          // The first session registration (prompt) fails after the tool hook
-          // was already registered.
+          // The first session registration (prompt) fails after both tool
+          // hooks (execute.before and execute.after) were registered.
           if (name === "prompt") {
             if (failure === "throw") throw new Error("hook rejected");
             return Promise.reject(new Error("hook rejected"));
@@ -609,8 +825,10 @@ describe("OpenCode V2 setup failure", () => {
     it(`disposes the registrations made before a later one fails (${failure})`, async () => {
       const host = failingHost(failure);
       await expect(setupV2(host.ctx)).rejects.toThrow("hook rejected");
-      expect(host.registered()).toBe(1);
-      expect(host.disposed()).toBe(1);
+      // Both tool registrations precede the failing prompt hook, and both are
+      // disposed by register()'s rollback.
+      expect(host.registered()).toBe(2);
+      expect(host.disposed()).toBe(2);
       // Setup failed before it opened the event stream.
       expect(host.stream.subscriptions).toBe(0);
     });
@@ -858,5 +1076,551 @@ describe("OpenCode V2 setup with a context that is not a plugin context", () => 
     expect(warnings).toEqual([]);
     expect(registered).toBe(0);
     expect(worker.requests).toEqual([]);
+  });
+});
+
+/**
+ * Raw keys of a Code Mode call are visible only on the outer `execute.before`
+ * (`inputKeys:["code"]`), while the error the model sees is the nested
+ * `execute.after` (`status:"error"`, `event.error.message`). The outer
+ * `execute.after` is `status:"completed"` without an error and runs last, so
+ * it can neither read nor enrich anything.
+ */
+describe("OpenCode V2 raw keys from the execute script", () => {
+  let worker: ReturnType<typeof recordWorkerRequests>;
+  let cleanup: () => Promise<void>;
+
+  beforeEach(() => {
+    worker = recordWorkerRequests();
+    cleanup = async () => {};
+  });
+
+  afterEach(async () => {
+    await cleanup();
+    worker.restore();
+  });
+
+  async function start() {
+    const host = createV2Host();
+    cleanup = await setupV2(host.ctx);
+    return host;
+  }
+
+  const sessionID = "ses_raw_keys";
+  const agent = "primary";
+
+  function outerBefore(code: string, input: Record<string, unknown> = { code }) {
+    return { tool: "execute", sessionID, agent, input };
+  }
+
+  function nestedEvent(
+    error: { message: string },
+    tool = "claude-mem_work_state_write",
+  ) {
+    return { tool, sessionID, agent, status: "error", error, input: { list: "x" } };
+  }
+
+  describe("literal extraction", () => {
+    it("reads top-level names only from recognized literal calls", () => {
+      const code = 'await tools["claude-mem"].work_state_write({list:"x", items:[1], "fields":{task:"y"}});';
+      expect(extractRawKeyNames(code)).toEqual(["fields", "items", "list"]);
+    });
+
+    it("names another claude-mem tool's real keys, without a hard-coded list", () => {
+      const code = 'tools["claude-mem"].observation_add({content:"x", secret:"do-not-log"});';
+      // `secret` is a key *name* here; the value `do-not-log` is never returned.
+      expect(extractRawKeyNames(code)).toEqual(["content", "secret"]);
+    });
+
+    it("ignores dynamic inputs, computed keys, unrelated tools and oversized scripts", () => {
+      expect(extractRawKeyNames('const input = {items:1}; tools["claude-mem"].work_state_write(input);')).toEqual([]);
+      expect(extractRawKeyNames('tools["claude-mem"].work_state_write({[key]:1});')).toEqual([]);
+      expect(extractRawKeyNames('shell({items:1});')).toEqual([]);
+      expect(extractRawKeyNames(`tools["claude-mem"].work_state_write({items:1});${" ".repeat(8 * 1024)}`)).toEqual([]);
+    });
+
+    it("ignores a literal call written in a line comment", () => {
+      const code = [
+        '// tools["claude-mem"].work_state_write({commented:1});',
+        'const input = {real:1}; tools["claude-mem"].work_state_write(input);',
+      ].join("\n");
+      expect(extractRawKeyNames(code)).toEqual([]);
+    });
+
+    it("ignores a literal call written in a string", () => {
+      const code = `const note = 'tools["claude-mem"].work_state_write({quoted:1})'; const input = {real:1}; tools["claude-mem"].work_state_write(input);`;
+      expect(extractRawKeyNames(code)).toEqual([]);
+    });
+
+    it("ignores a literal call written in a block comment or a plain template", () => {
+      expect(extractRawKeyNames('/* tools["claude-mem"].work_state_write({blocked:1}) */ const input = {}; tools["claude-mem"].work_state_write(input);')).toEqual([]);
+      expect(extractRawKeyNames('`tools["claude-mem"].work_state_write({templated:1})`')).toEqual([]);
+    });
+
+    it("keeps a real call inside a template interpolation", () => {
+      const code = '`prefix ${tools["claude-mem"].work_state_write({interpolated:1})}`';
+      expect(extractRawKeyNames(code)).toEqual(["interpolated"]);
+    });
+
+    it("keeps a real call after a regex containing quotes", () => {
+      const code = `const pattern = /['"]/; tools["claude-mem"].work_state_write({items:1});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
+
+    it("keeps a real call after a regex with a slash inside a character class", () => {
+      const code = `const pattern = /[a/b]/; tools["claude-mem"].work_state_write({items:2});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
+
+    it("keeps a real call after a regex with an escaped slash", () => {
+      const code = String.raw`const pattern = /a\/b/; tools["claude-mem"].work_state_write({items:3});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
+
+    it("treats a division as code, not as the start of a regex", () => {
+      const code = `const ratio = width / height; tools["claude-mem"].work_state_write({items:4});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
+
+    it("ignores a pseudo-call written inside a regex literal", () => {
+      const code = `const pattern = /tools["claude-mem"].work_state_write({list:1})/; const input = {real:1}; tools["claude-mem"].work_state_write(input);`;
+      expect(extractRawKeyNames(code)).toEqual([]);
+    });
+
+    it("keeps a real call after a regex introduced by if (...)", () => {
+      const code = `if (flag) /['"]/.test(s); tools["claude-mem"].work_state_write({items:1});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
+
+    it("keeps a real call after a regex introduced by while (...)", () => {
+      const code = `while (flag) /['"]/.test(s); tools["claude-mem"].work_state_write({items:2});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
+
+    it("keeps a division after a parenthesized calculation", () => {
+      const code = `const ratio = (a + b) / c; tools["claude-mem"].work_state_write({items:3});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
+
+    it("keeps a division after a call", () => {
+      const code = `const ratio = foo() / 2; tools["claude-mem"].work_state_write({items:4});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
+
+    it("ignores a pseudo-call in a regex introduced by if (...)", () => {
+      const code = `if (flag) /tools["claude-mem"].work_state_write({list:1})/.test(s); const input = {real:1}; tools["claude-mem"].work_state_write(input);`;
+      expect(extractRawKeyNames(code)).toEqual([]);
+    });
+
+    it("keeps a real call after a regex when the if header holds a literal close paren in a string", () => {
+      const code = `if (s === ")") /['"]/.test(s); tools["claude-mem"].work_state_write({items:1});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
+
+    it("keeps a real call after a regex when the if header holds a close paren in a comment", () => {
+      const code = `if (flag /* ) */) /['"]/.test(s); tools["claude-mem"].work_state_write({items:2});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
+  });
+
+  it("names the raw key at the nested after, never the value, and captures the original error first", async () => {
+    const host = await start();
+    const error = { message: "Invalid arguments for tool: unexpected key" };
+    const warn = spyOn(console, "warn");
+
+    await host.call("tool.execute.before", outerBefore(
+      'tools["claude-mem"].work_state_write({list:"x", items:[{secret:"do-not-log"}]})',
+    ));
+    await host.call("tool.execute.after", nestedEvent(error));
+
+    const warning = warn.mock.calls.flat().join(" ");
+    warn.mockRestore();
+    expect(error.message).toContain("items");
+    expect(error.message).not.toContain("do-not-log");
+    expect(warning).not.toContain("do-not-log");
+    // The observation keeps the message the host gave us before enrichment.
+    expect(worker.to("/api/sessions/observations")[0].body!.tool_response).toEqual({
+      is_error: true,
+      error: "Invalid arguments for tool: unexpected key",
+    });
+  });
+
+  it("adds no name for a non-literal script", async () => {
+    const host = await start();
+    const code = 'const payload = {items:1}; tools["claude-mem"].work_state_write(payload);';
+    await host.call("tool.execute.before", outerBefore(code));
+    const error = { message: "Invalid arguments" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toBe("Invalid arguments");
+  });
+
+  it("merges names from several offending calls and bounds the merged list to three", async () => {
+    const host = await start();
+    const code = [
+      'await tools["claude-mem"].work_state_write({list:"x", zeta:1});',
+      'await tools["claude-mem"].work_state_write({list:"x", beta:2});',
+      'await tools["claude-mem"].work_state_write({list:"x", alpha:3, gamma:4});',
+    ].join("\n");
+    await host.call("tool.execute.before", outerBefore(code));
+    const error = { message: "Invalid arguments" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    for (const name of ["alpha", "beta", "gamma"]) expect(error.message).toContain(name);
+    expect(error.message).not.toContain("zeta");
+  });
+
+  it("names the real key of another claude-mem tool from its own script", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", outerBefore(
+      'tools["claude-mem"].observation_add({content:"x", secret:"do-not-log"})',
+    ));
+    const error = { message: "Invalid arguments" };
+    await host.call("tool.execute.after", nestedEvent(error, "claude-mem_observation_add"));
+    expect(error.message).toContain("content");
+    // The second literal key is named too; only its *value* stays out.
+    expect(error.message).toContain("secret");
+    expect(error.message).not.toContain("do-not-log");
+  });
+
+  it("runs before -> nested error after -> outer completed after, and consumes the entry once", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", outerBefore('tools["claude-mem"].work_state_write({items:1})'));
+
+    const error = { message: "nested failure" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    const afterNested = error.message;
+    expect(afterNested).toContain("items");
+
+    // The outer execute.after is status:"completed" and must not enrich.
+    const outerResult = { content: [{ type: "text", text: "done" }] };
+    await host.call("tool.execute.after", {
+      tool: "execute", sessionID, agent, status: "completed", result: outerResult,
+    });
+    expect(error.message).toBe(afterNested);
+    expect(outerResult.content[0].text).toBe("done");
+
+    // No stale entry survives the nested after: a later direct call is untouched.
+    const later = { message: "direct failure" };
+    await host.call("tool.execute.after", nestedEvent(later));
+    expect(later.message).toBe("direct failure");
+  });
+
+  it("drops a previous script's names when the next script yields none", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", outerBefore('tools["claude-mem"].work_state_write({first:1})'));
+    await host.call("tool.execute.before", outerBefore(
+      'const input = {second:1}; tools["claude-mem"].work_state_write(input);',
+    ));
+    const error = { message: "Invalid arguments" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toBe("Invalid arguments");
+    expect(error.message).not.toContain("first");
+  });
+
+  it("purges an unconsumed entry when the outer execute finishes", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", outerBefore('tools["claude-mem"].work_state_write({items:1})'));
+    await host.call("tool.execute.after", {
+      tool: "execute", sessionID, agent, status: "completed",
+      result: { content: [{ type: "text", text: "done" }] },
+    });
+    const error = { message: "later failure" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toBe("later failure");
+  });
+
+  it("purges an unconsumed entry on a completed nested claude-mem after", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", outerBefore('tools["claude-mem"].work_state_write({items:1})'));
+    await host.call("tool.execute.after", {
+      tool: "claude-mem_work_state_write", sessionID, agent, status: "completed",
+      result: { content: [] },
+    });
+    const error = { message: "later failure" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toBe("later failure");
+  });
+
+  it("never sources names from session.tool.called", async () => {
+    const host = await start();
+    host.stream.send({
+      type: "session.tool.called",
+      data: { sessionID, agent, input: { items: 1 } },
+      location: { directory: "/work/project" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const error = { message: "bus-only failure" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toBe("bus-only failure");
+    expect(readFileSync("src/integrations/opencode-plugin/v2.ts", "utf8")).not.toContain("session.tool.called");
+  });
+
+  it("clears a pending entry when the session is deleted", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", outerBefore('tools["claude-mem"].work_state_write({items:1})'));
+    host.stream.send(busEvent("session.deleted", sessionID, {}, null));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const error = { message: "after delete" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toBe("after delete");
+  });
+
+  it("forgets an unconsumed entry at the end of the turn", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", outerBefore(
+      'if (false) tools["claude-mem"].work_state_write({items:1})',
+    ));
+    host.stream.send(busEvent("session.execution.succeeded", sessionID, {}, null));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const error = { message: "direct failure after the turn" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toBe("direct failure after the turn");
+  });
+
+  it("forgets an unconsumed entry when compaction ends", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", outerBefore('tools["claude-mem"].work_state_write({items:1})'));
+    host.stream.send(busEvent("session.compaction.ended", sessionID, {}, null));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const error = { message: "direct failure after compaction" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toBe("direct failure after compaction");
+  });
+
+  it("does not purge at a text.ended that precedes the nested after", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", outerBefore('tools["claude-mem"].work_state_write({items:1})'));
+    host.stream.send(busEvent("session.text.ended", sessionID, { text: "tool call coming" }, null));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const error = { message: "Invalid arguments" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toContain("items");
+  });
+
+  it("never deposits names from a non-execute tool's code", async () => {
+    const host = await start();
+    await host.call("tool.execute.before", {
+      tool: "shell",
+      sessionID,
+      agent,
+      input: { code: 'grep -R \'tools["claude-mem"].work_state_write({list,items})\' src/' },
+    });
+    const error = { message: "Invalid arguments" };
+    await host.call("tool.execute.after", nestedEvent(error));
+    expect(error.message).toBe("Invalid arguments");
+  });
+});
+
+/**
+ * Same-turn enrichment of the error the model sees. The host's validation
+ * message is the only source of issue paths; the tool schema supplies literal
+ * shape guidance. No value is logged or fabricated, and the host's error
+ * object is mutated in place after the observation has been captured.
+ */
+describe("OpenCode V2 validation issues enrichment", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      fields: { type: "object", description: 'Keys to set. Include "task" to update a to-do item.' },
+      status: { type: "string", description: "Current state", enum: ["todo", "done"] },
+      list: { type: "string", description: "List name" },
+    },
+    required: ["fields", "status"],
+  };
+
+  function hostMessage(details: string[], provided: unknown): string {
+    return [
+      'Invalid arguments for tool "work_state_write":',
+      ...details,
+      "",
+      "Arguments provided:",
+      JSON.stringify(provided, null, 2),
+      "",
+      "Update the arguments and call the tool again.",
+    ].join("\n");
+  }
+
+  function event(message: string, error?: Record<string, unknown>, inputSchema: unknown = schema): V2ToolExecuteAfterEvent {
+    return {
+      status: "error",
+      tool: "claude-mem_work_state_write",
+      info: { name: "work_state_write", input: inputSchema },
+      input: { list: "x" },
+      error: error ?? { message },
+    } as V2ToolExecuteAfterEvent;
+  }
+
+  it("guides a real host message from its parsed issue path", () => {
+    const original = hostMessage(["- fields: Missing key"], { list: "x" });
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error), [])).toBe(true);
+    expect(error.message).toContain("fields: Missing key");
+    expect(error.message).toContain('object — Keys to set. Include "task" to update a to-do item.');
+    expect(error.message).not.toContain("do-not-log");
+  });
+
+  it("keeps the parsed status path and its literal enum hint", () => {
+    const original = hostMessage(['- status: Invalid option: expected one of "todo"|"done"'], { fields: {} });
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error), [])).toBe(true);
+    expect(error.message).toContain('status: Invalid option: expected one of "todo"|"done"');
+    expect(error.message).toContain("one of: todo, done");
+  });
+
+  it("preserves a nested issue path with its literal schema hint", () => {
+    const nestedSchema = {
+      type: "object",
+      properties: { fields: { type: "object", properties: { task: { type: "string", description: "Task title" } } } },
+    };
+    const original = hostMessage(["- fields.task: Missing key"], { fields: {} });
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error, nestedSchema), [])).toBe(true);
+    expect(error.message).toContain("fields.task: Missing key");
+    expect(error.message).toContain("string — Task title");
+  });
+
+  it("leaves a non-validation error untouched", () => {
+    const original = "permission denied";
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error), [])).toBe(false);
+    expect(error.message).toBe(original);
+  });
+
+  it("names undeclared keys from Arguments provided without their values", () => {
+    const original = hostMessage(["- items: Missing key"], { secret: "do-not-log", extra: 1 });
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error), [])).toBe(true);
+    expect(error.message).toContain("undeclared: extra, secret");
+    expect(error.message.slice(original.length)).not.toContain("do-not-log");
+  });
+
+  it("skips an oversized or malformed Arguments provided block without throwing", () => {
+    const huge = "x".repeat(9 * 1024);
+    const oversized = `Invalid arguments for tool "x":\n- items: Missing key\n\nArguments provided:\n{"secret":"${huge}"}\n\nUpdate the arguments and call the tool again.`;
+    const errorOversized = { message: oversized };
+    expect(() => enrichValidationError(event(oversized, errorOversized), [])).not.toThrow();
+    expect(errorOversized.message.slice(oversized.length)).not.toContain("undeclared:");
+    expect(errorOversized.message.slice(oversized.length)).not.toContain(huge);
+
+    const malformed = 'Invalid arguments for tool "x":\n- items: Missing key\n\nArguments provided:\n{not json\n\nUpdate the arguments and call the tool again.';
+    const errorMalformed = { message: malformed };
+    expect(() => enrichValidationError(event(malformed, errorMalformed), [])).not.toThrow();
+    expect(errorMalformed.message).not.toContain("undeclared:");
+  });
+
+  it("formulates a typed reissue instruction from guidanceForPaths", () => {
+    const original = hostMessage(["- fields: Missing key"], { list: "x" });
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error), [])).toBe(true);
+    expect(error.message).toContain('Reissue work_state_write with fields: object — Keys to set. Include "task" to update a to-do item.');
+  });
+
+  it.each([
+    "<tool-repair>third party prefix</tool-repair>",
+    "[external-agent] unknown prefix",
+  ])("keeps the third-party prefix %s intact and appends ours last", (prefix) => {
+    const original = `${prefix}\n${hostMessage(["- fields: Missing key"], { list: "x" })}`;
+    const error = {
+      _tag: "Tool.Error",
+      message: original,
+      error: { cause: "third-party" },
+      metadata: { source: "third-party" },
+    } as unknown as Record<string, unknown> & { message: string };
+    const wrapped = event(original, error);
+    expect(enrichValidationError(wrapped, ["items"])).toBe(true);
+    expect(error.message.startsWith(prefix)).toBe(true);
+    expect(error.message.indexOf("Raw keys from execute: items")).toBeGreaterThan(error.message.indexOf(prefix));
+    expect(error.message.indexOf("Reissue ")).toBeGreaterThan(error.message.indexOf(prefix));
+    expect((error as { _tag?: string })._tag).toBe("Tool.Error");
+    expect((error as { error?: unknown }).error).toEqual({ cause: "third-party" });
+    expect((error as { metadata?: unknown }).metadata).toEqual({ source: "third-party" });
+    expect(wrapped.error).toBe(error);
+  });
+
+  it("does not enrich a policy refusal carrying <private>", () => {
+    const original = "Permission denied <private>secret</private>";
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error), ["items"])).toBe(false);
+    expect(error.message).toBe(original);
+  });
+
+  it("mutates only the error message, never input, status or the error object", () => {
+    const original = hostMessage(["- fields: Missing key"], { list: "x" });
+    const input = { list: "x" };
+    const error = { message: original };
+    const wrapped = { ...event(original, error), input };
+    expect(enrichValidationError(wrapped, ["items"])).toBe(true);
+    expect(wrapped.input).toBe(input);
+    expect(wrapped.status).toBe("error");
+    expect(wrapped.error).toBe(error);
+  });
+
+  it("does not throw when the host error cannot be mutated", () => {
+    const original = hostMessage(["- fields: Missing key"], { list: "x" });
+    const error = Object.freeze({ message: original });
+    expect(enrichValidationError(event(original, error), [])).toBe(false);
+    expect(error.message).toBe(original);
+  });
+
+  it("prioritizes a missing root key and root value errors over nested paths, then the host counter", () => {
+    const nestedSchema = {
+      type: "object",
+      properties: { fields: { type: "object", properties: { task: { type: "string" } } } },
+    };
+    const original = [
+      'Invalid arguments for tool "work_state_write":',
+      "- fields.task: Missing key",
+      '- status: Invalid option: expected one of "todo"|"done"',
+      "- fields: Missing key",
+      '- list: Invalid option: expected one of "a"|"b"',
+      "- ...and 2 more issues",
+      "",
+      "Arguments provided:",
+      "{}",
+      "",
+      "Update the arguments and call the tool again.",
+    ].join("\n");
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error, nestedSchema), [])).toBe(true);
+    const added = error.message.slice(original.length);
+    const fields = added.indexOf("- fields: Missing key");
+    const status = added.indexOf("- status: Invalid option");
+    const list = added.indexOf("- list: Invalid option");
+    const counter = added.indexOf("- ...and 2 more issues");
+    expect(fields).toBeGreaterThanOrEqual(0);
+    expect(status).toBeGreaterThan(fields);
+    expect(list).toBeGreaterThan(status);
+    expect(counter).toBeGreaterThan(list);
+    // Two root value errors and one missing root key fill the three lines.
+    expect(added).not.toContain("- fields.task: Missing key");
+  });
+
+  it("claims no raw key on a direct call with shape guidance only", () => {
+    const original = hostMessage(["- fields: Missing key"], { list: "x" });
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error), [])).toBe(true);
+    expect(error.message).toContain("fields");
+    expect(error.message).not.toContain("Raw keys from execute:");
+  });
+
+  it("bounds the added text to MAX_ENRICHMENT_CHARS", () => {
+    const long = "x".repeat(500);
+    const wideSchema = { type: "object", properties: { fields: { type: "object", description: long } } };
+    const original = [
+      'Invalid arguments for tool "work_state_write":',
+      "- fields: Missing key",
+      ...Array.from({ length: 5 }, (_, index) => `- field${index}: ${long}`),
+      "- ...and 2 more issues",
+      "",
+      "Arguments provided:",
+      '{"secret":"do-not-log"}',
+      "",
+      "Update the arguments and call the tool again.",
+    ].join("\n");
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error, wideSchema), ["alpha", "beta", "gamma"])).toBe(true);
+    const added = error.message.slice(original.length);
+    expect(added.length).toBeLessThanOrEqual(MAX_ENRICHMENT_CHARS);
+    expect(added.slice(1).startsWith("Reissue work_state_write with fields: object")).toBe(true);
+    expect(added).not.toContain("do-not-log");
   });
 });

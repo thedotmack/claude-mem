@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { setupV2, type V2ToolExecuteAfterEvent } from '../../src/integrations/opencode-plugin/v2.js';
+import { setupV2, type V2ToolExecuteAfterEvent, type V2ToolExecuteBeforeEvent } from '../../src/integrations/opencode-plugin/v2.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import { ingestObservation, setIngestContext } from '../../src/services/worker/http/shared.js';
@@ -16,6 +16,7 @@ describe('OpenCode V2 failed tools through local ingestion', () => {
   let settings: ReturnType<typeof spyOn>;
   let cleanup: () => Promise<void>;
   let capture: (event: V2ToolExecuteAfterEvent) => Promise<void>;
+  let beforeCapture: (event: V2ToolExecuteBeforeEvent) => Promise<void>;
   const originalFetch = globalThis.fetch;
 
   beforeEach(async () => {
@@ -43,7 +44,11 @@ describe('OpenCode V2 failed tools through local ingestion', () => {
       return Response.json(result);
     }) as typeof fetch;
     cleanup = await setupV2({ directory: process.cwd(), tool: {
-      hook: async (_name, callback) => { capture = callback; return { dispose: async () => {} }; },
+      hook: async (name, callback) => {
+        if (name === 'execute.before') beforeCapture = callback as typeof beforeCapture;
+        else capture = callback as typeof capture;
+        return { dispose: async () => {} };
+      },
     } });
   });
 
@@ -75,5 +80,31 @@ describe('OpenCode V2 failed tools through local ingestion', () => {
     const message = manager.getMessageBuffer().claimNextMatching(sessionId, () => true)!;
     expect(extractObservationFileEvidence([message]).files_modified).toEqual(['src/config.ts']);
     expect(JSON.parse(message.tool_response!)).toBe('{"is_error":true}');
+  });
+
+  it('records the original error even when the same turn enriches the message', async () => {
+    const original = [
+      'Invalid arguments for tool "work_state_write":',
+      '- items: Missing key',
+      '',
+      'Arguments provided:',
+      '{"secret":"do-not-log"}',
+      '',
+      'Update the arguments and call the tool again.',
+    ].join('\n');
+    await beforeCapture({ tool: 'execute', sessionID: 'opencode-failure', agent: 'primary',
+      input: { code: 'tools["claude-mem"].work_state_write({items:1})' },
+    });
+    const error = { message: original };
+    await capture({ sessionID: 'opencode-failure', agent: 'primary',
+      tool: 'claude-mem_work_state_write', status: 'error', error, input: { list: 'x' },
+    });
+    // The model sees the enrichment; the observation holds what the host gave us.
+    expect(error.message).not.toBe(original);
+    expect(error.message).toContain('items');
+    expect(error.message.slice(original.length)).not.toContain('do-not-log');
+    const message = manager.getMessageBuffer().claimNextMatching(sessionId, () => true)!;
+    expect(JSON.parse(message.tool_response!)).toEqual({ is_error: true, error: original });
+    expect(extractObservationFileEvidence([message]).files_modified).toEqual([]);
   });
 });
