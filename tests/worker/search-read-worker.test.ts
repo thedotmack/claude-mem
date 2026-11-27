@@ -143,6 +143,17 @@ describe('SearchManager keyword-read delegation', () => {
     expect(result.observations).toEqual([sentinel]);
   });
 
+  it('propagates a later context-reader failure for an export and keeps ordinary search best effort', async () => {
+    const manager = managerWith({
+      searchObservations: async () => [sentinel],
+      searchSessions: async () => { throw new Error('context reader unavailable'); },
+      searchUserPrompts: async () => [],
+    }, {});
+    await expect(manager.search({ query: 'needle', format: 'export' })).rejects.toThrow('context reader unavailable');
+    const regular = await manager.search({ query: 'needle', format: 'json' });
+    expect(regular.observations).toEqual([sentinel]);
+  });
+
   it('resolves with empty results when the read worker rejects, matching the inline failure catch', async () => {
     const rejectingReader = {
       searchObservations: async () => { throw new Error('Context reader queue is full'); },
