@@ -153,17 +153,26 @@ export function fromPhotonGroupEvent(event: PhotonGroupEvent): ObserverEvent | n
  */
 async function* merge<T>(sources: AsyncIterable<T>[]): AsyncIterable<T> {
   const iterators = sources.map(source => source[Symbol.asyncIterator]());
-  const pending = new Map<number, Promise<{ index: number; result: IteratorResult<T> }>>();
+  type Delivery = { index: number; result: IteratorResult<T> } | { index: number; error: unknown };
+  const pending = new Map<number, Promise<void>>();
+  // One outstanding read per source bounds this queue. Record settlement
+  // order while the consumer is paused: racing already-settled promises
+  // again would favor the first subscription, even when another arrived first.
+  const ready: Delivery[] = [];
   const pull = (index: number) => {
-    const next = iterators[index]!.next().then(result => ({ index, result }));
-    // The race below sees a failure; this keeps the others from being unhandled.
-    next.catch(() => {});
+    const next = iterators[index]!.next().then(
+      result => { ready.push({ index, result }); },
+      error => { ready.push({ index, error }); },
+    );
     pending.set(index, next);
   };
   iterators.forEach((_, index) => pull(index));
   try {
     while (pending.size > 0) {
-      const { index, result } = await Promise.race(pending.values());
+      if (ready.length === 0) await Promise.race(pending.values());
+      const delivery = ready.shift()!;
+      if ('error' in delivery) throw delivery.error;
+      const { index, result } = delivery;
       // Each subscription is long lived. A clean EOF on either side makes
       // the pair incomplete even when its sibling has nothing new to emit.
       if (result.done) return;
@@ -332,3 +341,4 @@ export class PhotonSource implements MessageSource {
 async function* mapIterable<T, U>(source: AsyncIterable<T>, map: (value: T) => U): AsyncIterable<U> {
   for await (const value of source) yield map(value);
 }
+
