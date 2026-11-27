@@ -153,12 +153,17 @@ export class WorkerSink {
       // Summarize only from a window the worker accepted. The summary is a new
       // request made now, when the conversation ends, so it carries now as its time.
       if (summarize && session.recap) {
-        await this.post('/api/sessions/summarize', {
-          contentSessionId,
-          platformSource: PLATFORM_SOURCE,
-          last_assistant_message: session.recap,
-          enqueuedAtEpochMs: Date.now(),
-        });
+        try {
+          await this.post('/api/sessions/summarize', {
+            contentSessionId,
+            platformSource: PLATFORM_SOURCE,
+            last_assistant_message: session.recap,
+            enqueuedAtEpochMs: Date.now(),
+          });
+        } catch (error) {
+          // The summary is skipped, but the worker still needs the end metadata.
+          this.log.warn(`Could not summarize conversation ${contentSessionId}: ${describe(error)}`);
+        }
       }
       await this.post('/api/sessions/session-end', {
         contentSessionId,

@@ -177,7 +177,7 @@ describe('GroupChatObserver end to end with a stub worker', () => {
   let server: Server;
   let baseUrl: string;
   let requests: Array<{ route: string; body: Record<string, any> }>;
-  let failRoute: ((route: string, count: number) => boolean) | null;
+  let failRoute: ((route: string, count: number) => boolean | 'disconnect') | null;
   let dir: string;
 
   beforeEach(async () => {
@@ -192,8 +192,10 @@ describe('GroupChatObserver end to end with a stub worker', () => {
         const route = req.url ?? '';
         const body = JSON.parse(raw || '{}');
         if (route === '/api/sessions/observations') observationCount += 1;
-        if (failRoute?.(route, observationCount)) {
-          res.writeHead(503).end('{}');
+        const failure = failRoute?.(route, observationCount);
+        if (failure) {
+          if (failure === 'disconnect') req.socket.destroy();
+          else res.writeHead(503).end('{}');
           return;
         }
         requests.push({ route, body });
@@ -288,6 +290,23 @@ describe('GroupChatObserver end to end with a stub worker', () => {
     expect(Object.keys(saved.chats).sort()).toEqual(['any;+;chat-launch', 'any;+;chat-weekend-crew']);
     expect(JSON.stringify(saved)).not.toContain('Flour');
     expect(run.deliveredWindows).toHaveLength(3);
+  });
+
+  it.each([true, 'disconnect'] as const)('closes conversations after a failed summary handoff (%s)', async (failure) => {
+    let summaryAttempts = 0;
+    failRoute = route => {
+      if (route !== '/api/sessions/summarize') return false;
+      summaryAttempts += 1;
+      return failure;
+    };
+    await observer().run();
+
+    // A missed summary is not retried, but must not skip session-end metadata.
+    expect(summaryAttempts).toBe(3);
+    const ends = requests.filter(request => request.route === '/api/sessions/session-end');
+    const inits = requests.filter(request => request.route === '/api/sessions/init');
+    expect(ends.map(request => request.body.contentSessionId)).toEqual(inits.map(request => request.body.contentSessionId));
+    expect(requests.filter(request => request.route === '/api/sessions/observations')).toHaveLength(3);
   });
 
   it('skips a window the worker could not take and never sends it later', async () => {
