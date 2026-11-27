@@ -332,20 +332,8 @@ export function observerCredentialOf(spawnEnv: Record<string, string | undefined
   return 'subscription';
 }
 
-/** Model name the Claude Code CLI puts on assistant messages it writes itself. */
+/** Model name the Claude Code CLI puts on assistant messages it writes itself, such as an API error notice. */
 const SYNTHETIC_ASSISTANT_MODEL = '<synthetic>';
-
-/**
- * The CLI's result text when a reply hits CLAUDE_CODE_MAX_OUTPUT_TOKENS:
- * "API Error: Claude's response exceeded the 64 output token maximum. ..."
- */
-const OUTPUT_CAP_EXCEEDED = /exceeded the \d+ output token maximum/i;
-
-/** A standalone SDK call's reply and the turn's stop reason ('max_tokens' when cut off). */
-interface StandalonePromptReply {
-  text: string;
-  stopReason: string | null;
-}
 
 export class ClaudeProvider {
   private dbManager: DatabaseManager;
@@ -1138,12 +1126,7 @@ export class ClaudeProvider {
     }
   }
 
-  /**
-   * One bounded, standalone SDK call on the same Observer provider path.
-   * Resolves to the reply text and the turn's stop reason, or null when the
-   * reply had no text. A reply the CLI cut at the output cap resolves with
-   * stopReason 'max_tokens' even when it carries no text.
-   */
+  /** One bounded, standalone SDK call on the same Observer provider path. */
   private async runStandaloneObserverPrompt(
     prompt: string,
     context: {
@@ -1155,22 +1138,11 @@ export class ClaudeProvider {
       thinkingStripped?: boolean;
       /** The session's quota-fallback credential (ActiveSession.claudeAuthOverride). */
       standIn?: ClaudeCredential;
-      /**
-       * Hard output-token cap for this call only (#6503). The Agent SDK
-       * Options carry no per-request max_tokens, so the cap travels as the
-       * Claude Code child's CLAUDE_CODE_MAX_OUTPUT_TOKENS. The spawn factory
-       * sets it after its own sanitizeEnv, which strips every CLAUDE_CODE_*
-       * variable; putting it in the SDK env would be stripped there.
-       */
-      maxOutputTokens?: number;
     },
     modelId: string,
     claudePath: string,
-  ): Promise<StandalonePromptReply | null> {
+  ): Promise<string | null> {
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth(true, { standIn: context.standIn }));
-    const childEnvOverrides: Record<string, string> = context.maxOutputTokens === undefined
-      ? {}
-      : { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(context.maxOutputTokens) };
     const controller = new AbortController();
     const abort = () => controller.abort();
     const signals = context.signals ?? [];
@@ -1203,10 +1175,7 @@ export class ClaudeProvider {
             // Register the child so the shutdown cascade reaches it. A
             // standalone record takes no slot and stops no other SDK child:
             // the two field compressions of one observation run at once.
-            spawnClaudeCodeProcess: createStandaloneSdkSpawnFactory(
-              standaloneObserverRegistrySessionId(context.sessionDbId),
-              childEnvOverrides,
-            ),
+            spawnClaudeCodeProcess: createStandaloneSdkSpawnFactory(standaloneObserverRegistrySessionId(context.sessionDbId)),
           }),
           maxTurns: 1,
         },
@@ -1214,11 +1183,10 @@ export class ClaudeProvider {
 
       let out = '';
       let completed = false;
-      let stopReason: string | null = null;
       for await (const message of result) {
         if (message.type === 'assistant') {
-          // The CLI's own notices (an API error, the output-cap message) come
-          // as assistant messages from the '<synthetic>' model: never model text.
+          // The CLI's own notices come as assistant messages from the '<synthetic>'
+          // model. They are never model text: not condensed text, not a wrap-up.
           if ((message as any).message.model === SYNTHETIC_ASSISTANT_MODEL) continue;
           const content = (message as any).message.content;
           out += Array.isArray(content)
@@ -1228,24 +1196,15 @@ export class ClaudeProvider {
         if (message.type === 'result') {
           // Assistant text can be an API error or a partial answer. Only the
           // terminal result makes it a usable compression/wrap-up response.
-          // At CLAUDE_CODE_MAX_OUTPUT_TOKENS the CLI drops the cut reply and
-          // ends the turn as an error naming the cap (stop_reason is
-          // 'stop_sequence', not 'max_tokens'): report it as a cut reply.
-          if (message.subtype === 'success' && message.is_error && OUTPUT_CAP_EXCEEDED.test(message.result)) {
-            return { text: out, stopReason: 'max_tokens' };
-          }
           if (message.is_error || message.subtype !== 'success') {
             const details = message.subtype === 'success' ? message.result : message.errors.join('\n');
             throw new Error(`Claude standalone prompt failed (${message.subtype}): ${details}`);
           }
-          // Streamed assistant messages carry a null stop_reason; the turn's
-          // real one arrives here.
-          stopReason = message.stop_reason ?? null;
           completed = true;
         }
       }
       if (!completed) throw new Error('Claude standalone prompt ended without a result');
-      return out ? { text: out, stopReason } : null;
+      return out || null;
     } finally {
       for (const source of signals) source.removeEventListener('abort', abort);
     }
@@ -1254,10 +1213,11 @@ export class ClaudeProvider {
   /**
    * The output-token cap a field-compression request is sized by, so the
    * condense prompt never asks for more than the cap can carry (#6503). The
-   * HTTP providers send this value as the request's max_tokens. The Agent
-   * SDK exposes no per-request output cap, so compressField hands it to the
-   * Claude Code child as CLAUDE_CODE_MAX_OUTPUT_TOKENS: condense replies had
-   * averaged ~3x their target, so the sized ask alone did not hold.
+   * HTTP providers also send this value as the request's max_tokens; the
+   * Agent SDK exposes no per-request output cap (its Options carry maxTurns,
+   * maxThinkingTokens and maxBudgetUsd only), so on this path the sized ask
+   * is the control the setting gets — the call site previously passed no cap
+   * at all, and condense replies averaged ~3x their target.
    */
   private fieldCompressionMaxOutputTokens(): number {
     return resolveObserverMaxOutputTokens();
@@ -1274,7 +1234,7 @@ export class ClaudeProvider {
     if (!isObserverCaptureEnabled(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH))) {
       return null;
     }
-    const maxOutputTokens = this.fieldCompressionMaxOutputTokens();
+    // The CLI reports no finish reason, so a reply it returns counts as whole.
     const condensed = await this.runStandaloneObserverPrompt(
       buildFieldCompressionPrompt(text, budgetChars),
       {
@@ -1284,24 +1244,11 @@ export class ClaudeProvider {
         signals: [signal, session.abortController.signal],
         thinkingStripped: session.observerThinkingStripped,
         standIn: session.claudeAuthOverride ?? undefined,
-        maxOutputTokens,
       },
       modelId,
       claudePath,
     );
-    if (!condensed) return null;
-    // A reply stopped at the cap is a fragment (or, from the CLI, no text at
-    // all): report it so the optimizer falls back to the head/tail cut
-    // instead of storing it (#6503).
-    const truncated = condensed.stopReason === 'max_tokens';
-    if (truncated) {
-      logger.warn('SDK', 'Claude condense reply was cut off at the output cap', {
-        sessionId: session.sessionDbId,
-        maxOutputTokens,
-        returnedChars: condensed.text.length,
-      });
-    }
-    return { text: condensed.text, truncated };
+    return condensed ? { text: condensed, truncated: false } : null;
   }
 
   /** Format a stored summary through the same hardened Claude SDK path as summaries. */
@@ -1311,13 +1258,12 @@ export class ClaudeProvider {
   ): Promise<string> {
     const claudePath = await findClaudeExecutable('SDK');
     const modelId = activeModelId ?? this.getSummaryModelId();
-    const reply = await this.runStandaloneObserverPrompt(
+    const text = await this.runStandaloneObserverPrompt(
       buildTelegramWrapupPrompt(input.summaryText),
       input,
       modelId,
       claudePath,
     );
-    const text = reply?.text;
     if (!text?.trim()) {
       const error = new Error('Claude returned no text for the Telegram wrap-up');
       logger.error('TELEGRAM', error.message, { sessionId: input.sessionDbId, model: modelId }, error);

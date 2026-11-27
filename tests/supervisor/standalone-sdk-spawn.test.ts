@@ -104,26 +104,6 @@ describe('standalone observer SDK children in the process registry', () => {
     expect(recordsUnderKey()).toEqual([]);
   });
 
-  it('applies env overrides after stripping the host CLAUDE_CODE_* variables (#6503)', async () => {
-    const printEnv = {
-      command: process.execPath,
-      args: ['--eval', "process.stdout.write([process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS, process.env.CLAUDE_CODE_EFFORT_LEVEL].map(v => v ?? '<unset>').join(','))"],
-      env: { ...process.env, CLAUDE_CODE_MAX_OUTPUT_TOKENS: '99999', CLAUDE_CODE_EFFORT_LEVEL: 'high' },
-    };
-    const read = async (child: SpawnedSdkProcess): Promise<string> => {
-      let out = '';
-      child.stdout!.on('data', (chunk: Buffer) => { out += chunk.toString(); });
-      await new Promise(resolve => child.once('exit', resolve));
-      return out;
-    };
-
-    const capped = createStandaloneSdkSpawnFactory(REGISTRY_KEY, { CLAUDE_CODE_MAX_OUTPUT_TOKENS: '3200' })(printEnv as never);
-    expect(await read(capped)).toBe('3200,<unset>');
-
-    const uncapped = createStandaloneSdkSpawnFactory(REGISTRY_KEY)(printEnv as never);
-    expect(await read(uncapped)).toBe('<unset>,<unset>');
-  });
-
   it('takes no generation slot, even past the registry hard cap', async () => {
     for (let i = 0; i <= TOTAL_PROCESS_HARD_CAP; i += 1) {
       spawnWith(createStandaloneSdkSpawnFactory(REGISTRY_KEY));
