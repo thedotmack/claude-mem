@@ -36,7 +36,15 @@
 
 import { isClaudeMemTool, WORK_STATE_WRITE_TOOL } from "../../shared/work-state-tool.js";
 import { CONTEXT_TAG_CLOSE, CONTEXT_TAG_OPEN } from "../../utils/context-injection.js";
-import { renderKeyList, toolKeyNames } from "./tool-call-guidance.js";
+import {
+  guidanceForPaths,
+  hintForPath,
+  MAX_ENRICHMENT_CHARS,
+  parseValidationIssues,
+  renderKeyList,
+  toolKeyNames,
+  type ValidationIssue,
+} from "./tool-call-guidance.js";
 import { createCore, type ClaudeMemCore, type CoreContext } from "./core.js";
 
 /** The V2 plugin id. Also the handle `opencode.json(c)` uses to disable it. */
@@ -51,6 +59,7 @@ export interface V2ToolExecuteAfterEvent {
   tool?: string;
   sessionID?: string;
   agent?: string;
+  id?: string;
   info?: { name?: string; input?: unknown };
   input?: Record<string, unknown>;
   args?: Record<string, unknown>;
@@ -396,18 +405,81 @@ export function extractRawKeyNames(code: string): string[] {
 }
 
 /**
- * Names the raw key captured from the outer `execute` script on the error the
- * nested tool call reports. Task 6 extends this one function with schema
- * guidance; neither version repairs input, retries a call or logs a value.
+ * Enriches the error the model sees in the same turn, after `core.captureTool`
+ * has stored the host's original message. Literal schema guidance, the raw
+ * names of a Code Mode script and undeclared argument names are appended to
+ * the existing message under one bound. The error object and every other
+ * event field keep their identity; no input is repaired or replayed and no
+ * argument value is logged.
  */
 export function enrichValidationError(event: V2ToolExecuteAfterEvent, rawNames: string[]): boolean {
   if (event.status !== "error") return false;
-  const names = renderKeyList(rawNames);
-  if (!names) return false;
   const error = event.error;
   if (!error || typeof error !== "object" || typeof error.message !== "string") return false;
-  // Mutate the host's error object in place: its identity must survive.
-  error.message = `${error.message}\nRaw keys from execute: ${names}`;
+  const original = error.message;
+  // A policy refusal is the host's decision: it must not be rewritten.
+  if (!original || original.includes("<private>")) return false;
+
+  const schema = event.info?.input;
+  const tool = event.info?.name ?? event.tool;
+  const issues = parseValidationIssues(original);
+  const details = issues.filter((issue) => issue.path !== "");
+  const counter = issues.find((issue) => issue.path === "")?.message;
+  // Root missing keys outrank root value errors, which outrank nested paths.
+  const rank = (issue: ValidationIssue): number =>
+    /[.[\]]/.test(issue.path) ? 2 : /missing key/i.test(issue.message) ? 0 : 1;
+  const ranked = [...details].sort((left, right) => rank(left) - rank(right));
+  const kept = ranked.slice(0, 3);
+
+  const lines: string[] = [];
+  for (const issue of kept) {
+    const hint = hintForPath(schema, issue.path);
+    lines.push(`- ${issue.path}: ${issue.message}${hint ? ` (${hint})` : ""}`);
+  }
+  if (counter) lines.push(`- ${counter}`);
+
+  // Only the diagnostic JSON block is read, bounded and under try/catch. Its
+  // top-level keys are names; a value never enters the enrichment.
+  const header = "Arguments provided:\n";
+  const start = original.indexOf(header);
+  if (start >= 0) {
+    const rest = original.slice(start + header.length);
+    const block = rest.length <= MAX_CODE_CHARS ? rest.split(/\n\s*\n/, 1)[0] : "";
+    if (block) {
+      try {
+        const provided: unknown = JSON.parse(block);
+        if (provided && typeof provided === "object" && !Array.isArray(provided)) {
+          const properties = (schema as { properties?: unknown } | null)?.properties;
+          if (properties && typeof properties === "object" && !Array.isArray(properties)) {
+            const undeclared = Object.keys(provided).filter(
+              (key) => !Object.prototype.hasOwnProperty.call(properties, key),
+            );
+            const names = renderKeyList(undeclared);
+            if (names) lines.push(`undeclared: ${names}`);
+          }
+        }
+      } catch {
+        // A malformed diagnostic block is not a contract to parse.
+      }
+    }
+  }
+
+  const raw = renderKeyList(rawNames);
+  if (raw) lines.push(`Raw keys from execute: ${raw}`);
+
+  // Guidance comes from literal schema fields only; a direct call needs no
+  // raw-name claim. The primary key is the first kept issue or the raw name.
+  const primary = kept[0]?.path ?? rawNames.find((name) => typeof name === "string");
+  if (tool && primary) {
+    const [entry] = guidanceForPaths(schema, [primary]);
+    if (entry?.type) {
+      lines.push(`Reissue ${tool} with ${entry.key}: ${entry.type}${entry.description ? ` — ${entry.description}` : ""}`);
+    }
+  }
+
+  if (lines.length === 0) return false;
+  // One emission bound; the host's prefix stays untouched and ours goes last.
+  error.message = original + `\n${lines.join("\n")}`.slice(0, MAX_ENRICHMENT_CHARS);
   return true;
 }
 
@@ -608,8 +680,9 @@ export async function setupV2(
           ...(tool !== event.tool ? { nativeToolName: event.tool } : {}),
         });
         // The observation above holds the host's original error; enrich only
-        // the event the model sees, after capture.
-        if (event.status === "error" && rawNames.length > 0) {
+        // the event the model sees, after capture. A direct call has no raw
+        // names but still gets shape guidance from its own schema.
+        if (event.status === "error" && claudeMemCall) {
           enrichValidationError(event, rawNames);
         }
       }),

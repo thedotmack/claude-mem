@@ -4,9 +4,12 @@ import {
   setupV2,
   extractResultText,
   extractRawKeyNames,
+  enrichValidationError,
   type OpenCodePluginContextV2,
   type V2BusEvent,
+  type V2ToolExecuteAfterEvent,
 } from "../../src/integrations/opencode-plugin/v2";
+import { MAX_ENRICHMENT_CHARS } from "../../src/integrations/opencode-plugin/tool-call-guidance";
 import {
   REGISTERED_OPENCODE_V2_HOOKS,
   REAL_OPENCODE_V2_EVENT_TYPES,
@@ -1196,5 +1199,211 @@ describe("OpenCode V2 raw keys from the execute script", () => {
     const error = { message: "after delete" };
     await host.call("tool.execute.after", nestedEvent(error));
     expect(error.message).toBe("after delete");
+  });
+});
+
+/**
+ * Same-turn enrichment of the error the model sees. The host's validation
+ * message is the only source of issue paths; the tool schema supplies literal
+ * shape guidance. No value is logged or fabricated, and the host's error
+ * object is mutated in place after the observation has been captured.
+ */
+describe("OpenCode V2 validation issues enrichment", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      fields: { type: "object", description: 'Keys to set. Include "task" to update a to-do item.' },
+      status: { type: "string", description: "Current state", enum: ["todo", "done"] },
+      list: { type: "string", description: "List name" },
+    },
+    required: ["fields", "status"],
+  };
+
+  function hostMessage(details: string[], provided: unknown): string {
+    return [
+      'Invalid arguments for tool "work_state_write":',
+      ...details,
+      "",
+      "Arguments provided:",
+      JSON.stringify(provided, null, 2),
+      "",
+      "Update the arguments and call the tool again.",
+    ].join("\n");
+  }
+
+  function event(message: string, error?: Record<string, unknown>, inputSchema: unknown = schema): V2ToolExecuteAfterEvent {
+    return {
+      status: "error",
+      tool: "claude-mem_work_state_write",
+      info: { name: "work_state_write", input: inputSchema },
+      input: { list: "x" },
+      error: error ?? { message },
+    } as V2ToolExecuteAfterEvent;
+  }
+
+  it("guides a real host message from its parsed issue path", () => {
+    const original = hostMessage(["- fields: Missing key"], { list: "x" });
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error), [])).toBe(true);
+    expect(error.message).toContain("fields: Missing key");
+    expect(error.message).toContain('object — Keys to set. Include "task" to update a to-do item.');
+    expect(error.message).not.toContain("do-not-log");
+  });
+
+  it("keeps the parsed status path and its literal enum hint", () => {
+    const original = hostMessage(['- status: Invalid option: expected one of "todo"|"done"'], { fields: {} });
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error), [])).toBe(true);
+    expect(error.message).toContain('status: Invalid option: expected one of "todo"|"done"');
+    expect(error.message).toContain("one of: todo, done");
+  });
+
+  it("preserves a nested issue path with its literal schema hint", () => {
+    const nestedSchema = {
+      type: "object",
+      properties: { fields: { type: "object", properties: { task: { type: "string", description: "Task title" } } } },
+    };
+    const original = hostMessage(["- fields.task: Missing key"], { fields: {} });
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error, nestedSchema), [])).toBe(true);
+    expect(error.message).toContain("fields.task: Missing key");
+    expect(error.message).toContain("string — Task title");
+  });
+
+  it("leaves a non-validation error untouched", () => {
+    const original = "permission denied";
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error), [])).toBe(false);
+    expect(error.message).toBe(original);
+  });
+
+  it("names undeclared keys from Arguments provided without their values", () => {
+    const original = hostMessage(["- items: Missing key"], { secret: "do-not-log", extra: 1 });
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error), [])).toBe(true);
+    expect(error.message).toContain("undeclared: extra, secret");
+    expect(error.message.slice(original.length)).not.toContain("do-not-log");
+  });
+
+  it("skips an oversized or malformed Arguments provided block without throwing", () => {
+    const huge = "x".repeat(9 * 1024);
+    const oversized = `Invalid arguments for tool "x":\n- items: Missing key\n\nArguments provided:\n{"secret":"${huge}"}\n\nUpdate the arguments and call the tool again.`;
+    const errorOversized = { message: oversized };
+    expect(() => enrichValidationError(event(oversized, errorOversized), [])).not.toThrow();
+    expect(errorOversized.message.slice(oversized.length)).not.toContain("undeclared:");
+    expect(errorOversized.message.slice(oversized.length)).not.toContain(huge);
+
+    const malformed = 'Invalid arguments for tool "x":\n- items: Missing key\n\nArguments provided:\n{not json\n\nUpdate the arguments and call the tool again.';
+    const errorMalformed = { message: malformed };
+    expect(() => enrichValidationError(event(malformed, errorMalformed), [])).not.toThrow();
+    expect(errorMalformed.message).not.toContain("undeclared:");
+  });
+
+  it("formulates a typed reissue instruction from guidanceForPaths", () => {
+    const original = hostMessage(["- fields: Missing key"], { list: "x" });
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error), [])).toBe(true);
+    expect(error.message).toContain('Reissue work_state_write with fields: object — Keys to set. Include "task" to update a to-do item.');
+  });
+
+  it.each([
+    "<tool-repair>third party prefix</tool-repair>",
+    "[external-agent] unknown prefix",
+  ])("keeps the third-party prefix %s intact and appends ours last", (prefix) => {
+    const original = `${prefix}\n${hostMessage(["- fields: Missing key"], { list: "x" })}`;
+    const error = {
+      _tag: "Tool.Error",
+      message: original,
+      error: { cause: "third-party" },
+      metadata: { source: "third-party" },
+    } as unknown as Record<string, unknown> & { message: string };
+    const wrapped = event(original, error);
+    expect(enrichValidationError(wrapped, ["items"])).toBe(true);
+    expect(error.message.startsWith(prefix)).toBe(true);
+    expect(error.message.indexOf("Raw keys from execute: items")).toBeGreaterThan(error.message.indexOf(prefix));
+    expect(error.message.indexOf("Reissue ")).toBeGreaterThan(error.message.indexOf(prefix));
+    expect((error as { _tag?: string })._tag).toBe("Tool.Error");
+    expect((error as { error?: unknown }).error).toEqual({ cause: "third-party" });
+    expect((error as { metadata?: unknown }).metadata).toEqual({ source: "third-party" });
+    expect(wrapped.error).toBe(error);
+  });
+
+  it("does not enrich a policy refusal carrying <private>", () => {
+    const original = "Permission denied <private>secret</private>";
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error), ["items"])).toBe(false);
+    expect(error.message).toBe(original);
+  });
+
+  it("mutates only the error message, never input, status or the error object", () => {
+    const original = hostMessage(["- fields: Missing key"], { list: "x" });
+    const input = { list: "x" };
+    const error = { message: original };
+    const wrapped = { ...event(original, error), input };
+    expect(enrichValidationError(wrapped, ["items"])).toBe(true);
+    expect(wrapped.input).toBe(input);
+    expect(wrapped.status).toBe("error");
+    expect(wrapped.error).toBe(error);
+  });
+
+  it("prioritizes a missing root key and root value errors over nested paths, then the host counter", () => {
+    const nestedSchema = {
+      type: "object",
+      properties: { fields: { type: "object", properties: { task: { type: "string" } } } },
+    };
+    const original = [
+      'Invalid arguments for tool "work_state_write":',
+      "- fields.task: Missing key",
+      '- status: Invalid option: expected one of "todo"|"done"',
+      "- fields: Missing key",
+      '- list: Invalid option: expected one of "a"|"b"',
+      "- ...and 2 more issues",
+      "",
+      "Arguments provided:",
+      "{}",
+      "",
+      "Update the arguments and call the tool again.",
+    ].join("\n");
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error, nestedSchema), [])).toBe(true);
+    const added = error.message.slice(original.length);
+    const fields = added.indexOf("- fields: Missing key");
+    const status = added.indexOf("- status: Invalid option");
+    const list = added.indexOf("- list: Invalid option");
+    const counter = added.indexOf("- ...and 2 more issues");
+    expect(fields).toBeGreaterThanOrEqual(0);
+    expect(status).toBeGreaterThan(fields);
+    expect(list).toBeGreaterThan(status);
+    expect(counter).toBeGreaterThan(list);
+    // Two root value errors and one missing root key fill the three lines.
+    expect(added).not.toContain("- fields.task: Missing key");
+  });
+
+  it("claims no raw key on a direct call with shape guidance only", () => {
+    const original = hostMessage(["- fields: Missing key"], { list: "x" });
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error), [])).toBe(true);
+    expect(error.message).toContain("fields");
+    expect(error.message).not.toContain("Raw keys from execute:");
+  });
+
+  it("bounds the added text to MAX_ENRICHMENT_CHARS", () => {
+    const long = "x".repeat(500);
+    const wideSchema = { type: "object", properties: { fields: { type: "object", description: long } } };
+    const original = [
+      'Invalid arguments for tool "work_state_write":',
+      ...Array.from({ length: 5 }, (_, index) => `- field${index}: ${long}`),
+      "- ...and 2 more issues",
+      "",
+      "Arguments provided:",
+      '{"secret":"do-not-log"}',
+      "",
+      "Update the arguments and call the tool again.",
+    ].join("\n");
+    const error = { message: original };
+    expect(enrichValidationError(event(original, error, wideSchema), ["alpha", "beta", "gamma"])).toBe(true);
+    const added = error.message.slice(original.length);
+    expect(added.length).toBeLessThanOrEqual(MAX_ENRICHMENT_CHARS);
+    expect(added).not.toContain("do-not-log");
   });
 });
