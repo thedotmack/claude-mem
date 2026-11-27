@@ -2,6 +2,10 @@
 
 We'd like people who have real conversations in several projects to try this PR. Check whether the preview is easy to understand and whether an observation lands where you remember the work happening.
 
+## Paste this into your local agent
+
+> Use my current working directory as the workspace. Find the built Claude-Mem PR checkout and run its `dist/npx-cli/index.js import chats --workspace` with Node from this directory. Use a fresh, private `CLAUDE_MEM_DATA_DIR`. Tell me how many chats, projects and dated turns the preview finds. If I ask you to apply it, use an installed local Ollama chat model with `--apply --limit 4 --proof` and save the detailed output privately on this machine. Verify a real session with the checkout’s `scripts/verify-chat-import.ts`. Give me the UTC dates and counts of timeline matches, repeat model calls and duplicate observations. Keep the transcripts and observation titles on this device.
+
 ## Start with a preview
 
 Check out the PR, install its dependencies, and build it. Use the checkout's CLI so you test the proposed change. The commands below use a POSIX shell and an isolated local data directory.

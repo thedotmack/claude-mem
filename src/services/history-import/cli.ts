@@ -11,7 +11,7 @@ import { readChatExports } from './sources.js';
 import { readWorkspaceChats } from './workspace.js';
 import { HistoryReplayStore } from './store.js';
 import { localChatObserver } from './local-observer.js';
-import { replayHistoricalChats } from './replay.js';
+import { conversationKey, replayHistoricalChats } from './replay.js';
 
 const HELP = [
   'claude-mem import chats (--workspace | <export file or folder> [--project <fallback>]) [--apply] [--model <local Ollama model>] [--limit <new turns>] [--proof]',
@@ -43,12 +43,13 @@ export async function runHistoricalChatImport(args: string[]): Promise<void> {
   if ('unreadable' in history && history.unreadable) console.log(`${history.unreadable} history files could not be read.`);
   if ('compressedSkipped' in history && history.compressedSkipped) console.log(`${history.compressedSkipped} compressed session files skipped.`);
   const turns = chats.reduce((sum, chat) => sum + chat.messages.length, 0);
+  const conversations = new Set(chats.map(conversationKey));
   const projects = new Set(chats.map(chat => {
     // Both native clients can refer to the same cwd. Provider export IDs are scoped to their provider.
     const namespace = chat.source === 'claude-code' || chat.source === 'codex' ? 'workspace' : chat.source;
     return JSON.stringify([namespace, chat.projectId ?? chat.project]);
   }));
-  console.log(`${chats.length} chats across ${projects.size} projects; ${turns} dated turns in the last 30 days. ${skipped} source records skipped.`);
+  console.log(`${conversations.size} chats across ${projects.size} projects; ${turns} dated turns in the last 30 days. ${skipped} source records skipped.`);
   if (!values.apply || !turns) {
     if (!values.apply) console.log('Preview complete. Add --apply to generate observations with a local Ollama model.');
     return;
@@ -59,6 +60,7 @@ export async function runHistoricalChatImport(args: string[]): Promise<void> {
 
   const mode = ModeManager.getInstance().loadMode(settings.CLAUDE_MEM_MODE);
   const store = new SessionStore(undefined, { syncOpsEnabled: isCloudSyncConfigured(settings) });
+  const reportedIds = new Set<number>();
   try {
     const result = await replayHistoricalChats(chats, new HistoryReplayStore(store), async () => {
       const observer = await localChatObserver(values.model);
@@ -66,10 +68,14 @@ export async function runHistoricalChatImport(args: string[]): Promise<void> {
       return observer;
     }, mode, limit, (unit, receipt) => {
       if (values.proof) {
-        for (const [index,id] of receipt.ids.entries()) console.log(JSON.stringify({
-          observationId: id, occurredAt: new Date(unit.at).toISOString(), project: unit.project,
-          source: unit.source, messageId: unit.messageId, title: receipt.titles[index],
-        }));
+        for (const [index, id] of receipt.ids.entries()) {
+          if (reportedIds.has(id)) continue;
+          reportedIds.add(id);
+          console.log(JSON.stringify({
+            observationId: id, occurredAt: new Date(unit.at).toISOString(), project: unit.project,
+            source: unit.source, messageId: unit.messageId, title: receipt.titles[index],
+          }));
+        }
       }
     });
     console.log(`${result.stored} new observations, ${result.existing} previously processed turns, ${result.skipped} turns without a new observation; ${result.calls} model calls.`);

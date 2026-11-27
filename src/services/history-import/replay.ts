@@ -29,6 +29,26 @@ export interface ChatObserver {
   observe(system: string, evidence: string): Promise<string>;
 }
 
+export function conversationKey(chat: Pick<HistoricalChat, 'source' | 'id'>): string {
+  return JSON.stringify([chat.source, chat.id]);
+}
+
+/** Project groups locate each event on the right timeline. A conversation can move between them. */
+export function chronologicalConversations<T extends Pick<HistoricalChat, 'source' | 'id'> & { messages: { timestampMs: number }[] }>(groups: T[]) {
+  const conversations = new Map<string, { chat: T; message: T['messages'][number] }[]>();
+  for (const chat of groups) {
+    const key = conversationKey(chat);
+    const turns = conversations.get(key) ?? [];
+    for (const message of chat.messages) turns.push({ chat, message });
+    conversations.set(key, turns);
+  }
+  for (const turns of conversations.values()) {
+    // Sort is stable for source messages sharing an epoch (for example user/assistant pairs).
+    turns.sort((a, b) => a.message.timestampMs - b.message.timestampMs);
+  }
+  return conversations.values();
+}
+
 function hash(values: unknown[]): string {
   return createHash('sha256').update(JSON.stringify(values)).digest('hex');
 }
@@ -43,11 +63,10 @@ export async function replayHistoricalChats(chats: HistoricalChat[], store: Repl
     'Output only complete observation XML using the schema above, or exactly <skip/> when there is nothing to record.';
   let observer: ChatObserver | undefined;
   let calls = 0, stored = 0, existing = 0, skipped = 0;
-  for (const chat of chats) {
+  for (const turns of chronologicalConversations(chats)) {
     const previous: Array<{role: string; at: string; text: string}> = [];
     const remembered: string[] = [];
-    // Retain export order on timestamp ties: a user and assistant can share the very same millisecond.
-    for (const message of [...chat.messages].sort((a, b) => a.timestampMs - b.timestampMs)) {
+    for (const { chat, message } of turns) {
       const text = stripMemoryTags(message.text);
       if (!text.trim()) { skipped++; continue; }
       const unit: ReplayUnit = {
