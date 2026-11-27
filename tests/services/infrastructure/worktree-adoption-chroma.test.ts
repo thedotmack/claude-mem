@@ -32,18 +32,23 @@ import { adoptMergedWorktrees } from '../../../src/services/infrastructure/Workt
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { ChromaSyncState } from '../../../src/services/sync/ChromaSyncState.js';
 
-let tempRoot: string | undefined;
-let mainRepoForCleanup: string | undefined;
+function syncStatePath(): string {
+  return path.join(process.env.CLAUDE_MEM_DATA_DIR!, 'chroma-sync-state.json');
+}
 
 beforeEach(() => {
-  // A store that has synced before: the flag is never the file's first entry.
+  // A store that has synced before: the digest is never the file's first entry.
   ChromaSyncState.bump('synced-before', 'observations', 1);
 });
+
+let tempRoot: string | undefined;
+let mainRepoForCleanup: string | undefined;
 
 afterEach(() => {
   chromaCalls.length = 0;
   failChromaLookups = false;
-  ChromaSyncState.setMergedPatchVerified('parent-repo', false);
+  ChromaSyncState.resetCacheForTests();
+  rmSync(syncStatePath(), { recursive: true, force: true });
   if (mainRepoForCleanup && existsSync(mainRepoForCleanup)) {
     try { git(mainRepoForCleanup, 'worktree', 'remove', '--force', path.join(tempRoot!, 'summary-worktree')); } catch {}
   }
@@ -108,6 +113,17 @@ function lookupCalls(): number {
   return chromaCalls.filter(call => call.name === 'chroma_get_documents').length;
 }
 
+function patchedIds(): unknown {
+  return chromaCalls.find(call => call.name === 'chroma_update_documents')?.args.ids;
+}
+
+/** Runs adoption and returns how many Chroma lookups that run made. */
+async function adoptAndCountLookups(mainRepo: string, dataDirectory: string): Promise<number> {
+  chromaCalls.length = 0;
+  await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
+  return lookupCalls();
+}
+
 describe('worktree adoption Chroma hydration', () => {
   it('patches a session-summary document when the adopted worktree has no observations', async () => {
     const { mainRepo, dataDirectory, dbPath, summaryId } = createRepoWithSummaryWorktree();
@@ -131,21 +147,68 @@ describe('worktree adoption Chroma hydration', () => {
       .toEqual(['summary_1_request']);
   }, 30_000);
 
-  it('does not read already-adopted documents again once a full run has patched them', async () => {
+  it('reads the adopted documents once to adopt, once to verify, then not again', async () => {
     const { mainRepo, dataDirectory } = createRepoWithSummaryWorktree();
     git(mainRepo, 'merge', '--no-ff', '-m', 'merge feature', 'feature');
 
-    await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
-    expect(lookupCalls()).toBe(1);
-
-    chromaCalls.length = 0;
-    const second = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
-
-    expect(second.adoptedSummaries).toBe(0);
-    expect(lookupCalls()).toBe(0);
+    expect(await adoptAndCountLookups(mainRepo, dataDirectory)).toBe(1);
+    expect(await adoptAndCountLookups(mainRepo, dataDirectory)).toBe(1);
+    expect(await adoptAndCountLookups(mainRepo, dataDirectory)).toBe(0);
   }, 30_000);
 
-  it('reads the adopted documents again after a Chroma patch that failed', async () => {
+  it('patches a row whose single-branch patch failed, though its branch is still unmerged', async () => {
+    const { mainRepo, dataDirectory } = createRepoWithSummaryWorktree();
+
+    failChromaLookups = true;
+    const branchRun = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory, onlyBranch: 'feature' });
+    expect(branchRun.adoptedSummaries).toBe(1);
+    expect(branchRun.chromaFailed).toBe(1);
+
+    // `feature` is a live, unmerged worktree: a plain run does not target it.
+    failChromaLookups = false;
+    chromaCalls.length = 0;
+    const plainRun = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
+
+    expect(plainRun.adoptedSummaries).toBe(0);
+    expect(patchedIds()).toEqual(['summary_1_request']);
+  }, 30_000);
+
+  it('reads rows that another connection adopted after a verified run', async () => {
+    const { mainRepo, dataDirectory, dbPath } = createRepoWithSummaryWorktree();
+    git(mainRepo, 'merge', '--no-ff', '-m', 'merge feature', 'feature');
+    await adoptAndCountLookups(mainRepo, dataDirectory);
+    await adoptAndCountLookups(mainRepo, dataDirectory);
+    expect(await adoptAndCountLookups(mainRepo, dataDirectory)).toBe(0);
+
+    const store = new SessionStore(dbPath);
+    const sdkSessionId = store.createSDKSession('content-other', 'parent-repo/other-worktree', 'prompt');
+    store.ensureMemorySessionIdRegistered(sdkSessionId, 'other-session');
+    const other = store.importSessionSummary({
+      memory_session_id: 'other-session',
+      project: 'parent-repo/other-worktree',
+      request: 'adopted elsewhere',
+      investigated: null,
+      learned: null,
+      completed: null,
+      next_steps: null,
+      files_read: null,
+      files_edited: null,
+      notes: null,
+      prompt_number: 1,
+      discovery_tokens: 0,
+      created_at: new Date(1_700_000_001_000).toISOString(),
+      created_at_epoch: 1_700_000_001_000,
+    });
+    store.db.prepare('UPDATE session_summaries SET merged_into_project = ? WHERE id = ?').run('parent-repo', other.id);
+    store.close();
+
+    expect(await adoptAndCountLookups(mainRepo, dataDirectory)).toBe(1);
+    const lookedUp = chromaCalls.find(call => call.name === 'chroma_get_documents')?.args.where as
+      { sqlite_id: { $in: number[] } };
+    expect(lookedUp.sqlite_id.$in).toContain(other.id);
+  }, 30_000);
+
+  it('patches the adopted row on the run after its lookups failed', async () => {
     const { mainRepo, dataDirectory } = createRepoWithSummaryWorktree();
     git(mainRepo, 'merge', '--no-ff', '-m', 'merge feature', 'feature');
 
@@ -159,18 +222,20 @@ describe('worktree adoption Chroma hydration', () => {
     const retried = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
 
     expect(retried.adoptedSummaries).toBe(0);
-    expect(retried.chromaUpdates).toBe(1);
-    expect(chromaCalls.find(call => call.name === 'chroma_update_documents')?.args.ids)
-      .toEqual(['summary_1_request']);
+    expect(patchedIds()).toEqual(['summary_1_request']);
   }, 30_000);
 
-  it('keeps reading already-adopted documents after a single-branch run', async () => {
+  it('reads again after a restart when the verified digest could not be written', async () => {
     const { mainRepo, dataDirectory } = createRepoWithSummaryWorktree();
+    git(mainRepo, 'merge', '--no-ff', '-m', 'merge feature', 'feature');
+    await adoptAndCountLookups(mainRepo, dataDirectory);
 
-    await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory, onlyBranch: 'feature' });
-    chromaCalls.length = 0;
-    await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory, onlyBranch: 'feature' });
+    // A directory with a file in it cannot be replaced by the state file.
+    rmSync(syncStatePath(), { force: true });
+    mkdirSync(path.join(syncStatePath(), 'blocker'), { recursive: true });
+    expect(await adoptAndCountLookups(mainRepo, dataDirectory)).toBe(1);
 
-    expect(lookupCalls()).toBe(1);
+    ChromaSyncState.resetCacheForTests();
+    expect(await adoptAndCountLookups(mainRepo, dataDirectory)).toBe(1);
   }, 30_000);
 });

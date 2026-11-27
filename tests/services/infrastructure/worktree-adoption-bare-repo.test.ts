@@ -22,10 +22,14 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
 
 import { adoptMergedWorktrees } from '../../../src/services/infrastructure/WorktreeAdoption.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
+import { ChromaSyncState } from '../../../src/services/sync/ChromaSyncState.js';
 
 let tempRoot: string | undefined;
 
 afterEach(() => {
+  // The verified digest is keyed by project name; do not let it reach another test.
+  ChromaSyncState.resetCacheForTests();
+  rmSync(path.join(process.env.CLAUDE_MEM_DATA_DIR!, 'chroma-sync-state.json'), { recursive: true, force: true });
   if (tempRoot) {
     try { rmSync(tempRoot, { recursive: true, force: true }); } catch {}
   }

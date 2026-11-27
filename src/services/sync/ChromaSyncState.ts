@@ -47,12 +47,14 @@ export interface ProjectWatermarks {
    */
   rebuildPending?: boolean;
   /**
-   * Set once every row adopted into this project is known to carry
-   * `merged_into_project` in Chroma. Worktree adoption then patches only the
-   * rows it adopts, instead of re-reading every adopted document at each
-   * start. Cleared when a patch fails, so the next run checks them all again.
+   * Digest of the ids of every row adopted into this project (observations and
+   * session summaries whose `merged_into_project` names it), taken when one
+   * Chroma read had covered them all. Worktree adoption makes no Chroma call
+   * while the adopted rows still match it. Nothing clears it: an old digest
+   * describes an older set of rows, so it can cost one extra read and can
+   * never skip one.
    */
-  mergedPatchVerified?: boolean;
+  mergedPatchVerified?: string;
 }
 
 const ZERO: ProjectWatermarks = { observations: 0, summaries: 0, prompts: 0 };
@@ -214,8 +216,8 @@ function normalizeProjectWatermarks(marks: Partial<ProjectWatermarks> | undefine
     normalized.rebuildPending = true;
   }
 
-  if (marks?.mergedPatchVerified === true) {
-    normalized.mergedPatchVerified = true;
+  if (typeof marks?.mergedPatchVerified === 'string' && marks.mergedPatchVerified !== '') {
+    normalized.mergedPatchVerified = marks.mergedPatchVerified;
   }
 
   return normalized;
@@ -427,19 +429,18 @@ export const ChromaSyncState = {
     persist();
   },
 
-  isMergedPatchVerified(project: string): boolean {
-    return this.get(project).mergedPatchVerified === true;
+  getMergedPatchVerified(project: string): string | null {
+    return this.get(project).mergedPatchVerified ?? null;
   },
 
-  setMergedPatchVerified(project: string, verified: boolean): void {
+  markMergedPatchVerified(project: string, digest: string): void {
     const all = load();
     // Never write the file's first project entry: a file with no project
     // state is what starts the one-time watermark bootstrap.
-    if (verified && Object.keys(all).length === 0) return;
+    if (Object.keys(all).length === 0) return;
     const current = normalizeProjectWatermarks(all[project] ?? ZERO);
-    if ((current.mergedPatchVerified === true) === verified) return;
-    if (verified) current.mergedPatchVerified = true;
-    else delete current.mergedPatchVerified;
+    if (current.mergedPatchVerified === digest) return;
+    current.mergedPatchVerified = digest;
     all[project] = current;
     persist();
   },
