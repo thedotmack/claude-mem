@@ -2,10 +2,12 @@
 import path from 'path';
 import { existsSync, realpathSync } from 'fs';
 import { spawn } from 'child_process';
+import { createHash } from 'crypto';
 import { logger } from '../../utils/logger.js';
 import { getPathModeProjectContext, getProjectContext } from '../../utils/project-name.js';
 import { bareRepositoryProjectName } from '../../utils/worktree.js';
 import { ChromaSync, MergedIntoProjectTarget } from '../sync/ChromaSync.js';
+import { ChromaSyncState } from '../sync/ChromaSyncState.js';
 import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
 import { paths } from '../../shared/paths.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -506,6 +508,26 @@ export async function hasProvenAncestry(mainRepo: string, worktreeHead: string, 
   return false;
 }
 
+interface AdoptedRows {
+  observations: number[];
+  summaries: number[];
+  /** Names this exact set of rows; any row added or removed changes it. */
+  digest: string;
+}
+
+/** Every row adopted into the parent project so far, whatever adopted it. */
+function readAdoptedRows(db: import('bun:sqlite').Database, parentProject: string): AdoptedRows {
+  const adoptedIds = (table: 'observations' | 'session_summaries'): number[] =>
+    (db.prepare(`SELECT id FROM ${table} WHERE merged_into_project = ? ORDER BY id`)
+      .all(parentProject) as Array<{ id: number }>).map(row => row.id);
+  const observations = adoptedIds('observations');
+  const summaries = adoptedIds('session_summaries');
+  const digest = createHash('sha256')
+    .update(`observations:${observations.join(',')};session_summaries:${summaries.join(',')}`)
+    .digest('hex');
+  return { observations, summaries, digest };
+}
+
 export async function adoptMergedWorktrees(opts: {
   repoPath?: string;
   dataDirectory?: string;
@@ -586,6 +608,8 @@ export async function adoptMergedWorktrees(opts: {
     .filter((b): b is string => b !== null);
 
   const adoptedChromaTargets: MergedIntoProjectTarget[] = [];
+  let adoptedBefore: string | null = null;
+  let adoptedAfter: AdoptedRows | null = null;
 
   let db: import('bun:sqlite').Database | null = null;
   try {
@@ -610,15 +634,15 @@ export async function adoptMergedWorktrees(opts: {
     }
     const writerEvidence = readWriterEvidence(db, obsColumns, sumColumns);
 
+    adoptedBefore = readAdoptedRows(db, parentProject).digest;
+
+    // Only the rows this run adopts. Rows adopted earlier are covered by the
+    // digest check after the transaction, not by reading them at every start.
     const selectObsForPatch = db.prepare(
-      `SELECT id FROM observations
-       WHERE project = ?
-         AND (merged_into_project IS NULL OR merged_into_project = ?)`
+      'SELECT id FROM observations WHERE project = ? AND merged_into_project IS NULL'
     );
     const selectSumForPatch = db.prepare(
-      `SELECT id FROM session_summaries
-       WHERE project = ?
-         AND (merged_into_project IS NULL OR merged_into_project = ?)`
+      'SELECT id FROM session_summaries WHERE project = ? AND merged_into_project IS NULL'
     );
     const updateObs = db.prepare(
       'UPDATE observations SET merged_into_project = ? WHERE project = ? AND merged_into_project IS NULL'
@@ -636,14 +660,8 @@ export async function adoptMergedWorktrees(opts: {
     const syncLane = hasSyncLane(db);
 
     const adoptWorktreeInTransaction = (worktreeProject: string) => {
-      const rows = selectObsForPatch.all(
-        worktreeProject,
-        parentProject
-      ) as Array<{ id: number }>;
-      const summaryRows = selectSumForPatch.all(
-        worktreeProject,
-        parentProject
-      ) as Array<{ id: number }>;
+      const rows = selectObsForPatch.all(worktreeProject) as Array<{ id: number }>;
+      const summaryRows = selectSumForPatch.all(worktreeProject) as Array<{ id: number }>;
 
       let obsChanges: number;
       let sumChanges: number;
@@ -695,8 +713,8 @@ export async function adoptMergedWorktrees(opts: {
           ]),
           ...submoduleCheckouts.flatMap(checkout => getPathModeProjectContext(checkout).allProjects),
         ]);
-        orphanProjects = listOrphanProjectKeys(db, parentProject, liveWorktreeProjects, true, writerEvidence);
-        result.orphanedWorktrees = listOrphanProjectKeys(db, parentProject, liveWorktreeProjects, false, writerEvidence);
+        orphanProjects = listOrphanProjectKeys(db, parentProject, liveWorktreeProjects, false, writerEvidence);
+        result.orphanedWorktrees = orphanProjects;
       }
     }
 
@@ -752,35 +770,59 @@ export async function adoptMergedWorktrees(opts: {
         throw err;
       }
     }
+    if (!dryRun) adoptedAfter = readAdoptedRows(db, parentProject);
   } finally {
     db?.close();
   }
 
+  const verifiedDigest = ChromaSyncState.getMergedPatchVerified(parentProject);
   if (
-    !dryRun &&
-    adoptedChromaTargets.length > 0 &&
+    adoptedAfter &&
+    // Equal digests: every adopted row is one a full Chroma read already covered.
+    adoptedAfter.digest !== verifiedDigest &&
     SettingsDefaultsManager.loadFromFile(path.join(dataDirectory, 'settings.json')).CLAUDE_MEM_CHROMA_ENABLED !== 'false'
   ) {
-    const chromaSync = new ChromaSync('claude-mem');
-    try {
-      await chromaSync.updateMergedIntoProject(adoptedChromaTargets, parentProject);
-      result.chromaUpdates = adoptedChromaTargets.length;
-    } catch (err) {
-      if (err instanceof Error) {
-        logger.error(
-          'SYSTEM',
-          'Worktree adoption Chroma patch failed (SQL already committed)',
-          { parentProject, sqliteIdCount: adoptedChromaTargets.length },
-          err
-        );
-      } else {
-        logger.error(
-          'SYSTEM',
-          'Worktree adoption Chroma patch failed (SQL already committed)',
-          { parentProject, sqliteIdCount: adoptedChromaTargets.length, error: String(err) }
-        );
+    // The rows adopted before this run are the verified set: only this run's
+    // rows are new to Chroma. Otherwise some adopted row was never covered (a
+    // failed or interrupted patch, a `--branch` run, another process, a remap
+    // from sync), so read them all.
+    const readsEveryAdoptedRow = verifiedDigest !== adoptedBefore;
+    const chromaTargets: MergedIntoProjectTarget[] = readsEveryAdoptedRow
+      ? [
+          ...adoptedAfter.observations.map(sqliteId => ({ docType: 'observation' as const, sqliteId })),
+          ...adoptedAfter.summaries.map(sqliteId => ({ docType: 'session_summary' as const, sqliteId })),
+        ]
+      : adoptedChromaTargets;
+    let patched = true;
+    if (chromaTargets.length > 0) {
+      const chromaSync = new ChromaSync('claude-mem');
+      try {
+        await chromaSync.updateMergedIntoProject(chromaTargets, parentProject);
+        result.chromaUpdates = chromaTargets.length;
+      } catch (err) {
+        patched = false;
+        if (err instanceof Error) {
+          logger.error(
+            'SYSTEM',
+            'Worktree adoption Chroma patch failed (SQL already committed)',
+            { parentProject, sqliteIdCount: chromaTargets.length },
+            err
+          );
+        } else {
+          logger.error(
+            'SYSTEM',
+            'Worktree adoption Chroma patch failed (SQL already committed)',
+            { parentProject, sqliteIdCount: chromaTargets.length, error: String(err) }
+          );
+        }
+        result.chromaFailed = chromaTargets.length;
       }
-      result.chromaFailed = adoptedChromaTargets.length;
+    }
+    // A run that adopts rows records nothing: backfill may still be writing
+    // their documents, so the next start reads once and records then.
+    const adoptedNothing = adoptedAfter.digest === adoptedBefore;
+    if (patched && readsEveryAdoptedRow && adoptedNothing) {
+      ChromaSyncState.markMergedPatchVerified(parentProject, adoptedAfter.digest);
     }
   }
 
