@@ -61,7 +61,7 @@ export interface AgentPromptReader {
 // Shared helpers
 
 /** Streams plain or Codex-compressed JSONL without holding the file in memory. */
-export async function* readLines(path: string): AsyncGenerator<string> {
+export async function* readLines(path: string, maxBytes = Infinity): AsyncGenerator<string> {
   let decompressor: Transform | undefined;
   if (path.endsWith('.jsonl.zst')) {
     // Older supported runtimes must still load this module and read plain files.
@@ -84,7 +84,13 @@ export async function* readLines(path: string): AsyncGenerator<string> {
   stream.setEncoding('utf8');
   try {
     let pending: string[] = [];
+    let bytes = 0;
     for await (const chunk of stream as AsyncIterable<string>) {
+      // Bound decompressed input before buffering the line (it can contain a huge tool result).
+      if (maxBytes !== Infinity) {
+        bytes += Buffer.byteLength(chunk);
+        if (bytes > maxBytes) throw new Error('Transcript exceeds the selected import size limit.');
+      }
       // Search each decoded chunk once. A large tool payload may span many
       // chunks; repeatedly joining and searching that growing line is quadratic.
       let start = 0;
@@ -286,12 +292,12 @@ export function createClaudeCodeReader(): AgentPromptReader {
 // Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl and archived_sessions/*.jsonl
 // (either may be .jsonl.zst for cold sessions)
 
-const CODEX_INJECTED_PREFIXES = ['# AGENTS.md', '<environment_context', '<user_instructions', '<permissions', '<INSTRUCTIONS', '<turn_aborted'];
+export const CODEX_INJECTED_PREFIXES = ['# AGENTS.md', '<environment_context', '<user_instructions', '<permissions', '<INSTRUCTIONS', '<turn_aborted'];
 
 /** Codex Desktop copies another agent's conversation into a rollout as turns with this id prefix, every record
  * stamped with the import time. Those messages were typed in the other agent, earlier, and its own reader
  * reports them; the turns after the import are the owner's Codex prompts. */
-const CODEX_IMPORTED_TURN_PREFIX = 'external-import-turn-';
+export const CODEX_IMPORTED_TURN_PREFIX = 'external-import-turn-';
 
 /** Verified creator protocol: a fork persists its own settings before any child turn.
  * Resume retains the creation header; older/unknown creators keep their existing interpretation. */

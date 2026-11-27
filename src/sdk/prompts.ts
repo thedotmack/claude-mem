@@ -384,7 +384,7 @@ function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_
   return truncatePromptText(JSON.stringify(value, null, 2) ?? '', maxChars);
 }
 
-function truncatePromptText(raw: string, maxChars: number = OBS_PROMPT_FIELD_MAX_CHARS): string {
+export function truncatePromptText(raw: string, maxChars: number = OBS_PROMPT_FIELD_MAX_CHARS): string {
   if (raw.length <= maxChars) return raw;
   const headChars = Math.max(0, Math.floor(maxChars * OBS_PROMPT_FIELD_HEAD_RATIO));
   const tailChars = Math.max(0, Math.floor(maxChars * OBS_PROMPT_FIELD_TAIL_RATIO));

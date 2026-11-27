@@ -4462,6 +4462,8 @@ export class SessionStore {
     generatedByModel?: string,
     options: {
       skipTitleDedup?: boolean;
+      /** Historical replay records distinct source turns even when the observer gives them identical text. */
+      sourceEventKey?: string;
       committedToolUses?: { platformSource: string; contentSessionId: string; toolUseIds: string[] };
     } = {}
   ): {
@@ -4520,7 +4522,9 @@ export class SessionStore {
           continue;
         }
 
-        const legacyHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+        const legacyHash = options.sourceEventKey
+          ? 'event-' + createHash('sha256').update(JSON.stringify([memorySessionId, options.sourceEventKey, observation.title, observation.narrative])).digest('hex')
+          : computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
         if (legacyHash.startsWith('tuple-')) {
           const previousHash = computeLegacyObservationContentHash(memorySessionId, observation.title, observation.narrative);
           const previousDetailsHash = computeObservationDetailsHash(previousHash, observation);

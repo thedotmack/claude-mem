@@ -71,6 +71,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem project merge <from> <into> [--dry-run]')}    Fold one project's memory into another (non-destructive, syncs)
   ${styleText('cyan', 'npx claude-mem backup run|status|list')}   Manage local DB snapshots
   ${styleText('cyan', 'npx claude-mem restore <file>')}       Restore the DB from a snapshot
+  ${styleText('cyan', 'npx claude-mem import chats --workspace | <file or folder> [--apply]')}    Preview or replay the last 30 days of chat history into dated observations
   ${styleText('cyan', 'npx claude-mem import --from mem0 --source-account <label> --user <id> --project <name>')}   Import Mem0 memories (MEM0_API_KEY)
   ${styleText('cyan', 'npx claude-mem import --from supermemory --source-account <label> --namespace <id> --project <name>')}   Import Supermemory memories (SUPERMEMORY_API_KEY); add --documents for source text, --platform <host> for a host other than Claude Code, or --dry-run to preview
   ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
@@ -200,6 +201,11 @@ async function main(): Promise<void> {
       break;
     }
     case 'import': {
+      if (args[1] === 'chats') {
+        const { runHistoricalChatImportCommand } = await import('./commands/runtime.js');
+        runHistoricalChatImportCommand(args.slice(2));
+        break;
+      }
       const { runImportCommand } = await import('./commands/import-memory.js');
       await runImportCommand(args.slice(1));
       break;

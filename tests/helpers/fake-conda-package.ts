@@ -1,4 +1,4 @@
-import { crc32 } from 'zlib';
+import { crc32, deflateRawSync } from 'zlib';
 
 /**
  * Builds a .conda package in memory the way conda-forge lays one out: a zip
@@ -43,12 +43,13 @@ export function zipOf(entries: Record<string, Buffer>, deflated: string[] = []):
     const nameBytes = Buffer.from(name, 'utf-8');
     const method = deflated.includes(name) ? 8 : 0;
     const crc = crc32(data);
+    const payload = method === 8 ? deflateRawSync(data) : data;
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
     local.writeUInt16LE(method, 8);
     local.writeUInt32LE(crc, 14);
-    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(payload.length, 18);
     local.writeUInt32LE(data.length, 22);
     local.writeUInt16LE(nameBytes.length, 26);
     const central = Buffer.alloc(46);
@@ -57,13 +58,13 @@ export function zipOf(entries: Record<string, Buffer>, deflated: string[] = []):
     central.writeUInt16LE(20, 6);
     central.writeUInt16LE(method, 10);
     central.writeUInt32LE(crc, 16);
-    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(payload.length, 20);
     central.writeUInt32LE(data.length, 24);
     central.writeUInt16LE(nameBytes.length, 28);
     central.writeUInt32LE(offset, 42);
-    locals.push(local, nameBytes, data);
+    locals.push(local, nameBytes, payload);
     centrals.push(central, nameBytes);
-    offset += local.length + nameBytes.length + data.length;
+    offset += local.length + nameBytes.length + payload.length;
   }
   const centralDirectory = Buffer.concat(centrals);
   const end = Buffer.alloc(22);

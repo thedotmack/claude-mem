@@ -7,7 +7,7 @@ import { ModeManager } from '../services/domain/ModeManager.js';
 // the first opening + last closing fence anywhere in the string can corrupt
 // content that contains internal fenced examples or surrounding prose
 // (CodeRabbit review on PR #2282).
-function stripCodeFences(text: string): string {
+export function stripCodeFences(text: string): string {
   const match = text.match(/^\s*```(?:xml)?\s*\n([\s\S]*?)\n```\s*$/i);
   return match ? match[1] : text;
 }
@@ -125,6 +125,22 @@ const XML_ELEMENT_TAG_PATTERN = /<\/?[A-Za-z_][\w-]*\b[^>]*>/g;
 export function maskXmlLiteralMarkup(text: string): string {
   return text.replace(XML_LITERAL_PATTERN,
     literal => literal.replace(/[<>]/g, ' '));
+}
+
+/**
+ * Whether the reply ends in an `<observation>` the parser cannot store. Every
+ * whole block the parser reads is removed first, using its own matches
+ * (parseAgentXml: observations, the summary, a skip_summary), so an
+ * `<observation>` written inside a block's content (CDATA, prose about the
+ * format) is not mistaken for an unfinished block. Any opening left has no
+ * close after it, so it begins the cut-off tail.
+ */
+export function hasUnfinishedObservationBlock(text: string): boolean {
+  const outsideWholeBlocks = maskXmlLiteralMarkup(text)
+    .replace(new RegExp(OBSERVATION_BLOCK.source, 'gi'), '')
+    .replace(new RegExp(SUMMARY_BLOCK.source, 'gi'), '')
+    .replace(new RegExp(SKIP_SUMMARY_TAG.source, 'gi'), '');
+  return OBSERVATION_OPEN_TAG.test(outsideWholeBlocks);
 }
 
 /** Recover an element's original body after matching its structure on masked text. */
@@ -365,7 +381,7 @@ function unwrapLabelWrappedTitle(title: string | null): string | null {
 // Decode only after extracting markup: an escaped tag is character data, not
 // another element. A single replacement pass keeps &amp;lt; as literal &lt;.
 const XML_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
-function decodeXmlReferences(value: string): string {
+export function decodeXmlReferences(value: string): string {
   return value.replace(/<!\[CDATA\[[\s\S]*?\]\]>|&(?:amp|lt|gt|quot|apos|#(?:x[0-9a-fA-F]+|[0-9]+));/g, reference => {
     if (reference.startsWith('<![CDATA[')) return reference;
     const name = reference.slice(1, -1);

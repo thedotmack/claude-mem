@@ -126,6 +126,11 @@ function findMarkerProjectRoot(dir: string): string | null {
   return null;
 }
 
+/** Exact checkout or explicit project marker. Unlike a display key, this is an on-disk scope. */
+export function localWorkspaceRoot(dir: string): string | null {
+  return findGitRepoRoot(dir) ?? findMarkerProjectRoot(dir);
+}
+
 /** The project name for the directory that names it (git toplevel, marker root, or cwd). */
 function projectNameFromSource(cwd: string, nameSource: string): string {
   const basename = path.basename(nameSource);

@@ -1,7 +1,7 @@
 
 import { logger } from '../../../utils/logger.js';
 import { hasStorableTitle } from '../../sqlite/observations/store.js';
-import { maskXmlLiteralMarkup, parseAgentXml, OBSERVATION_OPEN_TAG, OBSERVATION_BLOCK, SUMMARY_BLOCK, SKIP_SUMMARY_TAG, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
+import { hasUnfinishedObservationBlock, parseAgentXml, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import {
   classifyObserverOutput,
   isAnthropicVerificationHoldObserverOutput,
@@ -700,21 +700,7 @@ export function isOutputCapFinishReason(finishReason: string | null | undefined)
   return reason === 'length' || reason === 'max_tokens';
 }
 
-/**
- * Whether the reply ends in an `<observation>` the parser cannot store. Every
- * whole block the parser reads is removed first, using its own matches
- * (parseAgentXml: observations, the summary, a skip_summary), so an
- * `<observation>` written inside a block's content (CDATA, prose about the
- * format) is not mistaken for an unfinished block. Any opening left has no
- * close after it, so it begins the cut-off tail.
- */
-export function hasUnfinishedObservationBlock(text: string): boolean {
-  const outsideWholeBlocks = maskXmlLiteralMarkup(text)
-    .replace(new RegExp(OBSERVATION_BLOCK.source, 'gi'), '')
-    .replace(new RegExp(SUMMARY_BLOCK.source, 'gi'), '')
-    .replace(new RegExp(SKIP_SUMMARY_TAG.source, 'gi'), '');
-  return OBSERVATION_OPEN_TAG.test(outsideWholeBlocks);
-}
+export { hasUnfinishedObservationBlock } from '../../../sdk/parser.js';
 
 export async function processAgentResponse(
   text: string,
