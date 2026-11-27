@@ -879,7 +879,7 @@ describe('npx doctor Auto-update row', () => {
     it('a state file that cannot be read: said as information, and the facts it holds left out', () => {
       const row = autoUpdateCheck(sources({ readStateFile: () => { throw new Error('EACCES: permission denied'); } }));
       expect(row.status).toBe('ok');
-      expect(lines(row.detail)).toEqual([`On ${WORKED_OUT_HERE}`, `Cannot read ${STATE_PATH}: EACCES: permission denied`, `Installed: ${INSTALLED}`, 'Claude Code\'s background update: off (set in /fixture/.claude/plugins/known_marketplaces.json)']);
+      expect(lines(row.detail)).toEqual([`On ${WORKED_OUT_HERE}`, `Cannot read ${STATE_PATH}: EACCES: permission denied`, `Installed: ${INSTALLED}`, `Claude Code's background update: off (set in ${KNOWN_MARKETPLACES})`]);
     });
   });
 
