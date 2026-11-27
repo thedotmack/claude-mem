@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { gunzipSync } from 'node:zlib';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { removeTempDir } from '../helpers/temp-dir.js';
 import { HostedIntent, INTENT_MAX_UPLOAD_BYTES, type HostedIntentResult } from '../../src/services/work-view/hosted-intent.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { readGoals, readLedger } from '../../src/services/work-view/request-groups.mjs';
@@ -29,15 +30,16 @@ function answer(): HostedIntentResult {
     cost_usd: 0.02, model: 'deepseek/flash:floor', dropped_quotes: 0,
   };
 }
-const cleanup: Array<() => void> = [];
+const cleanup: Array<() => void | Promise<void>> = [];
 const installCredentials = { install_id: 'a'.repeat(32), intent_token: 'b'.repeat(64) };
-afterEach(() => { for (const clean of cleanup.splice(0).reverse()) clean(); });
+afterEach(async () => { for (const clean of cleanup.splice(0).reverse()) await clean(); });
 function fixture(response: typeof fetch = (async () => Response.json(answer())) as typeof fetch, credentials = { token: 'setup-token', userId: 'owner' },
   preflight: typeof fetch = (async () => Response.json({ available: true })) as typeof fetch) {
   const scratch = join(import.meta.dir, '..', '..', '.scratch', 'test-runs');
   mkdirSync(scratch, { recursive: true });
   const dir = mkdtempSync(join(scratch, 'hosted-intent-'));
-  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  // Unfinalized SQLite statements keep the files open on Windows until GC; collect them before removing.
+  cleanup.push(() => { Bun.gc(true); return removeTempDir(dir); });
   const databasePath = join(dir, 'memory.db');
   let store: SessionStore | undefined;
   const getStore = () => store ??= new SessionStore(databasePath);
@@ -366,7 +368,8 @@ describe('hosted setup extraction', () => {
         : Response.json(answer());
     }) as typeof fetch, account);
     await expect(test.run.run(prompts, false)).rejects.toThrow('Hosted extraction could not complete.');
-    expect(statSync(test.configPath).mode & 0o777).toBe(0o600);
+    // Windows has no POSIX permission bits: stat reports 0o666 for a writable file.
+    if (process.platform !== 'win32') expect(statSync(test.configPath).mode & 0o777).toBe(0o600);
     const restarted = test.createRun();
     await expect(restarted.run(prompts, true)).rejects.toThrow('This installation has already used its hosted run.');
     expect(restarted.state().error).toContain('This installation has already used its hosted run.');

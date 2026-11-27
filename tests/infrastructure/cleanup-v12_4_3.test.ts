@@ -1,13 +1,14 @@
 
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import * as fs from 'fs';
-import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, readFileSync, readdirSync } from 'fs';
+import { mkdtempSync, existsSync, writeFileSync, mkdirSync, readFileSync, readdirSync } from 'fs';
 import path from 'path';
 import { tmpdir } from 'os';
 import { Database } from 'bun:sqlite';
 import { runOneTimeV12_4_3Cleanup } from '../../src/services/infrastructure/CleanupV12_4_3.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { OBSERVER_SESSIONS_PROJECT } from '../../src/shared/paths.js';
+import { removeTempDir } from '../helpers/temp-dir.js';
 import { logger } from '../../src/utils/logger.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -78,9 +79,11 @@ describe('runOneTimeV12_4_3Cleanup', () => {
     silenceLogger();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     restoreLogger();
-    rmSync(tmpDataDir, { recursive: true, force: true });
+    // Unfinalized SQLite statements keep the files open on Windows until GC; collect them before removing.
+    Bun.gc(true);
+    await removeTempDir(tmpDataDir);
   });
 
   it('writes a no-db marker when the DB is missing', () => {
