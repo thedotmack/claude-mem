@@ -276,18 +276,22 @@ async function contacts(args: string[]): Promise<number> {
     console.error('contacts expects a JSON object of address to name on stdin.');
     return 1;
   }
-  const next: Record<string, string> = values.replace ? {} : readJson<Record<string, string>>(contactsPath(), {});
+  const next = new Map<string, string>(Object.entries(
+    values.replace ? {} : readJson<Record<string, string>>(contactsPath(), {}),
+  ));
   for (const [address, name] of Object.entries(input as Record<string, unknown>)) {
-    if (Object.keys(next).length >= MAX_CONTACTS) break;
     if (typeof name !== 'string' || !name.trim() || !address.trim() || address.length > 320) continue;
-    next[address.trim()] = name.trim().slice(0, 120);
+    const key = address.trim();
+    // The cap limits new addresses; existing names can still be refreshed.
+    if (!next.has(key) && next.size >= MAX_CONTACTS) continue;
+    next.set(key, name.trim().slice(0, 120));
   }
   mkdirSync(observerDir(), { recursive: true, mode: 0o700 });
   const temp = contactsPath() + '.tmp';
-  writeFileSync(temp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 });
+  writeFileSync(temp, JSON.stringify(Object.fromEntries(next), null, 2) + '\n', { mode: 0o600 });
   renameSync(temp, contactsPath());
   try { chmodSync(contactsPath(), 0o600); } catch { /* Windows keeps its own ACLs. */ }
-  const count = Object.keys(next).length;
+  const count = next.size;
   if (values.json) emitter(true).event({ type: 'contacts', count });
   else console.log(`Saved ${count} names.`);
   return 0;
@@ -319,3 +323,4 @@ export async function runImessageMacCommand(action: string | undefined, args: st
   if (action === 'pick') return pick(args);
   return observe(args, startIfNeeded);
 }
+
