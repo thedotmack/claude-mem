@@ -500,7 +500,7 @@ export class SearchManager {
         raw = emptyDeepResult('error');
       }
     }
-    if (format === 'json') return { ...result, ...raw };
+    if (format === 'json' || format === 'export') return { ...result, ...raw };
     return { ...result, ...raw, content: [...result.content, { type: 'text', text: formatDeepSearch(raw) }] };
   }
 
@@ -594,29 +594,6 @@ export class SearchManager {
         };
         logger.warn('SEARCH', 'ChromaDB semantic search failed, falling back to FTS5 keyword search', {}, errorObject);
         chromaFailed = true;
-
-        // As on the Chroma-less path below: a keyword search that fails too
-        // leaves an empty answer, not a failed request.
-        try {
-          if (searchObservations) {
-            observations = this.contextReader
-              ? await this.contextReader.searchObservations(query, { ...options, type: effectiveObsType, concepts, files })
-              : this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
-          }
-          if (searchSessions) {
-            sessions = this.contextReader
-              ? await this.contextReader.searchSessions(query, options)
-              : this.sessionSearch.searchSessions(query, options);
-          }
-          if (searchPrompts) {
-            prompts = this.contextReader
-              ? await this.contextReader.searchUserPrompts(query, options)
-              : this.sessionSearch.searchUserPrompts(query, options);
-          }
-        } catch (ftsError) {
-          const ftsErrorObject = ftsError instanceof Error ? ftsError : new Error(String(ftsError));
-          logger.error('WORKER', 'FTS5 fallback search failed after a Chroma error', {}, ftsErrorObject);
-        }
       }
 
       // Only a failed semantic search should trigger the Chroma fallback.
@@ -660,9 +637,11 @@ export class SearchManager {
         prompts = prompts.slice(offset, end);
       }
     }
-    // PATH 3: FTS5 KEYWORD SEARCH (Chroma not initialized)
-    else if (query) {
-      logger.debug('SEARCH', 'ChromaDB not initialized — falling back to FTS5 keyword search', {});
+    // Read the same keyword categories when Chroma is absent or its query failed.
+    if (query && (!this.chromaSync || chromaFailed)) {
+      if (!this.chromaSync) {
+        logger.debug('SEARCH', 'ChromaDB not initialized — falling back to FTS5 keyword search', {});
+      }
       try {
         if (searchObservations) {
           observations = this.contextReader
@@ -681,7 +660,10 @@ export class SearchManager {
         }
       } catch (ftsError) {
         const errorObject = ftsError instanceof Error ? ftsError : new Error(String(ftsError));
-        logger.error('WORKER', 'FTS5 fallback search failed', {}, errorObject);
+        // The exporter can replace an existing archive only after all requested reads succeed.
+        if (format === 'export') throw errorObject;
+        const message = this.chromaSync ? 'FTS5 fallback search failed after a Chroma error' : 'FTS5 fallback search failed';
+        logger.error('WORKER', message, {}, errorObject);
         chromaFailed = true;
       }
     }
@@ -728,7 +710,7 @@ export class SearchManager {
       telemetryOut.fallback_reason = fallbackReason;
     }
 
-    if (format === 'json') {
+    if (format === 'json' || format === 'export') {
       return {
         observations,
         sessions,

@@ -101,7 +101,8 @@ export async function exportMemories(query: string, outputFile: string, project?
 
   const params = new URLSearchParams({
     query,
-    format: 'json',
+    // Filter-only reads already propagate errors. Keyword reads need the worker's strict export format.
+    format: query ? 'export' : 'json',
     limit: '999999',
     // Exports include saved history, independent of interactive search recency.
     // The explicit range also permits the documented empty-query full export.
@@ -114,6 +115,10 @@ export async function exportMemories(query: string, outputFile: string, project?
     if (!response.ok) throw new Error(`Failed to search: ${response.status} ${response.statusText}`);
     return response.json();
   });
+  // Older workers answer unknown formats with a text result, even when the read failed.
+  if (query && !Array.isArray(searchData?.observations)) {
+    throw new Error('Failed to search: expected structured keyword export results. Update the worker and retry.');
+  }
 
   const observations: ObservationRecord[] = searchData.observations || [];
   const summaries: SessionSummaryRecord[] = searchData.sessions || [];

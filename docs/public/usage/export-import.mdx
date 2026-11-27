@@ -30,6 +30,11 @@ Exports include older matches even when `CLAUDE_MEM_SEARCH_RECENCY_DAYS` limits
 interactive semantic search. An empty query exports all saved history, restricted
 to the selected project when `--project` is provided.
 
+If a keyword search fails while reading saved memories, the export exits with an
+error and preserves the previous file. A successful search with zero matches
+writes an empty archive. If the worker is too old to report keyword read
+failures, the script asks you to update it before retrying.
+
 > **Privacy Note:** Export files contain all matching memory data in plain text. Review exports before sharing to ensure no sensitive information (API keys, passwords, private paths) is included.
 
 ### Import Script
