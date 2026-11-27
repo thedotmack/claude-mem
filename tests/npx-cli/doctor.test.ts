@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -30,6 +30,14 @@ import {
   type ClaudeMemMarketplaceDeclaration,
 } from '../../src/services/auto-update/auto-update-check.js';
 import type { ClaudeMemInstallShape } from '../../src/services/auto-update/auto-update-install-shape.js';
+import * as workerUtils from '../../src/shared/worker-utils.js';
+import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
+import * as hostDiagnosis from '../../src/shared/openai-compat-host-diagnosis.js';
+import {
+  HOST_MODEL_STATUS_WORDS,
+  type HostModelDiagnostic,
+  type HostModelStatus,
+} from '../../src/shared/openai-compat-host-diagnosis.js';
 import {
   AUTO_UPDATE_FORWARD_FIX_COMMAND,
   defaultAutoUpdateState,
@@ -1265,5 +1273,102 @@ describe('databaseFileCheck', () => {
 
     const row = databaseFileCheck(db);
     expect(row.detail).toContain('SHM without WAL');
+  });
+});
+
+/**
+ * The Host model row is printed by runDoctorCommand itself, from the shared
+ * diagnosis. Settings, the host config lookup and every network probe are
+ * isolated, so only the row wiring is under test. The statuses come from the
+ * one exported Record, never from a list copied into this file.
+ */
+describe('npx doctor Host model row', () => {
+  const scratchRoot = join(import.meta.dir, '..', '..', '.scratch', 'test-runs');
+  const ANSI_STYLE = /\x1b\[[0-9;]*m/g;
+  const ENV_KEYS = ['CLAUDE_CONFIG_DIR', 'PATH', 'CLAUDE_PLUGIN_ROOT', 'OPENCODE_CONFIG', 'OPENCODE_CONFIG_DIR', 'XDG_CONFIG_HOME'] as const;
+
+  let claudeConfigDirectory: string;
+  let savedEnv: Record<string, string | undefined>;
+  let savedExitCode: number | undefined;
+
+  beforeEach(() => {
+    mkdirSync(scratchRoot, { recursive: true });
+    claudeConfigDirectory = mkdtempSync(join(scratchRoot, 'doctor-host-model-'));
+    savedEnv = {};
+    for (const key of ENV_KEYS) savedEnv[key] = process.env[key];
+    process.env.CLAUDE_CONFIG_DIR = claudeConfigDirectory;
+    process.env.PATH = '/usr/bin:/bin';
+    delete process.env.CLAUDE_PLUGIN_ROOT;
+    process.env.OPENCODE_CONFIG = join(claudeConfigDirectory, 'no-host-config.json');
+    process.env.OPENCODE_CONFIG_DIR = join(claudeConfigDirectory, 'opencode');
+    process.env.XDG_CONFIG_HOME = claudeConfigDirectory;
+
+    spyOn(globalThis, 'fetch').mockImplementation(async () => new Response('{}', { status: 503 }));
+    spyOn(workerUtils, 'resolvePluginRoot').mockReturnValue(null);
+    // A hosted preset gives the diagnosis a real fallback model, as in a live
+    // install; the 'custom' default would leave that field blank.
+    const settings = {
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_OPENAI_COMPAT_PRESET: 'nvidia-nim',
+    };
+    spyOn(SettingsDefaultsManager, 'loadFromFile').mockReturnValue(settings);
+  });
+
+  afterEach(() => {
+    mock.restore();
+    for (const key of ENV_KEYS) {
+      const previous = savedEnv[key];
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
+    process.exitCode = savedExitCode ?? 0;
+    rmSync(claudeConfigDirectory, { recursive: true, force: true });
+  });
+
+  async function doctorOutputLines(): Promise<string[]> {
+    const { runDoctorCommand } = await import('../../src/npx-cli/commands/doctor.js');
+    const pathsModule = await import('../../src/npx-cli/utils/paths.js');
+    spyOn(pathsModule, 'readPluginVersion').mockReturnValue('0.0.0-test');
+    spyOn(process, 'exit').mockImplementation((() => { throw new Error('doctor exited'); }) as never);
+    const log = spyOn(console, 'log').mockImplementation(() => {});
+    savedExitCode = process.exitCode;
+    try {
+      await runDoctorCommand().catch((error: unknown) => {
+        if (!(error instanceof Error) || error.message !== 'doctor exited') throw error;
+      });
+    } finally {
+      process.exitCode = savedExitCode ?? 0;
+    }
+    return log.mock.calls.map(call => call.map(String).join(' ')).join('\n').replace(ANSI_STYLE, '').split('\n');
+  }
+
+  for (const status of Object.keys(HOST_MODEL_STATUS_WORDS) as HostModelStatus[]) {
+    it(`host-model-doctor-lines: prints ${status} with the Record's check and the exact diagnosis`, async () => {
+      const diagnostic: HostModelDiagnostic = {
+        status,
+        line: `host model: ${status} diagnostic line`,
+      };
+      spyOn(hostDiagnosis, 'diagnoseHostModel').mockReturnValue(diagnostic);
+
+      const output = await doctorOutputLines();
+      const icon = HOST_MODEL_STATUS_WORDS[status].check === 'ok' ? '✓' : '!';
+      const expected = `  ${icon} ${'Host model'.padEnd(22)} ${diagnostic.line}`;
+      const row = output.find(line => line.includes(' Host model '));
+      expect(row).toBe(expected);
+    });
+  }
+
+  it('passes the doctor settings and a fallback model to the shared diagnosis', async () => {
+    const diagnose = spyOn(hostDiagnosis, 'diagnoseHostModel').mockReturnValue({
+      status: 'off',
+      line: 'host model: off',
+    });
+
+    await doctorOutputLines();
+
+    expect(diagnose).toHaveBeenCalledTimes(1);
+    const input = diagnose.mock.calls[0][0] as { settings: { CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST: string }; fallbackModel: string };
+    expect(input.settings.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST).toBe('false');
+    expect(input.fallbackModel.length).toBeGreaterThan(0);
   });
 });

@@ -1,6 +1,9 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import { logger } from '../../../../src/utils/logger.js';
 import { handleGeneratorExit } from '../../../../src/services/worker/session/GeneratorExitHandler.js';
+import { abortCategoryOf } from '../../../../src/services/worker/session/abort-reason.js';
+import { HOST_MODEL_NOT_SERVED_CODE, OpenAICompatProvider } from '../../../../src/services/worker/OpenAICompatProvider.js';
+import { ClassifiedProviderError } from '../../../../src/services/worker/provider-errors.js';
 import type { ActiveSession } from '../../../../src/services/worker-types.js';
 
 /**
@@ -140,5 +143,51 @@ describe('handleGeneratorExit reason branching (#2756)', () => {
     });
 
     expect(sessionManager.removeSessionImmediate).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * C1: a host-chosen model the endpoint does not serve is an auth-category
+   * exit, so pending inference inputs are discarded and no later paid rescue
+   * starts. It is NOT auth_invalid, so no long credential cooldown is armed.
+   */
+  it('host-not-served-discards-pending', async () => {
+    const provider = new OpenAICompatProvider({} as never, {} as never);
+    const error = new ClassifiedProviderError('OpenAI-compatible endpoint refused the host model', {
+      kind: 'unrecoverable',
+      cause: new Error('x'),
+      code: HOST_MODEL_NOT_SERVED_CODE,
+    });
+
+    // preservingAbortReason is the single mapping from a classified error to
+    // the exit reason the handler consumes; exercised here through the real
+    // provider instance rather than by hard-coding the reason string.
+    const reason = (provider as any).preservingAbortReason(error) as string | null;
+    expect(reason).toBe('auth:host_model_not_served');
+    expect(abortCategoryOf(reason)).toBe('auth');
+
+    const session = makeSession(910006);
+    const { sessionManager, completionHandler, messageBuffer } = makeDeps();
+    const claimSummarizeRescue = mock(() => true);
+    const hasPendingSummarize = mock(() => true);
+    const resumeGenerator = mock(() => {});
+
+    await handleGeneratorExit(session, reason, {
+      sessionManager: {
+        ...sessionManager,
+        claimSummarizeRescue,
+        hasPendingSummarize,
+      } as any,
+      completionHandler: completionHandler as any,
+      resumeGenerator,
+    });
+
+    expect(messageBuffer.getPendingCount).not.toHaveBeenCalled();
+    expect(sessionManager.discardBufferedWork).toHaveBeenCalledWith(910006);
+    expect(sessionManager.clearPendingForSession).not.toHaveBeenCalled();
+    expect(claimSummarizeRescue).not.toHaveBeenCalled();
+    expect(resumeGenerator).not.toHaveBeenCalled();
+    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
+    expect(session.pausedReason).toBe('auth');
   });
 });

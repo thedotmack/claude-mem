@@ -20,7 +20,7 @@ import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
 import { accumulateObserverUsage, observerUsageLogFields } from './observer-usage.js';
-import { DEADLINE_EXCEEDED_CODE, PAID_SEND_BUDGET_EXHAUSTED_CODE, isClassified, paidSendOutcomeOf, type ClassifiedProviderError } from './provider-errors.js';
+import { DEADLINE_EXCEEDED_CODE, HOST_MODEL_NOT_SERVED_CODE, PAID_SEND_BUDGET_EXHAUSTED_CODE, isClassified, paidSendOutcomeOf, type ClassifiedProviderError } from './provider-errors.js';
 import { paidSendBudgetForClaimedBatch, type PaidSendBudget } from './paid-send-budget.js';
 import {
   shouldRecycleConversation,
@@ -902,6 +902,12 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       // credentials that are fixed by /login are no more fatal than a 429.
       case 'auth_invalid':
         return `auth:${error.kind}`;
+      // An endpoint that does not serve a host-chosen model must discard its
+      // pending inputs like any auth stop, but it is not a refused credential:
+      // the `auth` category makes the exit discard without arming GeneratorRunner's
+      // auth_invalid cooldown (which would stop the configured model too).
+      case 'unrecoverable':
+        return error.code === HOST_MODEL_NOT_SERVED_CODE ? 'auth:host_model_not_served' : null;
       // A timeout or network fault that outlived the retry policy. Finalizing
       // would turn it into permanent data loss — the same reasoning as the
       // observer-text transport path in ResponseProcessor (#3752). Our own
