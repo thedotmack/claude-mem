@@ -307,6 +307,44 @@ describe("OpenCode V2 hook registration", () => {
     warn.mockRestore();
   });
 
+  it("matches a catalog entry that only has a bare tool id", async () => {
+    const warn = spyOn(console, "warn");
+    const { ctx, hookCallbacks } = createV2Context();
+    ctx.tool!.list = async () => [{
+      id: "work_state_write",
+      input: { type: "object", required: ["fields"] },
+    }] as any;
+    await setupV2(ctx);
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "work_state_write", sessionID: "s1", agent: "primary", input: { list: "plans" },
+    });
+    const warning = warn.mock.calls.flat().join(" ");
+    warn.mockRestore();
+    expect(warning).toContain("fields");
+  });
+
+  it("does not read the catalog when info.input supplies the schema", async () => {
+    const warn = spyOn(console, "warn");
+    let listCalls = 0;
+    const { ctx, hookCallbacks } = createV2Context();
+    ctx.tool!.list = async () => {
+      listCalls++;
+      return [{ id: "claude-mem_work_state_write", input: { type: "object", required: ["never"] } }] as any;
+    };
+    await setupV2(ctx);
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "claude-mem_work_state_write", sessionID: "s1-schema", agent: "primary",
+      info: { name: "work_state_write", input: { type: "object", required: ["list", "fields"] } },
+      input: { list: "plans" },
+    });
+    const warning = warn.mock.calls.flat().join(" ");
+    warn.mockRestore();
+    // The schema from info is the only one that drives the warning.
+    expect(listCalls).toBe(0);
+    expect(warning).toContain("fields");
+    expect(warning).not.toContain("never");
+  });
+
   it("disposes every registration and stops the event stream on cleanup", async () => {
     const { ctx, disposeCount } = createV2Context();
     const cleanup = await setupV2(ctx);

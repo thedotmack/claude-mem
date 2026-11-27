@@ -8,6 +8,15 @@ describe("missingRequiredKeys", () => {
     expect(missingRequiredKeys(schema, { list: "plans", fields: {} })).toEqual([]);
   });
 
+  it("treats an own key whose value is undefined as missing", () => {
+    const schema = { type: "object", required: ["list", "fields"] };
+    expect(missingRequiredKeys(schema, { list: "plans", fields: undefined })).toEqual(["fields"]);
+    // An inherited value is still not an own, supplied key.
+    const inherited = Object.create({ fields: {} }) as Record<string, unknown>;
+    inherited.list = "plans";
+    expect(missingRequiredKeys(schema, inherited)).toEqual(["fields"]);
+  });
+
   it("returns nothing when the schema is absent or malformed", () => {
     expect(missingRequiredKeys(undefined, {})).toEqual([]);
     expect(missingRequiredKeys({ required: "fields" }, {})).toEqual([]);

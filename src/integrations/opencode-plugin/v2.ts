@@ -272,9 +272,12 @@ export function missingRequiredKeys(schema: unknown, input: Record<string, unkno
   if (!schema || typeof schema !== "object") return [];
   const required = (schema as { required?: unknown }).required;
   if (!Array.isArray(required)) return [];
+  // An own key carrying `undefined` is not a supplied value: a client that
+  // serializes `{ fields: undefined }` drops the key entirely on the wire.
   return required.filter(
     (key): key is string =>
-      typeof key === "string" && !Object.prototype.hasOwnProperty.call(input, key),
+      typeof key === "string"
+      && (!Object.prototype.hasOwnProperty.call(input, key) || input[key] === undefined),
   );
 }
 
@@ -372,11 +375,26 @@ export async function setupV2(
         const named = event.info?.name ?? event.tool;
         if (!isClaudeMemTool(event.tool) && !WORK_STATE_WRITE_TOOL.test(named ?? "")) return;
         const input = (event.input ?? {}) as Record<string, unknown>;
-        // Code Mode calls can arrive without info; resolve the schema from the catalog.
-        const schema = event.info?.input ?? (await toolDomain.list?.() ?? []).find((tool) => {
-          const last = event.tool.split(".").at(-1);
-          return tool.id === event.tool || tool.name === last || tool.id.replace(/[._]/g, "_").endsWith(`_${last}`);
-        })?.input;
+        // A normal call carries its schema in info.input; reading the catalog is
+        // only the Code Mode fallback for a call with no info. A beta host may
+        // reject that read: degrade to no schema (and therefore no warning) rather
+        // than throwing out of the callback.
+        const infoSchema = event.info?.input;
+        let schema: unknown = infoSchema;
+        if (infoSchema === undefined) {
+          try {
+            const catalog = (await toolDomain.list?.()) ?? [];
+            const last = event.tool.split(".").at(-1);
+            schema = catalog.find((tool) =>
+              tool.id === event.tool
+              || tool.id === last
+              || tool.name === last
+              || tool.id.replace(/[._]/g, "_").endsWith(`_${last}`)
+            )?.input;
+          } catch {
+            // Best effort: a catalog refusal is not a tool-call failure.
+          }
+        }
         const missing = missingRequiredKeys(schema, input);
         if (missing.length === 0) return; // before validation: the call may still be repaired or refused by policy
         console.warn(`[claude-mem] pre-validation: ${event.tool} session=${event.sessionID} missing=${missing.sort().join(",")}`);
