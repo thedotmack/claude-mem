@@ -345,6 +345,29 @@ describe("OpenCode V2 hook registration", () => {
     expect(warning).not.toContain("never");
   });
 
+  it("recognises an opaque tool by info.name but ignores an unrelated info.name", async () => {
+    const warn = spyOn(console, "warn");
+    const { ctx, hookCallbacks } = createV2Context();
+    await setupV2(ctx);
+    // An opaque host tool name: only info.name identifies it as work_state_write.
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "external-host-tool", sessionID: "s1", agent: "primary",
+      info: { name: "work_state_write", input: { type: "object", required: ["fields"] } },
+      input: { list: "plans" },
+    });
+    const warning = warn.mock.calls.flat().join(" ");
+    warn.mockClear();
+    await hookCallbacks.get("tool.execute.before")!({
+      tool: "execute", sessionID: "s1", agent: "primary",
+      info: { name: "execute", input: { type: "object", required: ["fields"] } },
+      input: { list: "plans" },
+    });
+    const unrelated = warn.mock.calls.flat().join(" ");
+    warn.mockRestore();
+    expect(warning).toContain("missing=fields");
+    expect(unrelated).toBe("");
+  });
+
   it("disposes every registration and stops the event stream on cleanup", async () => {
     const { ctx, disposeCount } = createV2Context();
     const cleanup = await setupV2(ctx);
