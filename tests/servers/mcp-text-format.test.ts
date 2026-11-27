@@ -201,6 +201,23 @@ describe('purpose-specific model responses', () => {
     expect(text).not.toContain('\ufffd');
     expect(text).toContain('Response shortened');
   });
+  it('relays one bounded line of a plain-text refusal and never an arbitrary body', () => {
+    const relayed = workerFailureText(`Worker API error (409): Not saved: Read its current state and retry. ${'x'.repeat(300)}`);
+    const detail = relayed.split('\n')[1];
+    expect(relayed).toStartWith('Worker request failed (HTTP 409).');
+    expect(detail).toStartWith('Not saved: Read its current state and retry.');
+    expect(detail.length).toBeLessThanOrEqual(200);
+    expect(detail).not.toContain('\n');
+
+    const secondLine = workerFailureText('Worker API error (409): Not saved: first line\n{"secret":"PRIVATE_METADATA"}');
+    expect(secondLine).toContain('Not saved: first line');
+    expect(secondLine).not.toContain('PRIVATE_METADATA');
+
+    const arbitrary = workerFailureText('Worker API error (500): PRIVATE_PAYLOAD with {"filter":"PRIVATE_FILTER"}');
+    expect(arbitrary).toContain('Check the arguments and retry.');
+    expect(arbitrary).not.toContain('PRIVATE_PAYLOAD');
+    expect(arbitrary).not.toContain('PRIVATE_FILTER');
+  });
   it('never passes an accidental JSON text envelope or duplicate structured content through', () => {
     const result = formatWorkerMcpResponse('save', { content: [{ type: 'text', text: '{"id":42,"title":"Receipt","metadata":"PRIVATE_METADATA"}' }], structuredContent: { metadata: 'PRIVATE_METADATA' } });
     expect(result.content[0].text).toStartWith('Saved memory #42');

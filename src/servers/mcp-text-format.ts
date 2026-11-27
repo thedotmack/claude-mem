@@ -307,10 +307,17 @@ export function formatWorkerMcpResponse(purpose: McpTextPurpose, payload: unknow
   return formatMcpPayload(purpose, payload);
 }
 
-/** Keep actionable HTTP advice, without copying error objects, filters or response metadata. */
+/** Keep actionable HTTP advice, without copying error objects, filters or response metadata.
+ *  The one exception is a plain-text `Not saved: ` refusal: one bounded line carries its reason. */
 export function workerFailureText(message: string): string {
   const match = /^Worker API error \((\d+)\): ([\s\S]*)$/.exec(message);
   if (!match) return 'The worker could not complete this request. Retry after checking the worker connection.';
+  // Work-state guards answer in plain text, not JSON. Relay only that fixed
+  // prefix's first line, bounded: no error object, filter or response metadata.
+  if (match[2].startsWith('Not saved: ')) {
+    const refusal = match[2].split(/[\r\n]/, 1)[0];
+    return `Worker request failed (HTTP ${match[1]}).\n${line(refusal, '', 200)}`;
+  }
   const payload = record(parseStored(match[2]));
   const details = [payload.error, payload.fix].filter((value): value is string => typeof value === 'string')
     .map(value => line(value, '', 400)).filter(Boolean);

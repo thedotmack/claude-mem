@@ -334,6 +334,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: string;
   CLAUDE_MEM_WELCOME_HINT_ENABLED: string;
   CLAUDE_MEM_WORK_STATE_ENABLED: string;
+  CLAUDE_MEM_WORK_STATE_BATCH_ENABLED: string;  // 'true' = advertise the grouped `items` form of work_state_write
   CLAUDE_MEM_AUTO_CLEAR_ENABLED: string;
   CLAUDE_MEM_AUTO_CLEAR_PERCENT: string;
   CLAUDE_MEM_FILE_READ_GATE_ENABLED: string;
@@ -674,6 +675,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'true',
     CLAUDE_MEM_WELCOME_HINT_ENABLED: 'true',
     CLAUDE_MEM_WORK_STATE_ENABLED: 'true',  // 'false' = no work-state section at SessionStart and no work_state_* MCP tools, for hosts that track work their own way
+    CLAUDE_MEM_WORK_STATE_BATCH_ENABLED: 'false',  // opt-in grouped writes: only 'true' adds the `items` form to work_state_write
     CLAUDE_MEM_AUTO_CLEAR_ENABLED: 'false', // Claude Code mod (src/mods/auto-clear, in plugin/hooks/hooks-module.js): at CLAUDE_MEM_AUTO_CLEAR_PERCENT of the context window, Claude saves its work state, then /clear runs and a continuation prompt built from that save is sent ("continue" when the save left its blanks out). Off unless set to 'true'. Needs work state on
     CLAUDE_MEM_AUTO_CLEAR_PERCENT: '40',    // Context window use (1-95) that starts the auto-clear. 40: the maintainer's choice (raised from 33 on 2026-11-17); src/mods/auto-clear/settings.ts keeps the same value
     CLAUDE_MEM_FILE_READ_GATE_ENABLED: 'true',  // 'false' = never block a full-file Read; the file's observation timeline is still added as context
