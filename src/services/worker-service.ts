@@ -159,6 +159,9 @@ import {
   handleZCodeCommand
 } from './integrations/ZCodeHooksInstaller.js';
 import {
+  handleMCodeCommand
+} from './integrations/MCodeHooksInstaller.js';
+import {
   handleAntigravityCliCommand,
   healStaleAntigravityHooksConfig
 } from './integrations/AntigravityCliHooksInstaller.js';
@@ -1878,7 +1881,7 @@ function printWorkerAliasHelp(): never {
 function printWorkerServiceUsage(): void {
   console.error('Usage: worker-service <command>');
   console.error('Commands: start, stop, restart, status, hook <platform> <event>, worker <command>, server <command>,');
-  console.error('  adopt, project, transcript, generate, clean, cleanup, cursor, grok, memory, kimi, aider, devin, zcode, antigravity-cli,');
+  console.error('  adopt, project, transcript, generate, clean, cleanup, cursor, grok, memory, kimi, aider, devin, zcode, mcode, antigravity-cli,');
   console.error('  --daemon, --version, --help');
 }
 
@@ -2453,6 +2456,13 @@ export async function main() {
       const zcodeSubcommand = process.argv[3];
       const zcodeResult = await handleZCodeCommand(zcodeSubcommand, process.argv.slice(4));
       process.exit(zcodeResult);
+      break;
+    }
+
+    case 'mcode': {
+      const mcodeSubcommand = process.argv[3];
+      const mcodeResult = await handleMCodeCommand(mcodeSubcommand, process.argv.slice(4));
+      process.exit(mcodeResult);
       break;
     }
 

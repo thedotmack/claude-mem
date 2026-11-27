@@ -621,6 +621,10 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallZCode } = await import('../../services/integrations/ZCodeHooksInstaller.js');
       return uninstallZCode();
     }},
+    { label: 'MiniMax Code hooks + MCP', fn: async () => {
+      const { uninstallMCode } = await import('../../services/integrations/MCodeHooksInstaller.js');
+      return uninstallMCode();
+    }},
     { label: 'OMP hooks', fn: async () => {
       const { uninstallOmpHooks } = await import('../../services/integrations/OmpHooksInstaller.js');
       return uninstallOmpHooks();

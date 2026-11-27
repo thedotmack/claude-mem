@@ -5,6 +5,7 @@ import { dirname, join } from 'path';
 import { IS_WINDOWS } from '../utils/paths.js';
 import { t3CodeSettingsPath } from '../../services/integrations/T3CodeInstaller.js';
 import { kimiCodeHome } from '../../shared/kimi-paths.js';
+import { mcodeDataDir } from '../../services/integrations/MCodeHooksInstaller.js';
 import { getOpenCodeConfigDirectory } from '../../services/integrations/OpenCodeInstaller.js';
 import { hermesHome } from '../../services/integrations/HermesInstaller.js';
 import { devinConfigPath } from '../../services/integrations/DevinHooksInstaller.js';
@@ -111,6 +112,12 @@ export function detectInstalledIDEs(): IDEInfo[] {
       id: 'zcode',
       label: 'ZCode',
       detected: existsSync(join(home, '.zcode')),
+      hint: 'hooks + MCP integration',
+    },
+    {
+      id: 'mcode',
+      label: 'MiniMax Code',
+      detected: existsSync(mcodeDataDir()) || isCommandInPath('mcode'),
       hint: 'hooks + MCP integration',
     },
     {
