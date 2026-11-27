@@ -133,6 +133,8 @@ export const settingsKo: Record<string, string> = {
   'Leave blank to use the preset\'s endpoint': '비워 두면 프리셋의 엔드포인트 사용',
   'Model': '모델',
   'Model id, passed verbatim. Leave blank to use the preset\'s default': '모델 ID (그대로 전달됨). 비워 두면 프리셋의 기본값 사용',
+  'Implicit default model override': '암묵적 기본 모델 재정의',
+  'empty keeps the current fallback chain (last served model, then the preset default); `none` removes every implicit default; any other id replaces both and is sent verbatim.': '비워 두면 현재 대체 체인(최근 사용 모델, 그다음 프리셋 기본 모델)을 유지합니다. `none`은 모든 암묵적 기본값을 제거합니다. 그 밖의 ID는 둘 다 대체하며 그대로 전송됩니다.',
   'Reasoning': '추론',
   'Off (default) sends reasoning disabled so a reasoning model cannot spend the output cap thinking. On leaves it to the endpoint. A server that rejects the field is retried once without it.': '사용 안 함(기본값)은 추론 비활성화 값을 보내 추론 모델이 출력 한도를 사고 과정에 다 쓰지 않게 합니다. 사용으로 두면 엔드포인트가 결정합니다. 서버가 이 필드를 거부하면 필드 없이 한 번 재시도합니다.',
   'My Work summary provider': '내 작업 요약 제공업체',

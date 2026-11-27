@@ -133,6 +133,8 @@ export const settingsRu: Record<string, string> = {
   'Leave blank to use the preset\'s endpoint': 'Пусто — использовать эндпоинт пресета',
   'Model': 'Модель',
   'Model id, passed verbatim. Leave blank to use the preset\'s default': 'ID модели передаётся как есть. Пусто — модель пресета по умолчанию',
+  'Implicit default model override': 'Переопределение неявной модели по умолчанию',
+  'empty keeps the current fallback chain (last served model, then the preset default); `none` removes every implicit default; any other id replaces both and is sent verbatim.': 'пусто сохраняет текущую цепочку резервов (последняя использованная модель, затем модель пресета по умолчанию); `none` удаляет все неявные значения по умолчанию; любой другой ID заменяет оба и отправляется как есть.',
   'Reasoning': 'Рассуждения',
   'Off (default) sends reasoning disabled so a reasoning model cannot spend the output cap thinking. On leaves it to the endpoint. A server that rejects the field is retried once without it.': 'Выкл (по умолчанию) явно отключает рассуждения, чтобы модель не тратила лимит вывода на раздумья. Вкл — решает эндпоинт. Если сервер отклоняет поле, повторяется одна попытка без него.',
   'My Work summary provider': 'Провайдер сводок My Work',

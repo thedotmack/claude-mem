@@ -334,6 +334,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       // Destination and credentials are file/env only. The viewer may still
       // choose the model and reasoning policy for the configured endpoint.
       'CLAUDE_MEM_OPENAI_COMPAT_MODEL',
+      'CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL',
       'CLAUDE_MEM_OPENAI_COMPAT_REASONING',
       'CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT',
       'CLAUDE_MEM_OPENROUTER_REASONING_EFFORT',

@@ -46,7 +46,8 @@ import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-
 import { findCodexExecutablePath, isCodexOnPath } from '../install/tool-path.js';
 import { getCredential } from '../../shared/EnvManager.js';
 import { buildKeyPool } from '../../shared/api-key-pool.js';
-import { resolveOpenAICompatPreset } from '../../shared/openai-compat-presets.js';
+import { resolveOpenAICompatPreset, resolvePresetDefaultModel } from '../../shared/openai-compat-presets.js';
+import { diagnoseHostModel, HOST_MODEL_STATUS_WORDS } from '../../shared/openai-compat-host-diagnosis.js';
 import { findLegacyClaudeMemAlias, type LegacyClaudeMemAliasFile } from './uninstall.js';
 import { treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
 import { checkTreeSitterCliLoadable, resolveTreeSitterBinPathFor, TREE_SITTER_CLI_PATH_WORKAROUND } from '../../services/smart-file-read/tree-sitter-bin-path.js';
@@ -976,6 +977,10 @@ export interface OpenAICompatCheckStatus {
   hasModel: boolean;
   hasKey: boolean;
   requiresKey: boolean;
+  /** The operator chose `none`; the provider stays selected but sends nothing. */
+  defaultDisabled?: boolean;
+  /** With `none`, this is the host id the worker still sends on, when there is one. */
+  hostServedModel?: string;
   endpointUrl?: string;
   model?: string;
 }
@@ -1126,21 +1131,32 @@ export function observerProviderCheck(options: ObserverProviderCheckOptions): Ch
         required: false,
       };
     }
+    const missingKeyDetail = 'openai-compatible configured, but required API key is missing (set CLAUDE_MEM_OPENAI_COMPAT_API_KEY in settings.json or OPENAI_COMPAT_API_KEY in .env)';
     if (!compat.hasModel) {
+      // `none` removes only implicit defaults. A usable host id is still sent
+      // by the worker, but not without the endpoint's credentials.
+      if (compat.requiresKey && !compat.hasKey) {
+        return { name, status: 'warn', detail: missingKeyDetail, required: false };
+      }
+      if (compat.defaultDisabled && compat.hostServedModel) {
+        return {
+          name,
+          status: 'ok',
+          detail: `openai-compatible (${compat.hostServedModel} via ${compat.endpointUrl || 'configured endpoint'}, from the host model)`,
+          required: false,
+        };
+      }
       return {
         name,
         status: 'warn',
-        detail: 'openai-compatible configured, but no model is configured (set CLAUDE_MEM_OPENAI_COMPAT_MODEL in settings.json)',
+        detail: compat.defaultDisabled
+          ? 'openai-compatible configured, but CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL=none disables the implicit default; the provider stays selected and stops without sending (set CLAUDE_MEM_OPENAI_COMPAT_MODEL in settings.json to capture with this endpoint)'
+          : 'openai-compatible configured, but no model is configured (set CLAUDE_MEM_OPENAI_COMPAT_MODEL in settings.json)',
         required: false,
       };
     }
     if (compat.requiresKey && !compat.hasKey) {
-      return {
-        name,
-        status: 'warn',
-        detail: 'openai-compatible configured, but required API key is missing (set CLAUDE_MEM_OPENAI_COMPAT_API_KEY in settings.json or OPENAI_COMPAT_API_KEY in .env)',
-        required: false,
-      };
+      return { name, status: 'warn', detail: missingKeyDetail, required: false };
     }
     return {
       name,
@@ -1291,9 +1307,50 @@ export async function runDoctorCommand(): Promise<void> {
     if (codexHooks) checks.push(codexHooks);
   }
 
+  // Settings are read once for the remaining rows; readOnly keeps doctor from
+  // seeding or migrating the file.
+  const doctorSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true });
+  const compatPreset = resolveOpenAICompatPreset(doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_PRESET);
+  const compatConfiguredModel = (doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_MODEL ?? '').trim();
+  // One resolution, shared by the Host model row and the observer provider row:
+  // an explicit model wins, `none` removes the implicit default, and anything
+  // else replaces it. Never fall back to the raw preset default here.
+  const compatModel = compatConfiguredModel || resolvePresetDefaultModel(
+    doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL,
+    compatPreset.defaultModel,
+  );
+  // The disable sentinel has one definition in resolvePresetDefaultModel():
+  // probe it with a non-empty stand-in default to tell `none` from a preset
+  // that simply has no default. An explicit model still wins over it.
+  const defaultDisabled = !compatConfiguredModel
+    && resolvePresetDefaultModel(doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL, 'sentinel-default') === '';
+
   // 3d. claude-mem's own updater: on or off, what it last did, and the fix
   // when an automatic update may have left the install not working.
   checks.push(autoUpdateCheck(autoUpdateDoctorSources(pluginRoot)));
+
+  // 3e. The host's OpenCode model, as the observer would resolve it. Read-only
+  // and warn-only: the shared helper supplies both the line and the word's
+  // status, so doctor cannot disagree with the worker about either.
+  const hostModelDiagnostic = diagnoseHostModel({
+    settings: doctorSettings,
+    fallbackModel: compatModel,
+    // `none` is the operator's choice, not a refusal by the endpoint.
+    fallbackReason: (doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL ?? '').trim().toLowerCase() === 'none'
+      ? 'none'
+      : undefined,
+    hostOptions: { cwd: process.cwd() },
+    apiUrl: (doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL ?? '').trim() || compatPreset.baseUrl,
+  });
+  // The worker still sends on a usable host id when the implicit default is
+  // disabled; the provider row must report that id, not a stopped capture.
+  const hostServedModel = defaultDisabled ? hostModelDiagnostic.endpointId : undefined;
+  checks.push({
+    name: 'Host model',
+    status: HOST_MODEL_STATUS_WORDS[hostModelDiagnostic.status].check,
+    detail: hostModelDiagnostic.line,
+    required: false,
+  });
 
   // 4. Marketplace runtime root materialized. The .install-version marker is
   // written only by the npx installer; installs via Claude Code's own plugin
@@ -1336,7 +1393,6 @@ export async function runDoctorCommand(): Promise<void> {
 
   // 5. Worker health.
   // Where this client reaches the worker: settings.json, with env vars overriding it.
-  const doctorSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true });
   const configuredClaudePath = doctorSettings.CLAUDE_CODE_PATH?.trim() || process.env.CLAUDE_CODE_PATH?.trim() || undefined;
   const detectedClaudeCode = detectClaudeCodeVersion(configuredClaudePath);
 
@@ -1383,11 +1439,8 @@ export async function runDoctorCommand(): Promise<void> {
     doctorSettings.CLAUDE_MEM_GEMINI_API_KEYS || getCredential('GEMINI_API_KEYS') || '',
   );
 
-  const compatPreset = resolveOpenAICompatPreset(doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_PRESET);
   const compatConfiguredBaseUrl = (doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL ?? '').trim();
   const compatBaseUrl = compatConfiguredBaseUrl || compatPreset.baseUrl;
-  const compatConfiguredModel = (doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_MODEL ?? '').trim();
-  const compatModel = compatConfiguredModel || compatPreset.defaultModel;
   const compatRequiresApiKey = compatConfiguredBaseUrl
     ? !isLocalEndpointUrl(compatConfiguredBaseUrl)
     : compatPreset.requiresApiKey;
@@ -1412,6 +1465,8 @@ export async function runDoctorCommand(): Promise<void> {
       hasModel: Boolean(compatModel),
       hasKey: compatKeys.length > 0,
       requiresKey: compatRequiresApiKey,
+      defaultDisabled,
+      hostServedModel,
       endpointUrl: compatBaseUrl,
       model: compatModel,
     },

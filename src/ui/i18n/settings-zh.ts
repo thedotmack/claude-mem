@@ -133,6 +133,8 @@ export const settingsZh: Record<string, string> = {
   'Leave blank to use the preset\'s endpoint': '留空使用预设端点',
   'Model': '模型',
   'Model id, passed verbatim. Leave blank to use the preset\'s default': '模型 ID，按原样发送。留空使用预设默认值',
+  'Implicit default model override': '隐式默认模型覆盖',
+  'empty keeps the current fallback chain (last served model, then the preset default); `none` removes every implicit default; any other id replaces both and is sent verbatim.': '留空则沿用当前的回退链（最近使用的模型，然后是预设默认模型）；`none` 移除所有隐式默认值；其他任何 ID 都会替换两者并按原样发送。',
   'Reasoning': '推理',
   'Off (default) sends reasoning disabled so a reasoning model cannot spend the output cap thinking. On leaves it to the endpoint. A server that rejects the field is retried once without it.': '关闭（默认）会明确禁用推理，避免推理模型将输出额度用于思考。开启则由端点决定。如果服务器拒绝此字段，将移除此字段重试一次。',
   'My Work summary provider': '“我的工作”摘要服务商',

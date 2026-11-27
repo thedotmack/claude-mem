@@ -9,18 +9,26 @@ import {
   OpenAICompatProvider,
   isOpenAICompatAvailable,
   isOpenAICompatSelected,
+  rememberServedModel,
+  resetRefusedHostModelsForTesting,
+  resetServedModelsForTesting,
   resolveOpenAICompatConfig,
 } from '../../src/services/worker/OpenAICompatProvider.js';
+import { shouldRotateKey } from '../../src/shared/api-key-pool.js';
+import { DEFAULT_MODEL_DISABLED_CODE, HOST_MODEL_NOT_SERVED_CODE, OWN_MODEL_NOT_SERVED_CODE } from '../../src/services/worker/provider-errors.js';
 import {
   OPENAI_COMPAT_PRESETS,
   resolveOpenAICompatPreset,
 } from '../../src/shared/openai-compat-presets.js';
 import { getSelectedProvider } from '../../src/services/worker/provider-dispatch.js';
+import { PaidSendBudget } from '../../src/services/worker/paid-send-budget.js';
+import { resetReasoningFieldRejectionsForTesting } from '../../src/services/worker/reasoning-budget.js';
+import { markEndpointRefusesStreamingForTests, resetStreamingEndpointMemoryForTests } from '../../src/services/worker/streamed-chat-completion.js';
 import { SettingsRoutes } from '../../src/services/worker/http/routes/SettingsRoutes.js';
 import { SessionRoutes } from '../../src/services/worker/http/routes/SessionRoutes.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { logger } from '../../src/utils/logger.js';
-import { recordQuotaExhausted, resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
+import { getQuotaCooldown, recordQuotaExhausted, resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
 import type { ActiveSession, ConversationMessage } from '../../src/services/worker-types.js';
 
 /**
@@ -35,6 +43,7 @@ const ENV_KEYS = [
   'CLAUDE_MEM_OPENAI_COMPAT_API_KEYS',
   'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL',
   'CLAUDE_MEM_OPENAI_COMPAT_MODEL',
+  'CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL',
   'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION',
   'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST',
   'CLAUDE_MEM_OPENROUTER_API_KEY',
@@ -90,6 +99,8 @@ describe('resolveOpenAICompatConfig', () => {
   });
 
   afterEach(() => {
+    resetRefusedHostModelsForTesting();
+    resetServedModelsForTesting();
     for (const key of ENV_KEYS) {
       if (savedEnv[key] === undefined) delete process.env[key];
       else process.env[key] = savedEnv[key];
@@ -241,6 +252,49 @@ describe('resolveOpenAICompatConfig', () => {
 
     expect(resolveOpenAICompatConfig().apiUrl).toBe('');
   });
+
+  function defaultOverrideEnv(override: string): void {
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'opencode-go';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'fixture-preset-key';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL = '';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = '';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL = override;
+  }
+
+  it('replaces the implicit default with the override', () => {
+    defaultOverrideEnv('beam-free');
+    expect(resolveOpenAICompatConfig().model).toBe('beam-free');
+  });
+
+  it('disables the implicit default with none while keeping the provider selected', () => {
+    defaultOverrideEnv('none');
+    const config = resolveOpenAICompatConfig();
+    expect(config.model).toBe('');
+    expect(config.defaultDisabled).toBe(true);
+    expect(isOpenAICompatAvailable()).toBe(true);
+  });
+
+  it('keeps the implicit candidates when the override is empty', () => {
+    defaultOverrideEnv('');
+    expect(resolveOpenAICompatConfig().model).toBe('kimi-k3');
+  });
+
+  it('keeps an explicit model ahead of the override', () => {
+    defaultOverrideEnv('beam-free');
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'kimi-k3';
+    expect(resolveOpenAICompatConfig().model).toBe('kimi-k3');
+  });
+
+  it('treats a padded, mixed-case none as disabled', () => {
+    defaultOverrideEnv(' NoNe ');
+    expect(resolveOpenAICompatConfig().model).toBe('');
+  });
+
+  it('keeps an explicit model when the override disables the default', () => {
+    defaultOverrideEnv('none');
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'pinned-id';
+    expect(resolveOpenAICompatConfig().model).toBe('pinned-id');
+  });
 });
 
 /**
@@ -260,6 +314,8 @@ describe('observer model resolution from the current session', () => {
   });
 
   afterEach(() => {
+    resetRefusedHostModelsForTesting();
+    resetServedModelsForTesting();
     for (const key of ENV_KEYS) {
       if (savedEnv[key] === undefined) delete process.env[key];
       else process.env[key] = savedEnv[key];
@@ -344,6 +400,8 @@ describe('observer model resolution from the host config', () => {
   });
 
   afterEach(() => {
+    resetRefusedHostModelsForTesting();
+    resetServedModelsForTesting();
     for (const key of HOST_ENV_KEYS) {
       if (savedEnv[key] === undefined) delete process.env[key];
       else process.env[key] = savedEnv[key];
@@ -357,6 +415,31 @@ describe('observer model resolution from the host config', () => {
 
   const hostConfig = (host?: { cwd?: string }) =>
     resolveOpenAICompatConfig(undefined, host ?? {});
+
+  const PRESET_MODEL = resolveOpenAICompatPreset('nvidia-nim').defaultModel;
+  // A fresh Response per call: the streaming reader locks and drains its body.
+  const okFetch = () => spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
+    choices: [{ message: { content: 'ok' } }],
+  }), { status: 200 }));
+  const ranQuery = async (
+    config: ReturnType<typeof resolveOpenAICompatConfig>,
+    paidSendBudget?: PaidSendBudget,
+  ) => {
+    const provider = new OpenAICompatProvider({} as never, {} as never) as unknown as {
+      query(
+        h: Array<{ role: string; content: string }>,
+        c: unknown,
+        signal?: AbortSignal,
+        timeout?: number,
+        budget?: PaidSendBudget,
+      ): Promise<unknown>;
+    };
+    return provider.query([{ role: 'user', content: 'observe' }], config, undefined, undefined, paidSendBudget);
+  };
+  const presetAsHostConfig = {
+    model: 'host/preset-model',
+    provider: { host: { models: { 'preset-model': { modelID: PRESET_MODEL } } } },
+  };
 
   const baseEnv = (): void => {
     process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'nvidia-nim';
@@ -450,6 +533,134 @@ describe('observer model resolution from the host config', () => {
     }
   });
 
+  /**
+   * Greptile P2: an unmapped small model used to warn through translateHostModel.
+   * The shared diagnosis now drops it silently on a `resolved` main model, so
+   * the worker must print a separate one-shot notice without a new status.
+   */
+  it('unmapped-small-model-warns-once-without-a-new-status', () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    const smallId = 'cmem-p2-small-greptile/host-ghost-small';
+    writeHost({
+      model: 'host/main-hote',
+      agents: { title: { model: smallId } },
+      provider: { host: { models: { 'main-hote': { modelID: 'endpoint-main' } } } },
+    });
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      const first = hostConfig();
+      hostConfig();
+
+      expect(first.model).toBe('endpoint-main');
+      expect(first.summaryModel).toBeUndefined();
+      const lines = warn.mock.calls.map(call => String(call[1]));
+      const notices = lines.filter(line => line.includes(smallId));
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toContain('small model');
+      expect(notices[0]).toContain('not declared in the OpenCode provider config');
+      // The main id resolved: its warning slot must stay untouched.
+      expect(lines.filter(line => line.includes('host/main-hote'))).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('unmapped-small-model-dedups-per-id-with-a-bounded-set', () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      const ids = Array.from({ length: 65 }, (_, i) => `cmem-p2-cap/ghost-${i}`);
+      for (const id of ids) {
+        writeHost({
+          model: 'host/main-hote',
+          agents: { title: { model: id } },
+          provider: { host: { models: { 'main-hote': { modelID: 'endpoint-main' } } } },
+        });
+        expect(hostConfig().summaryModel).toBeUndefined();
+      }
+      const notices = () => warn.mock.calls
+        .map(call => String(call[1]))
+        .filter(line => line.includes('unmapped small model'));
+      expect(notices()).toHaveLength(65);
+      // The 65th id evicted the first: a capped set warns once more for it.
+      writeHost({
+        model: 'host/main-hote',
+        agents: { title: { model: ids[0] } },
+        provider: { host: { models: { 'main-hote': { modelID: 'endpoint-main' } } } },
+      });
+      expect(hostConfig().summaryModel).toBeUndefined();
+      expect(notices()).toHaveLength(66);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // The unmapped warning is one-shot per id (process-wide), so these cases run
+  // after the tests that assert it, keeping their shared fixture id verbatim.
+  it('host-unmapped-override: an untranslatable host model uses the override', () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL = 'beam-free';
+    writeHost({ model: 'cmem-t4-unmapped-provider/ghost-model' });
+    expect(hostConfig().model).toBe('beam-free');
+  });
+
+  it('keeps a translated host model ahead of the override', () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL = 'beam-free';
+    writeHost(hostModelConfig);
+    expect(hostConfig().model).toBe('endpoint-main');
+  });
+
+  it('keeps a translated id equal to the override host-chosen', () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL = 'endpoint-main';
+    writeHost(hostModelConfig);
+    expect(hostConfig().hostChosenModels).toHaveProperty('endpoint-main', 'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST');
+  });
+
+  it('none-cuts-last-served: the override removes even a previously served model', () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL = 'none';
+    // Pose the state explicitly: no undocumented successful request is needed.
+    rememberServedModel(resolveOpenAICompatConfig().apiUrl, 'endpoint-main');
+    writeHost({ model: 'cmem-none-cut/ghost' });
+    expect(hostConfig().model).toBe('');
+  });
+
+  it('masked-model-warns-once: the masked host id is named once over two turns', () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'pinned-model';
+    // A fresh id: the warn-once set is process-wide and other tests in this
+    // file already exercised the masked notice with `host/main-hote`.
+    writeHost({
+      model: 'host/masked-hote',
+      provider: { host: { models: { 'masked-hote': { modelID: 'endpoint-masked' } } } },
+    });
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      const first = hostConfig();
+      const second = hostConfig();
+      expect(first.model).toBe('pinned-model');
+      expect(second.model).toBe('pinned-model');
+
+      const masked = warn.mock.calls
+        .map(call => String(call[1]))
+        .filter(line => line.includes('host model: masked'));
+      expect(masked).toHaveLength(1);
+      expect(masked[0]).toContain('CLAUDE_MEM_OPENAI_COMPAT_MODEL');
+      expect(masked[0]).toContain('host/masked-hote');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('host-and-session-precedence: the session id wins last and the host gate stays independent', () => {
     baseEnv();
     process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
@@ -471,6 +682,557 @@ describe('observer model resolution from the host config', () => {
     process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION = 'false';
     expect(resolvedModel({ observerModel: 'session-model' } as ActiveSession, {}).model).toBe('endpoint-main');
   });
+
+  it('host-id-equal-to-preset-default-is-host-chosen', () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    writeHost(presetAsHostConfig);
+
+    // The id is the host's choice even though the preset happens to name the
+    // same id: a 404 for it is a refusal of that choice, not of our setting.
+    const config = hostConfig();
+    expect(config.model).toBe(PRESET_MODEL);
+    expect(config.hostChosenModels).toEqual({ [PRESET_MODEL]: 'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST' });
+  });
+
+  it('unmapped-falls-back-to-last-served-before-preset', async () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    const fetchSpy = okFetch();
+    try {
+      writeHost({ model: 'cmem-last-served/ghost' });
+      const presetConfig = hostConfig();
+      expect(presetConfig.model).toBe(PRESET_MODEL);
+      await ranQuery(presetConfig);
+
+      writeHost(hostModelConfig);
+      const translatedConfig = hostConfig();
+      expect(translatedConfig.model).toBe('endpoint-main');
+      await ranQuery(translatedConfig);
+
+      writeHost({ model: 'cmem-last-served/ghost-final' });
+      const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        expect(hostConfig().model).toBe('endpoint-main');
+        const line = warn.mock.calls.map(call => String(call[1])).join('\n');
+        expect(line).toContain('endpoint-main');
+      } finally {
+        warn.mockRestore();
+      }
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('opt-out-drops-remembered-model', async () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION = 'false';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    writeHost(hostModelConfig);
+    const fetchSpy = okFetch();
+    try {
+      // A successful observer turn on the opted-in path remembers the id.
+      await ranQuery(hostConfig());
+      writeHost({ model: 'cmem-opt-out/ghost' });
+      expect(hostConfig().model).toBe('endpoint-main');
+
+      // With every host opt-in off, the remembered id must not drive the
+      // observer: a summary turn would otherwise change its model.
+      delete process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST;
+      expect(hostConfig().model).toBe(PRESET_MODEL);
+
+      // B4 stays intact: the id is still available once the opt-in returns.
+      process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+      expect(hostConfig().model).toBe('endpoint-main');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('unmapped-falls-back-to-explicit-first', async () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    writeHost(hostModelConfig);
+    const fetchSpy = okFetch();
+    try {
+      await ranQuery(hostConfig());
+    } finally {
+      fetchSpy.mockRestore();
+    }
+
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'configured-model';
+    writeHost({ model: 'cmem-explicit-first/ghost' });
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      expect(hostConfig().model).toBe('configured-model');
+      const line = warn.mock.calls.map(call => String(call[1])).join('\n');
+      expect(line).toContain('configured-model');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('unmapped-message-names-the-fallback', () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    writeHost({ model: 'cmem-fallback-name/ghost' });
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      expect(hostConfig().model).toBe(PRESET_MODEL);
+      const line = warn.mock.calls
+        .map(call => String(call[1]))
+        .find(text => text.includes('not declared in the OpenCode provider config')) ?? '';
+      expect(line).toContain(PRESET_MODEL);
+      expect(line).not.toContain('keeping the configured fallback model');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * Boundaries the fix must NOT cross: a refused id on an endpoint that never
+   * had a configured default is still a half-configured endpoint, and so is one
+   * whose default an explicit setting removed (PR3's `none` shape). Both keep
+   * falling through to Claude; only an actual configured default that was
+   * refused sets the internal flag.
+   */
+  it('refused-id-without-a-configured-default-still-falls-through', async () => {
+    process.env.CLAUDE_MEM_PROVIDER = 'openai-compatible';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'custom';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL = 'https://custom.example.com/v1';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'fixture-key';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEYS = '';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = '';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    process.env.CLAUDE_MEM_OPENROUTER_API_KEY = '';
+    process.env.CLAUDE_MEM_GEMINI_API_KEY = '';
+    resetQuotaCooldownsForTesting();
+    writeHost({ model: 'host/bare', provider: { host: { models: { bare: { modelID: 'bare-model' } } } } });
+
+    const config = hostConfig();
+    expect(config.model).toBe('bare-model');
+    const refusal = spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
+      error: { message: 'Model access is disabled', type: 'invalid_request_error', code: 'model_access_disabled' },
+    }), { status: 403 }));
+    try {
+      await expect(ranQuery(config)).rejects.toMatchObject({ code: HOST_MODEL_NOT_SERVED_CODE });
+    } finally {
+      refusal.mockRestore();
+    }
+
+    // `custom` has no preset default; `api-route` is an explicit default-less
+    // preset (the shape PR3's override setting produces). Neither can be
+    // "exhausted by refusals" of a configured model.
+    for (const preset of ['custom', 'api-route']) {
+      process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = preset;
+      const after = hostConfig();
+      expect(after.model).toBe('');
+      expect(after.allModelsRefused).toBeUndefined();
+      expect(isOpenAICompatAvailable()).toBe(false);
+      expect(getSelectedProvider()).toBe('claude');
+    }
+    resetQuotaCooldownsForTesting();
+  });
+
+  it('refused-preset-default-is-not-resent', async () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    writeHost(presetAsHostConfig);
+    const config = hostConfig();
+    expect(config.model).toBe(PRESET_MODEL);
+    expect(config.hostChosenModels?.[PRESET_MODEL]).toBe('CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST');
+
+    const refusal = spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
+      error: { message: 'Model access is disabled', type: 'invalid_request_error', code: 'model_access_disabled' },
+    }), { status: 403 }));
+    try {
+      const failure = await ranQuery(config).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ code: HOST_MODEL_NOT_SERVED_CODE });
+    } finally {
+      refusal.mockRestore();
+    }
+
+    const after = hostConfig();
+    // Every candidate is refused: the empty sentinel keeps query() from
+    // sending a request that is doomed to fail again.
+    expect(after.model).toBe('');
+    const noFetch = spyOn(globalThis, 'fetch').mockImplementation(() => {
+      throw new Error('no request may be sent for the refused preset default');
+    });
+    try {
+      await expect(ranQuery(after)).rejects.toThrow();
+      expect(noFetch).not.toHaveBeenCalled();
+    } finally {
+      noFetch.mockRestore();
+    }
+  });
+
+  /**
+   * Greptile P1 (2026-11-27): when the only candidate left is a preset default
+   * the endpoint refused for a host-chosen id, an empty `model` made dispatch
+   * pick Claude. That is a silent switch to another paid account (or to a
+   * missing Claude credential), not the intended stop. The provider must stay
+   * selected and stop before the network with the already-classified refusal.
+   */
+  it('refused-preset-default-keeps-the-provider-selected-and-stops-before-the-network', async () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_PROVIDER = 'openai-compatible';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    process.env.CLAUDE_MEM_OPENROUTER_API_KEY = '';
+    process.env.CLAUDE_MEM_GEMINI_API_KEY = '';
+    resetQuotaCooldownsForTesting();
+    writeHost(presetAsHostConfig);
+
+    const config = hostConfig();
+    expect(config.model).toBe(PRESET_MODEL);
+    expect(getSelectedProvider()).toBe('openai-compatible');
+
+    const refusal = spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
+      error: { message: 'Model access is disabled', type: 'invalid_request_error', code: 'model_access_disabled' },
+    }), { status: 403 }));
+    const budget = new PaidSendBudget(1);
+    try {
+      const failure = await ranQuery(config, budget).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ code: HOST_MODEL_NOT_SERVED_CODE });
+      expect(budget.spentPaidSends).toBe(0);
+    } finally {
+      refusal.mockRestore();
+    }
+
+    const after = hostConfig();
+    expect(after.model).toBe('');
+    expect(getSelectedProvider()).toBe('openai-compatible');
+    expect(isOpenAICompatAvailable()).toBe(true);
+
+    const noFetch = spyOn(globalThis, 'fetch').mockImplementation(() => {
+      throw new Error('no request may be sent for the refused preset default');
+    });
+    try {
+      const stopped = await ranQuery(after, budget).catch((error: unknown) => error);
+      expect(stopped).toMatchObject({ kind: 'unrecoverable', code: HOST_MODEL_NOT_SERVED_CODE });
+      expect(noFetch).not.toHaveBeenCalled();
+      expect(budget.spentPaidSends).toBe(0);
+    } finally {
+      noFetch.mockRestore();
+      resetQuotaCooldownsForTesting();
+    }
+  });
+
+  /**
+   * Greptile P1: a model-specific 404 on our own id joins the refusal family;
+   * the id is remembered, and resolution falls back instead of sending it
+   * again on the next generation.
+   */
+  it('own-404-model-not-found-is-not-resent', async () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'ghost-404';
+    const refusal = spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
+      error: { message: 'model_not_found', type: 'invalid_request_error' },
+    }), { status: 404 }));
+    try {
+      const failure = await ranQuery(resolveOpenAICompatConfig()).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ kind: 'unrecoverable', code: OWN_MODEL_NOT_SERVED_CODE });
+    } finally {
+      refusal.mockRestore();
+    }
+
+    const after = resolveOpenAICompatConfig();
+    expect(after.model).toBe(PRESET_MODEL);
+    const served = spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: 'ok' } }],
+    }), { status: 200 }));
+    try {
+      await ranQuery(after);
+      const sent = served.mock.calls.map(call => JSON.parse(String((call[1] as RequestInit).body)).model);
+      expect(sent).toEqual([PRESET_MODEL]);
+      expect(sent).not.toContain('ghost-404');
+    } finally {
+      served.mockRestore();
+    }
+  });
+
+  /**
+   * Greptile P2: disabling the default is the user's choice, not an endpoint
+   * refusal. The worker's diagnosis must not blame the endpoint for it.
+   */
+  it('none-is-not-a-refusal-in-the-worker', () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL = 'none';
+    writeHost({});
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      const config = hostConfig();
+      expect(config.model).toBe('');
+      expect(config.allModelsRefused).toBeUndefined();
+      const lines = warn.mock.calls.map(call => String(call[1]));
+      expect(lines.some(line => line.includes('no model'))).toBe(true);
+      expect(lines.some(line => line.includes('refused'))).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * Greptile P1 (wave 2): a preset without a default has no implicit candidate,
+   * so dropping a refused explicit id used to leave `allModelsRefused` false.
+   * Dispatch then fell through to Claude with an otherwise configured endpoint.
+   */
+  const refusedExplicitKeepsProvider = async (defaultOverride: string): Promise<void> => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'custom';
+    // `custom` has no preset URL, so the endpoint must be configured by hand.
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL = 'https://custom.example.com/v1';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'ghost-explicit';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL = defaultOverride;
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'false';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION = 'false';
+    process.env.CLAUDE_MEM_PROVIDER = 'openai-compatible';
+    process.env.CLAUDE_MEM_OPENROUTER_API_KEY = '';
+    process.env.CLAUDE_MEM_GEMINI_API_KEY = '';
+    resetQuotaCooldownsForTesting();
+
+    const refusal = spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
+      error: { message: 'Model access is disabled', type: 'invalid_request_error', code: 'model_access_disabled' },
+    }), { status: 403 }));
+    let firstCallCount = 0;
+    try {
+      const failure = await ranQuery(resolveOpenAICompatConfig()).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ kind: 'unrecoverable', code: OWN_MODEL_NOT_SERVED_CODE });
+      firstCallCount = refusal.mock.calls.length;
+    } finally {
+      refusal.mockRestore();
+    }
+
+    const config = resolveOpenAICompatConfig();
+    expect(config.model).toBe('');
+    expect(config.allModelsRefused).toBe(true);
+    expect(isOpenAICompatAvailable()).toBe(true);
+    expect(getSelectedProvider()).toBe('openai-compatible');
+
+    const noFetch = spyOn(globalThis, 'fetch').mockImplementation(() => {
+      throw new Error('no request may be sent for a refused explicit model');
+    });
+    try {
+      const stopped = await ranQuery(config).catch((error: unknown) => error);
+      expect(stopped).toMatchObject({ kind: 'unrecoverable', code: OWN_MODEL_NOT_SERVED_CODE });
+      expect(noFetch).not.toHaveBeenCalled();
+      expect(firstCallCount + noFetch.mock.calls.length).toBe(1);
+    } finally {
+      noFetch.mockRestore();
+      resetQuotaCooldownsForTesting();
+    }
+  };
+
+  /**
+   * Greptile P1 (wave 3): `none` is an intentional cost/privacy choice, not a
+   * half-configured endpoint. Dispatch must stay on this provider and query()
+   * must stop before the socket instead of letting globalPrimary() pick Claude.
+   */
+  /**
+   * Greptile P1 (wave 6, R65): a model-specific 400/422 on a host-chosen id is
+   * a permanent refusal of that choice, like 401/403 — not a plain bad request
+   * that lets the next generation send the same dead id again.
+   */
+  const hostStructuredRefusal = async (status: 400 | 422): Promise<void> => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    writeHost(hostModelConfig);
+    resetQuotaCooldownsForTesting();
+    const body = JSON.stringify({ error: {
+      code: 'model_not_found',
+      type: 'invalid_request_error',
+      message: "The model 'endpoint-main' does not exist",
+    } });
+    const classified = classifyOpenAICompatError({
+      status,
+      bodyText: body,
+      cause: new Error('x'),
+      hostChosenModel: { id: 'endpoint-main', setting: 'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST' },
+    });
+    expect(classified.kind).toBe('unrecoverable');
+    expect(classified.code).toBe(HOST_MODEL_NOT_SERVED_CODE);
+    expect(shouldRotateKey(classified)).toBe(false);
+
+    const config = hostConfig();
+    expect(config.hostChosenModels).toHaveProperty('endpoint-main', 'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST');
+    const provider = new OpenAICompatProvider({} as never, {} as never) as unknown as {
+      query(h: unknown[], c: unknown): Promise<unknown>;
+    };
+    const refusal = spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(body, { status }));
+    try {
+      const failure = await provider.query([{ role: 'user', content: 'observe' }], config).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ kind: 'unrecoverable', code: HOST_MODEL_NOT_SERVED_CODE });
+    } finally {
+      refusal.mockRestore();
+    }
+    // The refused host id is dropped; the preset serves the next turn.
+    expect(hostConfig().model).toBe(PRESET_MODEL);
+    expect(getQuotaCooldown('openai-compatible')).toBeNull();
+    resetQuotaCooldownsForTesting();
+  };
+
+  it('host-chosen-structured-400-is-remembered', async () => {
+    await hostStructuredRefusal(400);
+  });
+
+  it('host-chosen-structured-422-is-remembered', async () => {
+    await hostStructuredRefusal(422);
+  });
+
+  /**
+   * Greptile P1 (wave 5): a structured `model_not_found` must outrank a named
+   * error message whose wording breaks the textual regex. A real refusal must
+   * not rotate keys or arm an auth cooldown, and the id is remembered.
+   */
+  it('structured-model-not-found-in-a-named-message-is-a-refusal', async () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'old-id';
+    resetQuotaCooldownsForTesting();
+    const body = JSON.stringify({ error: {
+      code: 'model_not_found',
+      type: 'invalid_request_error',
+      message: "The model 'old-id' does not exist",
+    } });
+    const err = classifyOpenAICompatError({ status: 403, bodyText: body, cause: new Error('x') });
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.code).toBe(OWN_MODEL_NOT_SERVED_CODE);
+    expect(shouldRotateKey(err)).toBe(false);
+    expect(err.action).not.toContain('CLAUDE_MEM_OPENAI_COMPAT_API_KEY');
+
+    const refusal = spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(body, { status: 403 }));
+    try {
+      const failure = await ranQuery(resolveOpenAICompatConfig()).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ kind: 'unrecoverable', code: OWN_MODEL_NOT_SERVED_CODE });
+    } finally {
+      refusal.mockRestore();
+    }
+    // The refused id is dropped and never reintroduced; the preset serves.
+    expect(resolveOpenAICompatConfig().model).toBe(PRESET_MODEL);
+    expect(getQuotaCooldown('openai-compatible')).toBeNull();
+    resetQuotaCooldownsForTesting();
+  });
+
+  it('none-default-keeps-the-provider-selected-and-stops', async () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'custom';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL = 'https://custom.example.com/v1';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = '';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL = 'none';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'false';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION = 'false';
+    process.env.CLAUDE_MEM_PROVIDER = 'openai-compatible';
+    process.env.CLAUDE_MEM_OPENROUTER_API_KEY = '';
+    process.env.CLAUDE_MEM_GEMINI_API_KEY = '';
+
+    const config = resolveOpenAICompatConfig();
+    expect(config.model).toBe('');
+    expect(config.defaultDisabled).toBe(true);
+    expect(isOpenAICompatAvailable()).toBe(true);
+    expect(getSelectedProvider()).toBe('openai-compatible');
+
+    const noFetch = spyOn(globalThis, 'fetch').mockImplementation(() => {
+      throw new Error('no request may be sent for a disabled default');
+    });
+    try {
+      const stopped = await ranQuery(config).catch((error: unknown) => error);
+      expect(stopped).toMatchObject({ kind: 'unrecoverable', code: DEFAULT_MODEL_DISABLED_CODE });
+      expect((stopped as { action: string }).action).toContain('CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL');
+      expect(noFetch).not.toHaveBeenCalled();
+    } finally {
+      noFetch.mockRestore();
+    }
+  });
+
+  it('refused-explicit-model-without-preset-default-keeps-provider-selected', async () => {
+    await refusedExplicitKeepsProvider('');
+  });
+
+  it('none-default-with-explicit-model-refused-keeps-provider-selected', async () => {
+    await refusedExplicitKeepsProvider('none');
+  });
+
+  /**
+   * Greptile P1 (wave 3): a refused explicit id must stop masking the host
+   * model. The next resolution follows usable explicit → host → default.
+   */
+  it('refused-explicit-model-falls-back-to-usable-host', async () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'refused-explicit';
+    writeHost(hostModelConfig);
+
+    const refusal = spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
+      error: { message: 'Model access is disabled', type: 'invalid_request_error', code: 'model_access_disabled' },
+    }), { status: 403 }));
+    try {
+      const failure = await ranQuery(resolveOpenAICompatConfig()).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ kind: 'unrecoverable', code: OWN_MODEL_NOT_SERVED_CODE });
+    } finally {
+      refusal.mockRestore();
+    }
+
+    const resolved = hostConfig();
+    expect(resolved.model).toBe('endpoint-main');
+    expect(resolved.hostChosenModels).toHaveProperty('endpoint-main', 'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST');
+
+    const served = okFetch();
+    try {
+      await ranQuery(resolved);
+      const sent = served.mock.calls.map(call => JSON.parse(String((call[1] as RequestInit).body)).model);
+      expect(sent).toEqual(['endpoint-main']);
+    } finally {
+      served.mockRestore();
+    }
+  });
+
+  it('builtin-identity-goes-on-the-wire', async () => {
+    baseEnv();
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST = 'true';
+    // The host provider is not declaring this model, but it points at the very
+    // endpoint the observer calls: its model key is endpoint-ready.
+    writeHost({
+      model: 'hy4/hy4-flash-free',
+      provider: { hy4: { baseURL: 'https://integrate.api.nvidia.com/v1' } },
+    });
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    const fetchSpy = okFetch();
+    const config = hostConfig();
+    try {
+      expect(config.model).toBe('hy4-flash-free');
+      expect(config.hostChosenModels).toEqual({ 'hy4-flash-free': 'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST' });
+      const identityWarnings = () => warn.mock.calls
+        .map(call => String(call[1]))
+        .filter(line => line.includes('assuming the model key is endpoint-ready'));
+      expect(identityWarnings()).toHaveLength(1);
+      // The identity warning is one-shot per id, like the unmapped warning.
+      hostConfig();
+      expect(identityWarnings()).toHaveLength(1);
+
+      await ranQuery(config);
+      const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://integrate.api.nvidia.com/v1/chat/completions');
+      expect(JSON.parse(String(init.body)).model).toBe('hy4-flash-free');
+    } finally {
+      fetchSpy.mockRestore();
+      warn.mockRestore();
+    }
+
+    // Composition with T1: a 403 on the identity id is a refusal of the host's
+    // choice, so the next turn drops the id instead of arming auth cooldown.
+    const refusal = spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
+      error: { message: 'Model access is disabled', type: 'invalid_request_error', code: 'model_access_disabled' },
+    }), { status: 403 }));
+    try {
+      const failure = await ranQuery(config).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ code: HOST_MODEL_NOT_SERVED_CODE });
+      const after = hostConfig();
+      expect(after.model).toBe(PRESET_MODEL);
+      expect(after.hostChosenModels).toBeUndefined();
+    } finally {
+      refusal.mockRestore();
+    }
+  });
 });
 
 describe('isOpenAICompatAvailable', () => {
@@ -489,6 +1251,8 @@ describe('isOpenAICompatAvailable', () => {
   });
 
   afterEach(() => {
+    resetRefusedHostModelsForTesting();
+    resetServedModelsForTesting();
     for (const key of ENV_KEYS) {
       if (savedEnv[key] === undefined) delete process.env[key];
       else process.env[key] = savedEnv[key];
@@ -668,9 +1432,91 @@ describe('classifyOpenAICompatError', () => {
     }
   });
 
-  it('tells a 404 apart and blames the base URL or model', () => {
-    const err = classifyOpenAICompatError({ status: 404, bodyText: 'model not found', cause: new Error('x') });
+  /**
+   * A 401/403 on an id the host chose is the endpoint refusing that choice,
+   * not a bad key. It must not take the auth_invalid path: that would arm a
+   * long credential cooldown and tell the user to rotate a working key.
+   */
+  const hostChosen = { id: 'endpoint-main', setting: 'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST' } as const;
+  const hostNotServedAssertions = (err: ReturnType<typeof classifyOpenAICompatError>): void => {
     expect(err.kind).toBe('unrecoverable');
+    expect(err.code).toBe(HOST_MODEL_NOT_SERVED_CODE);
+    expect(err.action).toContain('CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST');
+    expect(err.action).toContain('endpoint-main');
+    expect(err.action).not.toContain('CLAUDE_MEM_OPENAI_COMPAT_API_KEY');
+  };
+
+  it('host-chosen-403-is-not-auth-invalid', () => {
+    hostNotServedAssertions(classifyOpenAICompatError({
+      status: 403,
+      bodyText: 'Model access is disabled',
+      cause: new Error('x'),
+      hostChosenModel: hostChosen,
+    }));
+  });
+
+  it('host-chosen-401-is-not-auth-invalid', () => {
+    hostNotServedAssertions(classifyOpenAICompatError({
+      status: 401,
+      bodyText: 'Model access is disabled',
+      cause: new Error('x'),
+      hostChosenModel: hostChosen,
+    }));
+  });
+
+  it('host-401-invalid-key-stays-auth-invalid', () => {
+    // A credential failure is not proof that the endpoint refuses the id: the
+    // pool must rotate to the next healthy key, not retire a valid model.
+    const err = classifyOpenAICompatError({
+      status: 401,
+      bodyText: '{"error":{"message":"invalid API key"}}',
+      cause: new Error('x'),
+      hostChosenModel: hostChosen,
+    });
+    expect(err.kind).toBe('auth_invalid');
+    expect(err.code).toBeUndefined();
+    expect(err.action).toContain('CLAUDE_MEM_OPENAI_COMPAT_API_KEY');
+    expect(shouldRotateKey(err)).toBe(true);
+
+    // C1 stays intact: a 403 that names the model as disabled is a refusal of
+    // the host's choice, with no credential cooldown and no rotation.
+    hostNotServedAssertions(classifyOpenAICompatError({
+      status: 403,
+      bodyText: '{"error":{"message":"Model access is disabled"}}',
+      cause: new Error('x'),
+      hostChosenModel: hostChosen,
+    }));
+  });
+
+  it('plain-401-403-stay-auth-invalid', () => {
+    // Credential wording stays auth_invalid on both statuses. A model-refusal
+    // wording on 403 is now the own-model case below, not a bad key; 401 with
+    // that wording is still auth_invalid (the own-model branch needs 400/403/422).
+    for (const status of [401, 403] as const) {
+      const err = classifyOpenAICompatError({ status, bodyText: 'invalid API key', cause: new Error('x') });
+      expect(err.kind).toBe('auth_invalid');
+      expect(err.code).toBeUndefined();
+      expect(err.action).toContain('CLAUDE_MEM_OPENAI_COMPAT_API_KEY');
+    }
+  });
+
+  it('host-chosen-404-keeps-code', () => {
+    const err = classifyOpenAICompatError({
+      status: 404,
+      bodyText: 'model not found',
+      cause: new Error('x'),
+      hostChosenModel: hostChosen,
+    });
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.code).toBe(HOST_MODEL_NOT_SERVED_CODE);
+    expect(err.action).toBe('The endpoint answered 404 for "endpoint-main", the model the host\'s OpenCode config names, which CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST reads. The observer stops using that id and goes back to the configured model. To use it, serve it on CLAUDE_MEM_OPENAI_COMPAT_BASE_URL and restart the worker; otherwise set CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST to false.');
+  });
+
+  it('plain-404-route-stays-plain', () => {
+    // A missing route names no model, so it stays on the old base-URL answer.
+    const err = classifyOpenAICompatError({ status: 404, bodyText: 'route not found', cause: new Error('x') });
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.code).toBeUndefined();
     expect(err.action).toContain('CLAUDE_MEM_OPENAI_COMPAT_BASE_URL');
   });
 
@@ -695,6 +1541,92 @@ describe('classifyOpenAICompatError', () => {
       endpointLabel: 'NVIDIA NIM (build.nvidia.com)',
     });
     expect(err.message).toContain('NVIDIA NIM');
+  });
+});
+
+describe('a refused own model id is not an auth failure', () => {
+  const classify = (status: number, body: string) =>
+    classifyOpenAICompatError({ status, bodyText: body, cause: new Error('x') });
+
+  it('classifies the live Go 403 as an unserved own model', () => {
+    const err = classify(403, '{"error":{"message":"Model access is disabled"}}');
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.code).toBe(OWN_MODEL_NOT_SERVED_CODE);
+    expect(err.action).toContain('CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL');
+    expect(err.action).not.toContain('CLAUDE_MEM_OPENAI_COMPAT_API_KEY');
+  });
+
+  it('own-404-model-not-found-is-remembered', () => {
+    const err = classify(404, '{"error":{"message":"model_not_found"}}');
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.code).toBe(OWN_MODEL_NOT_SERVED_CODE);
+    expect(err.action).toContain('CLAUDE_MEM_OPENAI_COMPAT_DEFAULT_MODEL');
+    expect(err.action).not.toContain('CLAUDE_MEM_OPENAI_COMPAT_API_KEY');
+    expect(shouldRotateKey(err)).toBe(false);
+    expect(classify(404, 'The model `ghost` does not exist').code).toBe(OWN_MODEL_NOT_SERVED_CODE);
+  });
+
+  it('credential-words-still-win-over-a-structured-model-code', () => {
+    // The structured code must not hide a real credential failure: the pool
+    // keeps rotating and the auth path stays intact.
+    for (const credential of ['invalid API key', 'unauthorized', 'billing', 'credit', 'quota']) {
+      const body = JSON.stringify({ error: {
+        code: 'model_not_found',
+        message: `The model 'old-id' does not exist; ${credential}`,
+      } });
+      const err = classifyOpenAICompatError({ status: 403, bodyText: body, cause: new Error('x') });
+      expect(err.kind).toBe('auth_invalid');
+      expect(err.code).toBeUndefined();
+      expect(shouldRotateKey(err)).toBe(true);
+    }
+  });
+
+  it('host-chosen-400-422-credential-wording-keeps-the-old-path', () => {
+    // R69: on the 400/422 branch opened by wave 6, C1 means "not a permanent
+    // host refusal". A 400/422 with credential wording already classified as
+    // unrecoverable before that wave; making it auth_invalid would be new
+    // behaviour outside the two findings. Only the guard is pinned here.
+    for (const status of [400, 422] as const) {
+      const body = JSON.stringify({ error: {
+        code: 'model_not_found',
+        message: "The model 'old-id' does not exist; invalid API key",
+      } });
+      const err = classifyOpenAICompatError({
+        status,
+        bodyText: body,
+        cause: new Error('x'),
+        hostChosenModel: { id: 'old-id', setting: 'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST' },
+      });
+      expect(err.kind).toBe('unrecoverable');
+      expect(err.code).not.toBe(HOST_MODEL_NOT_SERVED_CODE);
+      expect(shouldRotateKey(err)).toBe(false);
+    }
+  });
+
+  it('plain-404-route-stays-a-plain-404', () => {
+    // No model designation, structured or textual: the old base-URL answer.
+    const err = classify(404, JSON.stringify({ error: { code: 'not_found', message: 'no such route' } }));
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.code).toBeUndefined();
+    expect(err.action).toContain('CLAUDE_MEM_OPENAI_COMPAT_BASE_URL');
+    expect(shouldRotateKey(err)).toBe(false);
+  });
+
+  it('leaves a host-chosen refusal to PR2', () => {
+    const err = classifyOpenAICompatError({
+      status: 403, bodyText: 'model access is disabled', cause: new Error('x'),
+      hostChosenModel: { id: 'endpoint-main', setting: 'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST' },
+    });
+    expect(err.code).toBe(HOST_MODEL_NOT_SERVED_CODE);
+  });
+
+  it('keeps the existing classifications for mixed credential, billing and 401 bodies', () => {
+    expect(classify(403, '{"error":{"message":"Key revoked; see billing portal"}}').kind).toBe('auth_invalid');
+    expect(classify(403, 'Model access is disabled: API key revoked').kind).toBe('auth_invalid');
+    expect(classify(403, 'Model access is disabled; update your billing details').kind).toBe('auth_invalid');
+    expect(classify(401, 'model access is disabled').kind).toBe('auth_invalid');
+    expect(classify(400, 'credit limit reached').kind).toBe('quota_exhausted');
+    expect(classify(400, 'some bad request').kind).toBe('unrecoverable');
   });
 });
 
@@ -787,6 +1719,8 @@ describe('auth policy follows the endpoint actually configured', () => {
   });
 
   afterEach(() => {
+    resetRefusedHostModelsForTesting();
+    resetServedModelsForTesting();
     for (const key of ENV_KEYS) {
       if (savedEnv[key] === undefined) delete process.env[key];
       else process.env[key] = savedEnv[key];
@@ -916,6 +1850,8 @@ describe('openai-compatible requests follow the shared observer contract', () =>
   });
 
   afterEach(() => {
+    resetRefusedHostModelsForTesting();
+    resetServedModelsForTesting();
     for (const spy of spies) spy.mockRestore();
   });
 
@@ -1059,6 +1995,164 @@ describe('openai-compatible requests follow the shared observer contract', () =>
     };
     expect(provider.fieldCompressionMaxOutputTokens()).toBe(3200);
   });
+
+  /**
+   * Greptile P1 (wave 7, #4719718387): the reasoning-off retry runs outside
+   * withRetry, and its catch used to swallow a classified model refusal. The
+   * refused id then reached the next turn and earned another refusal. A model
+   * refusal must travel to query()'s one remembering catch; every other class
+   * stays logged and swallowed, as it was before.
+   */
+  describe('wave 7: reasoning-off retry refusals reach the one stop path', () => {
+    const TRUNCATED = { choices: [{ message: { content: '' }, finish_reason: 'length' }] };
+    const SUCCESS = { choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] };
+    const refusedEnvelope = (id: string) => ({
+      code: 'model_not_found',
+      type: 'invalid_request_error',
+      message: `The model '${id}' does not exist`,
+    });
+    const hostConfig = {
+      ...CONFIG,
+      model: 'host/host-chosen',
+      hostChosenModels: { 'host/host-chosen': 'CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST' as const },
+    };
+    const ownConfig = { ...CONFIG, model: 'own/stale-id' };
+
+    beforeEach(() => {
+      // Reasoning on makes the first request retryable with reasoning forced
+      // off; a stale rejection of that wire field would skip the retry entirely.
+      settingsOverrides.CLAUDE_MEM_OPENAI_COMPAT_REASONING = 'on';
+      resetReasoningFieldRejectionsForTesting();
+      resetStreamingEndpointMemoryForTests();
+      resetQuotaCooldownsForTesting();
+    });
+
+    afterEach(() => {
+      resetReasoningFieldRejectionsForTesting();
+      resetStreamingEndpointMemoryForTests();
+      resetQuotaCooldownsForTesting();
+    });
+
+    const runQuery = (config: typeof CONFIG, signal?: AbortSignal, budget?: PaidSendBudget) =>
+      (new OpenAICompatProvider({} as never, {} as never) as unknown as {
+        query(
+          h: ConversationMessage[],
+          c: unknown,
+          s?: AbortSignal,
+          timeout?: number,
+          paidSendBudget?: PaidSendBudget,
+        ): Promise<{ content: string; finishReason?: string }>;
+      }).query([{ role: 'user', content: 'observe' }], config, signal, undefined, budget);
+
+    /** First reply is truncated, the retry is the refusal, later sends are a hard failure. */
+    const refusalFetch = (id: string, status: number) => {
+      let calls = 0;
+      const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => {
+        calls += 1;
+        if (calls === 1) return reply(TRUNCATED);
+        if (calls === 2) return reply({ error: refusedEnvelope(id) }, status);
+        throw new Error('a refused id was sent again');
+      });
+      spies.push(fetchSpy, spyOn(logger, 'error').mockImplementation(() => {}), spyOn(logger, 'warn').mockImplementation(() => {}));
+      return fetchSpy;
+    };
+
+    it('reasoning-off-retry-host-refusal-is-remembered', async () => {
+      const fetchSpy = refusalFetch('host/host-chosen', 400);
+
+      const failure = await runQuery(hostConfig).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ kind: 'unrecoverable', code: HOST_MODEL_NOT_SERVED_CODE });
+      expect(shouldRotateKey(failure)).toBe(false);
+      expect(getQuotaCooldown('openai-compatible')).toBeNull();
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      const [first, second] = sentBodies(fetchSpy);
+      expect(first.reasoning).toBeUndefined();
+      expect(second.reasoning).toEqual({ enabled: false });
+
+      // The single refusal record now holds the id: the next turn stops before
+      // the socket instead of paying to earn the same refusal again.
+      const stopped = await runQuery(hostConfig).catch((error: unknown) => error);
+      expect(stopped).toMatchObject({ code: HOST_MODEL_NOT_SERVED_CODE });
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('reasoning-off-retry-own-refusal-is-remembered', async () => {
+      const fetchSpy = refusalFetch('own/stale-id', 422);
+
+      const failure = await runQuery(ownConfig).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ kind: 'unrecoverable', code: OWN_MODEL_NOT_SERVED_CODE });
+      expect(shouldRotateKey(failure)).toBe(false);
+      expect(getQuotaCooldown('openai-compatible')).toBeNull();
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+      const stopped = await runQuery(ownConfig).catch((error: unknown) => error);
+      expect(stopped).toMatchObject({ code: OWN_MODEL_NOT_SERVED_CODE });
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
+
+    /** Quota, throttle and context classes still end at the catch's log line. */
+    it.each([
+      ['quota', 402, { code: 'insufficient_quota', message: 'You exceeded your current quota' }, 'quota_exhausted'],
+      ['rate-limit', 429, { code: 'rate_limit_error', message: 'Too many requests' }, 'rate_limit'],
+      ['413', 413, { code: 'context_length_exceeded', message: 'Request entity too large' }, 'context_overflow'],
+    ])('retry %s stays swallowed and unremembered', async (_name, status, error, expectedKind) => {
+      const body = JSON.stringify({ error });
+      expect(classifyOpenAICompatError({ status, bodyText: body, cause: new Error('x') }).kind).toBe(expectedKind);
+      let calls = 0;
+      const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => {
+        calls += 1;
+        if (calls === 1) return reply(TRUNCATED);
+        if (calls === 2) return reply({ error }, status);
+        return reply(SUCCESS);
+      });
+      spies.push(fetchSpy, spyOn(logger, 'error').mockImplementation(() => {}));
+
+      await expect(runQuery(ownConfig)).resolves.toMatchObject({ content: '', finishReason: 'length' });
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      // No pre-send stop on the next turn: this class was not recorded.
+      await expect(runQuery(ownConfig)).resolves.toMatchObject({ content: 'ok' });
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
+    });
+
+    it('abort still wins as the first gesture of the retry catch', async () => {
+      const controller = new AbortController();
+      const removeSpy = spyOn(controller.signal, 'removeEventListener');
+      spies.push(removeSpy);
+      let calls = 0;
+      const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => {
+        calls += 1;
+        if (calls === 1) return reply(TRUNCATED);
+        controller.abort();
+        return reply({ error: refusedEnvelope('host/host-chosen') }, 400);
+      });
+      spies.push(fetchSpy, spyOn(logger, 'error').mockImplementation(() => {}));
+
+      const failure = await runQuery(hostConfig, controller.signal).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ name: 'AbortError' });
+      expect(failure).not.toMatchObject({ code: HOST_MODEL_NOT_SERVED_CODE });
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('a refusal still spends one retry against the batch budget and finishes the deadline', async () => {
+      // Only a non-streamed request owns a reasoning-retry deadline; a streamed
+      // one uses the stream's own liveness and has no timer to finish.
+      markEndpointRefusesStreamingForTests(CONFIG.apiUrl);
+      const controller = new AbortController();
+      const removeSpy = spyOn(controller.signal, 'removeEventListener');
+      spies.push(removeSpy);
+      const budget = new PaidSendBudget(1);
+      const fetchSpy = refusalFetch('own/stale-id', 400);
+
+      const failure = await runQuery(ownConfig, controller.signal, budget).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ code: OWN_MODEL_NOT_SERVED_CODE });
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      // One initial send plus the one claimed reasoning retry; no replay.
+      expect(budget.spentPaidSends).toBe(2);
+      // withRetry removes its own listener, and the retry's finally finishes
+      // the deadline: two removals, so a thrown refusal still reaches finally.
+      expect(removeSpy.mock.calls.filter(call => call[0] === 'abort').length).toBe(2);
+    });
+  });
 });
 
 /** #3263's lesson, applied here: a 200 envelope carries the status that matters. */
@@ -1149,6 +2243,8 @@ describe('openai-compatible keys go through the cmem key lock', () => {
   });
 
   afterEach(() => {
+    resetRefusedHostModelsForTesting();
+    resetServedModelsForTesting();
     for (const key of LOCK_ENV_KEYS) {
       if (savedEnv[key] === undefined) delete process.env[key];
       else process.env[key] = savedEnv[key];
