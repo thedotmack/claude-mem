@@ -172,7 +172,7 @@ describe('standalone Cloud Sync installer contract', () => {
     if (process.platform !== 'win32') expect(settingsMode).toBe(0o600);
   });
 
-  it('connects Cloud Sync for a Pro account on a Cloud-only pairing and never writes its hosted memory credentials', () => {
+  it('connects Cloud Sync for a Pro account or TeamBrain seat on a Cloud-only pairing and never writes hosted memory credentials', () => {
     // A Pro account with no Pro settings on this machine (a complimentary plan, or a new computer) only sees the
     // Cloud Sync offers, so its sign-in arrives on a Cloud-only pairing. Pro includes Cloud Sync: keep the sync
     // connection, drop the bundled observer credentials, and keep the configured provider.
@@ -181,6 +181,8 @@ describe('standalone Cloud Sync installer contract', () => {
       { plan: 'pro' },
       { plan: 'pro', memory_key: 'HOSTED_MEMORY_KEY_MUST_NOT_BE_WRITTEN', memory_base_url: 'https://cmem.ai/api/inference/v1' },
       { plan: 'trial', memory_key: 'HOSTED_MEMORY_KEY_MUST_NOT_BE_WRITTEN' },
+      // cmem.ai's Cloud Sync page tells a TeamBrain seat "Your current access covers sync", so its sign-in lands here too.
+      { plan: 'teambrain_seat' },
     ]) {
       const { output, settings, settingsMode } = runCompletedPairingChild({
         status: 'ready', user_id: 'pro_user', setup_token: 'PRO_SYNC_TOKEN_MUST_NOT_LEAK', hub_url: 'https://sync.cmem.ai', ...extra,
@@ -235,7 +237,7 @@ describe('standalone Cloud Sync installer contract', () => {
 
   it('rejects bundled or hosted credential delivery for a Cloud-only pairing before writing settings', () => {
     const initial = { CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_MODEL: 'haiku' };
-    for (const extra of [{ plan: 'none' }, { plan: 'teambrain_seat' }, { plan: 'cloud_sync', memory_key: 'UNEXPECTED_MEMORY_KEY', memory_base_url: 'https://cmem.ai/api/inference/v1' }]) {
+    for (const extra of [{ plan: 'none' }, { plan: 'teambrain_seat', memory_key: 'UNEXPECTED_MEMORY_KEY' }, { plan: 'cloud_sync', memory_key: 'UNEXPECTED_MEMORY_KEY', memory_base_url: 'https://cmem.ai/api/inference/v1' }]) {
       const { output, settings } = runCompletedPairingChild({
         status: 'ready', user_id: 'cloud_user', setup_token: 'UNEXPECTED_SETUP_TOKEN', hub_url: 'https://sync.cmem.ai', ...extra,
       }, initial, 'cloud_sync_annual');

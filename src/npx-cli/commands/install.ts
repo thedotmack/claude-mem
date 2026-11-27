@@ -2346,13 +2346,15 @@ export async function waitForInstallerPairing(
 
 /**
  * What a ready delivery may write for this pairing, or null to refuse it. A Cloud-only intent must never stage or
- * activate a customer's separate hosted memory credentials. A CMEM Pro account (paid, trial or complimentary) that
- * signs in on a Cloud-only pairing gets here when this machine has no Pro settings yet, since setup then offers only
- * Cloud Sync. Pro includes Cloud Sync, so its sync connection is kept and its observer credentials are dropped.
+ * activate a customer's separate hosted memory credentials. A CMEM Pro account (paid, trial or complimentary) or a
+ * TeamBrain seat that signs in on a Cloud-only pairing gets here when this machine has no Pro settings yet, since
+ * setup then offers only Cloud Sync. Both include Cloud Sync, so the sync connection is kept and any observer
+ * credentials are dropped. A seat that unexpectedly carries a memory key is refused.
  */
 function readyForPairing(pairing: InstallerOAuthPairing, ready: TrialReadyResult): TrialReadyResult | null {
   if (!pairing.cloudSyncOffer || (ready.plan === 'cloud_sync' && !ready.memory)) return ready;
   if (ready.plan === 'pro' || ready.plan === 'trial') return { ...ready, memory: null };
+  if (ready.plan === 'teambrain_seat' && !ready.memory) return ready;
   log.error('The account did not return the selected Cloud Sync connection. Your existing memory provider was kept.');
   return null;
 }
@@ -2530,6 +2532,8 @@ export async function completeCmemTrialPairing(
     log.info(`Open your private Work View: ${PRIVATE_WORK_VIEW_URL}`);
   } else if (pairing.cloudSyncOffer && (accepted.plan === 'pro' || accepted.plan === 'trial')) {
     log.success('Cloud Sync connected through your CMEM Pro plan. Memory keeps your existing provider.');
+  } else if (pairing.cloudSyncOffer && accepted.plan === 'teambrain_seat') {
+    log.success('Cloud Sync connected through your TeamBrain seat. Memory keeps your existing provider.');
   }
   return accepted;
 }
