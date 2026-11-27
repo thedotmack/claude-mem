@@ -160,6 +160,29 @@ describe('server-owned sqlite storage boundary', () => {
     });
   });
 
+  it('bounds the active API-key prefix lookup like the Postgres one', () => {
+    withDb(db => {
+      const projects = new ProjectsRepository(db);
+      const auth = new AuthRepository(db);
+      const project = projects.create({ name: 'Prefix bound' });
+      const teamId = 'team-prefix';
+      db.prepare("INSERT INTO teams (id, name, created_at_epoch, updated_at_epoch) VALUES (?, 'Prefix', 0, 0)").run(teamId);
+
+      for (let i = 0; i < 10; i++) {
+        auth.createApiKey({
+          teamId,
+          projectId: project.id,
+          name: `key-${i}`,
+          keyHash: `hash-${i}`,
+          prefix: 'sk-shared',
+          scopes: ['memory:read']
+        });
+      }
+
+      expect(auth.listActiveApiKeysByPrefix('sk-shared')).toHaveLength(8);
+    });
+  });
+
   it('does not require legacy worker tables to use server-owned repositories', () => {
     withDb(db => {
       const projects = new ProjectsRepository(db);
