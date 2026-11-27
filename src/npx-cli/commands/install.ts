@@ -2344,11 +2344,17 @@ export async function waitForInstallerPairing(
   }
 }
 
-/** A Cloud-only intent must never stage or activate a customer's separate hosted memory credentials. */
-function pairingAcceptsReady(pairing: InstallerOAuthPairing, ready: TrialReadyResult): boolean {
-  if (!pairing.cloudSyncOffer || (ready.plan === 'cloud_sync' && !ready.memory)) return true;
+/**
+ * What a ready delivery may write for this pairing, or null to refuse it. A Cloud-only intent must never stage or
+ * activate a customer's separate hosted memory credentials. A CMEM Pro account (paid, trial or complimentary) that
+ * signs in on a Cloud-only pairing gets here when this machine has no Pro settings yet, since setup then offers only
+ * Cloud Sync. Pro includes Cloud Sync, so its sync connection is kept and its observer credentials are dropped.
+ */
+function readyForPairing(pairing: InstallerOAuthPairing, ready: TrialReadyResult): TrialReadyResult | null {
+  if (!pairing.cloudSyncOffer || (ready.plan === 'cloud_sync' && !ready.memory)) return ready;
+  if (ready.plan === 'pro' || ready.plan === 'trial') return { ...ready, memory: null };
   log.error('The account did not return the selected Cloud Sync connection. Your existing memory provider was kept.');
-  return false;
+  return null;
 }
 
 /**
@@ -2376,9 +2382,10 @@ export async function completeInstallerOAuthLogin(
   const result = await waitForInstallerPairing(pairing, 'login', version);
   if (!result) return false;
   if (result.kind === 'ready') {
-    if (!pairingAcceptsReady(pairing, result)) return false;
-    if (!saveReadyPairing(pairing, result)) return false;
-    pairing.delivered = result;
+    const accepted = readyForPairing(pairing, result);
+    if (!accepted) return false;
+    if (!saveReadyPairing(pairing, accepted)) return false;
+    pairing.delivered = accepted;
   }
   log.success('OAuth login complete.');
   await captureCliEvent('installer_oauth_completed', { version });
@@ -2485,7 +2492,7 @@ export async function completeCmemTrialPairing(
    */
   { opened = false, superseded }: { opened?: boolean; superseded?: () => Promise<boolean> } = {},
 ): Promise<TrialReadyResult | null> {
-  if (pairing.delivered) return pairingAcceptsReady(pairing, pairing.delivered) ? pairing.delivered : null;
+  if (pairing.delivered) return readyForPairing(pairing, pairing.delivered);
 
   if (!opened) {
     noteDeviceCode(pairing);
@@ -2503,25 +2510,28 @@ export async function completeCmemTrialPairing(
 
   const result = await waitForInstallerPairing(pairing, 'enrollment', version, { superseded });
   if (!result || result.kind !== 'ready') return null;
-  if (!pairingAcceptsReady(pairing, result)) return null;
+  const accepted = readyForPairing(pairing, result);
+  if (!accepted) return null;
 
-  const wrote = saveReadyPairing(pairing, result);
+  const wrote = saveReadyPairing(pairing, accepted);
   if (!wrote) {
     log.error(`Could not save the one-time ${pairing.cloudSyncOffer ? 'Cloud Sync' : 'CMEM Pro'} credentials.`);
     return null;
   }
-  pairing.delivered = result;
+  pairing.delivered = accepted;
   // A sync-only account (Cloud Sync or a TeamBrain seat) has no CMEM Pro to announce, and
   // no gateway key whose fallback a fresh delivery would clear.
-  if (result.memory) {
+  if (accepted.memory) {
     clearProFallback();
     log.success(`CMEM Pro ${PRO_TRIAL_LABEL} active.`);
     await captureCliEvent('trial_activated', { version });
-  } else if (result.plan === 'cloud_sync') {
+  } else if (accepted.plan === 'cloud_sync') {
     log.success('Cloud Sync connected. Memory keeps your existing provider.');
     log.info(`Open your private Work View: ${PRIVATE_WORK_VIEW_URL}`);
+  } else if (pairing.cloudSyncOffer && (accepted.plan === 'pro' || accepted.plan === 'trial')) {
+    log.success('Cloud Sync connected through your CMEM Pro plan. Memory keeps your existing provider.');
   }
-  return result;
+  return accepted;
 }
 
 // --- Email opt-in ------------------------------------------------------------

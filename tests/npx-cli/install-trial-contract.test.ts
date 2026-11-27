@@ -172,9 +172,70 @@ describe('standalone Cloud Sync installer contract', () => {
     if (process.platform !== 'win32') expect(settingsMode).toBe(0o600);
   });
 
+  it('connects Cloud Sync for a Pro account on a Cloud-only pairing and never writes its hosted memory credentials', () => {
+    // A Pro account with no Pro settings on this machine (a complimentary plan, or a new computer) only sees the
+    // Cloud Sync offers, so its sign-in arrives on a Cloud-only pairing. Pro includes Cloud Sync: keep the sync
+    // connection, drop the bundled observer credentials, and keep the configured provider.
+    const initial = { CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_MODEL: 'haiku' };
+    for (const extra of [
+      { plan: 'pro' },
+      { plan: 'pro', memory_key: 'HOSTED_MEMORY_KEY_MUST_NOT_BE_WRITTEN', memory_base_url: 'https://cmem.ai/api/inference/v1' },
+      { plan: 'trial', memory_key: 'HOSTED_MEMORY_KEY_MUST_NOT_BE_WRITTEN' },
+    ]) {
+      const { output, settings, settingsMode } = runCompletedPairingChild({
+        status: 'ready', user_id: 'pro_user', setup_token: 'PRO_SYNC_TOKEN_MUST_NOT_LEAK', hub_url: 'https://sync.cmem.ai', ...extra,
+      }, initial, 'cloud_sync_monthly');
+      expect(output).toContain(`__PAIRING_RESULT__={"plan":"${extra.plan}","ready":true}`);
+      expect(output).not.toContain('PRO_SYNC_TOKEN_MUST_NOT_LEAK');
+      expect(output).not.toContain('HOSTED_MEMORY_KEY_MUST_NOT_BE_WRITTEN');
+      expect(settings).toEqual({
+        ...initial,
+        CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'PRO_SYNC_TOKEN_MUST_NOT_LEAK',
+        CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'pro_user',
+        CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://sync.cmem.ai',
+        CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',
+        CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: expect.any(String),
+      });
+      if (process.platform !== 'win32') expect(settingsMode).toBe(0o600);
+    }
+  });
+
+  it('finishes the browser checkout wait when a Pro account answers a Cloud-only pairing', () => {
+    // The browser funnel's checkout waits in completeCmemTrialPairing (the enrollment poll). Refusing a Pro delivery
+    // here left the checkout unfinished after a successful sign-in.
+    const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-installer-enrollment-'));
+    try {
+      const initial = { CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_MODEL: 'haiku' };
+      writeFileSync(join(dataDir, 'settings.json'), JSON.stringify(initial, null, 2));
+      const body = { status: 'ready', user_id: 'pro_user', setup_token: 'PRO_SYNC_TOKEN_MUST_NOT_LEAK', hub_url: 'https://sync.cmem.ai', plan: 'pro', memory_key: 'HOSTED_MEMORY_KEY_MUST_NOT_BE_WRITTEN' };
+      const script = `
+        globalThis.fetch = async () => new Response(${JSON.stringify(JSON.stringify(body))}, { status: 200, headers: { 'content-type': 'application/json' } });
+        const { completeCmemTrialPairing } = await import('./src/npx-cli/commands/install.ts');
+        const pairing = { pairingId: 'P', secret: 'S', pollIntervalMs: 1, userCode: 'ABCD-2345', authorizationUrl: 'https://cmem.ai/login', checkoutUrl: 'https://cmem.ai/checkout', cloudSyncOffer: 'cloud_sync_monthly' };
+        const delivered = await completeCmemTrialPairing(pairing, 'test-version', { opened: true });
+        console.log('__ENROLLMENT__=' + JSON.stringify({ plan: delivered?.plan, memory: delivered?.memory ?? null }));
+      `;
+      const run = Bun.spawnSync([process.execPath, '--eval', script], {
+        cwd: repoRoot, env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir, CLAUDE_MEM_TELEMETRY: '0' }, stdout: 'pipe', stderr: 'pipe',
+      });
+      const output = decoder.decode(run.stdout) + decoder.decode(run.stderr);
+      expect(run.exitCode, output).toBe(0);
+      expect(output).toContain('__ENROLLMENT__={"plan":"pro","memory":null}');
+      expect(output).toContain('Cloud Sync connected through your CMEM Pro plan.');
+      expect(output).not.toMatch(/CMEM Pro .*active\./);
+      expect(output).not.toContain('HOSTED_MEMORY_KEY_MUST_NOT_BE_WRITTEN');
+      const settings = JSON.parse(readFileSync(join(dataDir, 'settings.json'), 'utf-8'));
+      expect(settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN).toBe('PRO_SYNC_TOKEN_MUST_NOT_LEAK');
+      expect(settings.CLAUDE_MEM_PROVIDER).toBe('claude');
+      expect(Object.keys(settings).some(key => key.startsWith('CLAUDE_MEM_PRO_'))).toBe(false);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('rejects bundled or hosted credential delivery for a Cloud-only pairing before writing settings', () => {
     const initial = { CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_MODEL: 'haiku' };
-    for (const extra of [{ plan: 'pro' }, { plan: 'cloud_sync', memory_key: 'UNEXPECTED_MEMORY_KEY', memory_base_url: 'https://cmem.ai/api/inference/v1' }]) {
+    for (const extra of [{ plan: 'none' }, { plan: 'teambrain_seat' }, { plan: 'cloud_sync', memory_key: 'UNEXPECTED_MEMORY_KEY', memory_base_url: 'https://cmem.ai/api/inference/v1' }]) {
       const { output, settings } = runCompletedPairingChild({
         status: 'ready', user_id: 'cloud_user', setup_token: 'UNEXPECTED_SETUP_TOKEN', hub_url: 'https://sync.cmem.ai', ...extra,
       }, initial, 'cloud_sync_annual');
