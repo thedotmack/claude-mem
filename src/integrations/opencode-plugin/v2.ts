@@ -383,14 +383,18 @@ const REGEX_AFTER_BLOCK_KEYWORDS = new Set(["if", "while", "for", "switch", "cat
 
 /**
  * A closing bracket can also precede an expression: `if (flag) /re/`. Walk
- * back to the matching opener and accept only a structural keyword, so a call
- * or a parenthesized calculation stayed a division. No opener means division.
+ * back over the already-masked prefix so a `)` inside a string or comment
+ * cannot skew the depth, then accept only a structural keyword read from the
+ * original script. A call or a parenthesized calculation stays a division;
+ * no opener means division.
  */
-function startsAfterControlBlock(code: string, at: number, open: string, close: string): boolean {
+function startsAfterControlBlock(
+  masked: string[], original: string, at: number, open: string, close: string,
+): boolean {
   let depth = 0;
   let index = at;
   while (index >= 0) {
-    const char = code[index];
+    const char = masked[index];
     if (char === close) depth++;
     else if (char === open) {
       depth--;
@@ -400,31 +404,33 @@ function startsAfterControlBlock(code: string, at: number, open: string, close: 
   }
   if (index < 0) return false;
   let wordEnd = index - 1;
-  while (wordEnd >= 0 && /\s/.test(code[wordEnd])) wordEnd--;
+  while (wordEnd >= 0 && /\s/.test(original[wordEnd])) wordEnd--;
   let wordStart = wordEnd;
-  while (wordStart >= 0 && /[\w$]/.test(code[wordStart])) wordStart--;
-  return REGEX_AFTER_BLOCK_KEYWORDS.has(code.slice(wordStart + 1, wordEnd + 1));
+  while (wordStart >= 0 && /[\w$]/.test(original[wordStart])) wordStart--;
+  return REGEX_AFTER_BLOCK_KEYWORDS.has(original.slice(wordStart + 1, wordEnd + 1));
 }
 
 /**
- * A `/` opens a regex literal only where an expression can start. After an
- * operand — an identifier, a number, a closing bracket, a quote, a template or
- * an increment — it is division and must stay readable.
+ * A `/` opens a regex literal only where an expression can start. The token
+ * test reads the already-masked prefix, so quotes and comments cannot masquerade
+ * as code; keyword text is read from the original. After an operand — an
+ * identifier, a number, a closing bracket, a quote, a template or an increment —
+ * it is division and must stay readable.
  */
-function startsRegexLiteral(code: string, at: number): boolean {
+function startsRegexLiteral(masked: string[], original: string, at: number): boolean {
   let previous = at - 1;
-  while (previous >= 0 && /\s/.test(code[previous])) previous--;
+  while (previous >= 0 && /\s/.test(masked[previous])) previous--;
   if (previous < 0) return true;
-  const char = code[previous];
-  if ((char === "+" || char === "-") && code[previous - 1] === char) return false;
+  const char = masked[previous];
+  if ((char === "+" || char === "-") && masked[previous - 1] === char) return false;
   if ("([{,;:=!?&|+-*%<>~^".includes(char)) return true;
   if (/[A-Za-z_$]/.test(char)) {
     let start = previous;
-    while (start > 0 && /[\w$]/.test(code[start - 1])) start--;
-    return REGEX_AFTER_KEYWORDS.has(code.slice(start, previous + 1));
+    while (start > 0 && /[\w$]/.test(masked[start - 1])) start--;
+    return REGEX_AFTER_KEYWORDS.has(original.slice(start, previous + 1));
   }
   if (char === ")" || char === "}") {
-    return startsAfterControlBlock(code, previous, char === ")" ? "(" : "{", char);
+    return startsAfterControlBlock(masked, original, previous, char === ")" ? "(" : "{", char);
   }
   return false;
 }
@@ -493,7 +499,7 @@ function maskNonCode(code: string): string {
     // A regex is consumed whole, before any quote or `//` inside it can start
     // a string or comment. `/` stays literal inside `[...]` and `\/` is escaped;
     // an unterminated `/` is left alone instead of eating the rest of the line.
-    if (char === "/" && next !== "/" && next !== "*" && startsRegexLiteral(code, index)) {
+    if (char === "/" && next !== "/" && next !== "*" && startsRegexLiteral(out, code, index)) {
       const end = regexEnd(code, index);
       if (end !== undefined) {
         let afterFlags = end;

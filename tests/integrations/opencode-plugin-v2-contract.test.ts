@@ -1211,6 +1211,16 @@ describe("OpenCode V2 raw keys from the execute script", () => {
       const code = `if (flag) /tools["claude-mem"].work_state_write({list:1})/.test(s); const input = {real:1}; tools["claude-mem"].work_state_write(input);`;
       expect(extractRawKeyNames(code)).toEqual([]);
     });
+
+    it("keeps a real call after a regex when the if header holds a literal close paren in a string", () => {
+      const code = `if (s === ")") /['"]/.test(s); tools["claude-mem"].work_state_write({items:1});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
+
+    it("keeps a real call after a regex when the if header holds a close paren in a comment", () => {
+      const code = `if (flag /* ) */) /['"]/.test(s); tools["claude-mem"].work_state_write({items:2});`;
+      expect(extractRawKeyNames(code)).toEqual(["items"]);
+    });
   });
 
   it("names the raw key at the nested after, never the value, and captures the original error first", async () => {
