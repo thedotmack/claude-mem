@@ -589,7 +589,7 @@ const WORK_STATE_WRITE_FORMS: Record<BatchEnabled, McpToolDefinition> = (() => {
     false: { ...base, handler: workStateWriteOnce },
     true: {
       ...base,
-      description: `${base.description} Call once per entry, or pass \`items\` to append several entries in one call. \`fields\` is an object of scalar keys, not an array. Supply exactly one of \`fields\` or \`items\`.`,
+      description: `${base.description.replace('fields (required).', 'plus exactly one of fields or items.')} Call once per entry, or pass \`items\` to append several entries in one call. \`fields\` is an object of scalar keys, not an array. Supply exactly one of \`fields\` or \`items\`.`,
       inputSchema: {
         ...base.inputSchema,
         properties: {

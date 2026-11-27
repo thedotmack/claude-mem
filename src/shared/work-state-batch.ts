@@ -6,6 +6,8 @@
  */
 import type { WorkStateFields } from '../services/sqlite/work-state.js';
 import { isSharedWorkList } from '../services/work-view/shared-records.mjs';
+import { isMyRulesList } from '../services/work-view/my-rules.mjs';
+import { isMyFocusList } from '../services/work-view/my-focus.mjs';
 import { isOwnerGoalsList } from '../services/work-view/owner-goals.mjs';
 import { isWorkStateFields, ownerGoalsRowRefusal } from './work-state-fields.js';
 
@@ -35,10 +37,12 @@ export function parseWorkStateWriteArgs(args: unknown): ParsedWorkStateWrite {
   if (args === null || typeof args !== 'object' || Array.isArray(args)) return error();
   const record = args as Record<string, unknown>;
   const list = record.list;
-  if (typeof list !== 'string' || list.trim().length === 0 || list.length > 200) return error();
+  if (typeof list !== 'string' || list.trim().length === 0 || list.trim().length > 200) return error();
 
   // Decide both list rules once, rather than per entry inside the caller's loop.
-  const reserved = isSharedWorkList(list);
+  // Mirror every list the worker refuses before any POST: the shared-records
+  // prefix plus My Rules and My Focus (403 in WorkStateRoutes.handleWrite).
+  const reserved = isSharedWorkList(list) || isMyRulesList(list) || isMyFocusList(list);
   const ownerGoals = isOwnerGoalsList(list);
   if (reserved) return error();
 

@@ -61,6 +61,15 @@ describe('parseWorkStateWriteArgs', () => {
       .toEqual({ kind: 'batch', items: [{ task: 'a' }, { task: 'b' }] });
   });
 
+  it('measures the 200-character list bound after trimming, like the worker', () => {
+    const list = ` ${'x'.repeat(200)} `;
+    expect(list.length).toBe(202);
+    expect(parseWorkStateWriteArgs({ list, fields: { task: 'a' } }))
+      .toEqual({ kind: 'single', fields: { task: 'a' } });
+    expect(parseWorkStateWriteArgs({ list: ` ${'x'.repeat(201)} `, fields: { task: 'a' } }))
+      .toEqual({ kind: 'error', message: WORK_STATE_WRITE_ARGS_ERROR });
+  });
+
   it.each([
     ['neither fields nor items', { list: 'release' }],
     ['both fields and items', { list: 'release', fields: { task: 'a' }, items: [{ task: 'b' }] }],
@@ -134,6 +143,8 @@ describe('grouped writes have worker parity before the first POST', () => {
 
   it('refuses a reserved list and an unkind owner-goals row before any POST', async () => {
     expect((await writeBatch(port, checkout, '__my_work_v1:entry', [{ task: 'ok' }])).kind).toBe('error');
+    expect((await writeBatch(port, checkout, 'my-rules', [{ task: 'Rule: draft' }])).kind).toBe('error');
+    expect((await writeBatch(port, checkout, 'my-focus', [{ task: 'Focus area: draft' }])).kind).toBe('error');
     expect((await writeBatch(port, checkout, 'owner-goals', [{ task: 'Ask: draft', status: 'todo' }])).kind).toBe('error');
     expect(posts).toEqual([]);
     expect(rowCount()).toBe(0);

@@ -163,6 +163,8 @@ describe('work_state_write grouped writes (opt-in)', () => {
       expect(properties.items.items.additionalProperties.type).toEqual(['string', 'number', 'boolean', 'null']);
       expect(tool.description).toContain('Call once per entry, or pass `items` to append several entries in one call.');
       expect(tool.description).toContain('`fields` is an object of scalar keys, not an array. Supply exactly one of `fields` or `items`.');
+      expect(tool.description).toContain('Params: list (required), plus exactly one of fields or items.');
+      expect(tool.description).not.toContain('fields (required)');
     }, false, enabled);
   }, 30_000);
 
