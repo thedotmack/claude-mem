@@ -1,4 +1,4 @@
-import { syncablePromptSql } from '../prompt-import/transcript-origin.mjs';
+import { syncablePromptSql, workspaceAccountSql } from '../prompt-import/transcript-origin.mjs';
 import type { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
 import { sha256Base64Url, stableDocumentId, type CanonicalWireOp, type ContentKind } from './CanonicalContent.js';
@@ -53,13 +53,15 @@ export class SyncRecovery {
 
   inventory() {
     return this.db.transaction(() => {
-      const queue = readSyncQueueInventory(this.db, this.source.flags());
+      const flags = this.source.flags();
+      const accountSql = workspaceAccountSql(this.db, flags.workspaceAccount);
+      const queue = readSyncQueueInventory(this.db, flags);
       const excludedCurrent = {} as Record<ContentKind, number>;
       const ledgerEntries = {} as Record<ContentKind, number>;
       for (const [kind, table] of Object.entries(TABLES) as [ContentKind, string][]) {
         excludedCurrent[kind] = (this.db.prepare(`SELECT COUNT(*) AS n FROM ${table} t
           JOIN sync_launch_exclusions e ON e.kind = ? AND e.origin_local_id = CAST(t.id AS TEXT)
-          WHERE t.origin_device_id IS NULL ${kind === 'prompt' ? `AND ${syncablePromptSql('t.native_prompt_id')}` : ''} AND (length(CAST(t.sync_rev AS TEXT)) < length(e.through_rev)
+          WHERE t.origin_device_id IS NULL ${kind === 'prompt' ? `AND ${syncablePromptSql('t.native_prompt_id', accountSql)}` : ''} AND (length(CAST(t.sync_rev AS TEXT)) < length(e.through_rev)
           OR (length(CAST(t.sync_rev AS TEXT)) = length(e.through_rev) AND CAST(t.sync_rev AS TEXT) <= e.through_rev))`).get(kind) as { n: number }).n;
         ledgerEntries[kind] = (this.db.prepare('SELECT COUNT(*) AS n FROM sync_launch_exclusions WHERE kind = ?').get(kind) as { n: number }).n;
       }
@@ -77,6 +79,7 @@ export class SyncRecovery {
     const scope = normalizeScope(input);
     return this.db.transaction(() => {
       const flags = this.source.flags();
+      const accountSql = workspaceAccountSql(this.db, flags.workspaceAccount);
       if (!this.deviceId) throw new RecoveryError('not_configured', 'Recovery requires a configured origin device');
       const items: RecoveryItem[] = [];
       for (const kind of scope.kinds) {
@@ -89,7 +92,7 @@ export class SyncRecovery {
           JOIN sync_launch_exclusions e ON e.kind = ? AND e.origin_local_id = CAST(t.id AS TEXT)
           WHERE t.origin_device_id IS NULL AND ${project} = ? AND t.created_at_epoch >= ? AND t.created_at_epoch < ?
           AND (t.synced_at IS NULL OR t.synced_at >= 0) ${held}
-          ${kind === 'prompt' ? `AND ${syncablePromptSql('t.native_prompt_id')}` : ''}
+          ${kind === 'prompt' ? `AND ${syncablePromptSql('t.native_prompt_id', accountSql)}` : ''}
           AND (length(CAST(t.sync_rev AS TEXT)) < length(e.through_rev)
           OR (length(CAST(t.sync_rev AS TEXT)) = length(e.through_rev) AND CAST(t.sync_rev AS TEXT) <= e.through_rev))
           ORDER BY t.id LIMIT ?`).all(kind, scope.project, Date.parse(scope.from), Date.parse(scope.to), scope.maxItems - items.length + 1) as { id: string }[];

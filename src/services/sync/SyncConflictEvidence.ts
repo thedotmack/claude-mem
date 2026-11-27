@@ -1,7 +1,7 @@
 import type { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
 import { isSharedWorkList } from '../work-view/shared-records.mjs';
-import { CONTENT_KIND_SPECS } from './CloudSync.js';
+import { nativeContentSpec } from './CloudSync.js';
 import { assertCanonicalDecimal, buildContentOperation, canonicalJson, parseCanonicalOperation, stableDocumentId, type CanonicalWireOp, type ContentKind } from './CanonicalContent.js';
 
 export class SyncRecoveryError extends Error {
@@ -48,10 +48,9 @@ export function listConflictEvidence(db: Database, limit: number) {
 }
 
 /** Read metadata hashes, never retained canonical outbox/quarantine bodies. Runs off-thread for HTTP. */
-export function readLocalConflictEvidence(db: Database, deviceId: string, kind: ContentKind, originLocalId: string, options: { validateBodies: boolean } = { validateBodies: true }): LocalConflictEvidence {
+export function readLocalConflictEvidence(db: Database, deviceId: string, kind: ContentKind, originLocalId: string, options: { validateBodies: boolean; workspaceAccount?: string } = { validateBodies: true }): LocalConflictEvidence {
   return db.transaction(() => {
-    const spec = CONTENT_KIND_SPECS.find(item => item.kind === kind);
-    if (!spec) throw new SyncRecoveryError('unsupported_repair_choice', 400);
+    const spec = nativeContentSpec(db, kind, options.workspaceAccount);
     assertCanonicalDecimal(originLocalId);
     const row = db.prepare(spec.selectOneSql).get(originLocalId) as Record<string, unknown> | null;
     if (row && row.origin_device_id != null) throw new SyncRecoveryError('native_origin_required', 403);

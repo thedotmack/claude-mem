@@ -400,9 +400,22 @@ export class SessionStore {
   private ensureNativePromptIdentity(): void {
     this.db.transaction(() => {
       const columns = this.db.query('PRAGMA table_info(user_prompts)').all() as TableColumnInfo[];
-      for (const column of ['native_prompt_id', 'native_prompt_hash']) {
+      for (const column of ['native_prompt_id', 'native_prompt_hash', 'workspace_sync_account']) {
         if (!columns.some(existing => existing.name === column)) this.db.run(`ALTER TABLE user_prompts ADD COLUMN ${column} TEXT`);
       }
+      // A source survives deletion of its local row only as an identity tombstone (never prompt text).
+      this.db.run(`CREATE TABLE IF NOT EXISTS workspace_prompt_sources (
+        platform_source TEXT NOT NULL, content_session_id TEXT NOT NULL, transcript_id TEXT NOT NULL,
+        prompt_row_id INTEGER REFERENCES user_prompts(id) ON DELETE SET NULL,
+        PRIMARY KEY(platform_source, content_session_id, transcript_id))`);
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_workspace_prompt_rows ON workspace_prompt_sources(prompt_row_id)');
+      this.db.run(`CREATE TRIGGER IF NOT EXISTS remember_deleted_transcript_prompt BEFORE DELETE ON user_prompts
+        WHEN OLD.origin_device_id IS NULL AND OLD.native_prompt_id GLOB 'transcript:*'
+        BEGIN
+          INSERT OR IGNORE INTO workspace_prompt_sources(platform_source, content_session_id, transcript_id, prompt_row_id)
+          SELECT COALESCE(NULLIF(s.platform_source,''), '${DEFAULT_PLATFORM_SOURCE}'), s.content_session_id,
+            OLD.native_prompt_id, NULL FROM sdk_sessions s WHERE s.id = OLD.session_db_id;
+        END`);
       this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_prompts_native_identity
         ON user_prompts(session_db_id, native_prompt_id) WHERE native_prompt_id IS NOT NULL`);
       // The feed checks only the next legacy retry window, not the whole session.
@@ -4146,20 +4159,23 @@ export class SessionStore {
     platformSource: string; contentSessionId: string; project: string;
     nativePromptId: string; promptText: string; createdAtEpoch: number;
     hookTextVariants?: string[]; hookMatchWindowMs: number; claimedHookRowIds: Set<number>;
-  }): { reason: 'new' | 'already-imported' | 'recorded-by-hook' | 'private' | 'deleted'; hookRowId?: number } {
+  }): { reason: 'new' | 'already-imported' | 'recorded-by-hook' | 'private' | 'deleted'; hookRowId?: number; promptRowId?: number } {
     const text = normalizeStoredPromptText(prompt.promptText);
     if (!text) return { reason: 'private' };
     const platformSource = normalizePlatformSource(prompt.platformSource);
     // A resumed conversation has a new session row, but its old transcript
     // still contains the asks the owner deleted. Only later source times return.
-    if (this.isBeforeSessionDeletion(platformSource, prompt.contentSessionId, prompt.createdAtEpoch)) {
+    const transcriptId = `transcript:${prompt.nativePromptId}`;
+    if (this.isBeforeSessionDeletion(platformSource, prompt.contentSessionId, prompt.createdAtEpoch)
+      || this.db.prepare(`SELECT 1 FROM workspace_prompt_sources WHERE platform_source = ? AND content_session_id = ?
+        AND transcript_id = ? AND prompt_row_id IS NULL`).get(platformSource, prompt.contentSessionId, transcriptId)) {
       return { reason: 'deleted' };
     }
     const session = this.db.prepare(`SELECT id FROM sdk_sessions
       WHERE COALESCE(NULLIF(platform_source, ''), ?) = ? AND content_session_id = ?`)
       .get(DEFAULT_PLATFORM_SOURCE, platformSource, prompt.contentSessionId) as { id: number } | null;
     let sessionDbId = session?.id;
-    const nativePromptId = `transcript:${prompt.nativePromptId}`;
+    const nativePromptId = transcriptId;
     // A replay already owns its native row. It must not claim a nearby hook
     // row belonging to another turn; saveNativeUserPrompt below still checks
     // the replay's full-text hash before reporting it as already imported.
@@ -4168,7 +4184,7 @@ export class SessionStore {
     if (sessionDbId !== undefined && !alreadyImported) {
       const texts = [text, ...(prompt.hookTextVariants ?? []).map(normalizeStoredPromptText).filter(Boolean)];
       const hookRows = this.db.prepare(`SELECT id, created_at_epoch FROM user_prompts
-        WHERE session_db_id = ? AND native_prompt_id IS NULL
+        WHERE session_db_id = ? AND native_prompt_id IS NULL AND origin_device_id IS NULL
           AND prompt_text IN (${texts.map(() => '?').join(', ')})
           AND ABS(created_at_epoch - ?) <= ?
         ORDER BY ABS(created_at_epoch - ?), id`)
@@ -4190,7 +4206,40 @@ export class SessionStore {
     }
     const result = this.saveNativeUserPrompt(prompt.contentSessionId, sessionDbId, nativePromptId,
       prompt.promptText, prompt.promptText, { createdAtEpoch: prompt.createdAtEpoch, reopenSession: false });
-    return { reason: result.duplicate ? 'already-imported' : 'new' };
+    return { reason: result.duplicate ? 'already-imported' : 'new', promptRowId: result.id };
+  }
+
+  /** An explicit workspace import authorizes exactly the validated native turn for the connected account. */
+  importWorkspaceSyncPrompt(prompt: Parameters<SessionStore['importTranscriptUserPrompt']>[0], account: string): number | null {
+    if (!account.trim()) throw new Error('A connected Cloud Sync account is required');
+    return this.db.transaction(() => {
+      const result = this.importTranscriptUserPrompt(prompt);
+      const id = result.promptRowId ?? result.hookRowId;
+      if (id === undefined) return null;
+      const row = this.db.prepare(`SELECT workspace_sync_account, origin_device_id FROM user_prompts
+        WHERE id = ?`).get(id) as { workspace_sync_account: string | null; origin_device_id: string | null };
+      if (row.origin_device_id !== null) return null;
+      this.db.prepare(`INSERT OR IGNORE INTO workspace_prompt_sources
+        (platform_source, content_session_id, transcript_id, prompt_row_id) VALUES (?, ?, ?, ?)`)
+        .run(normalizePlatformSource(prompt.platformSource), prompt.contentSessionId, `transcript:${prompt.nativePromptId}`, id);
+      if (row.workspace_sync_account === account) return id;
+      if (row.workspace_sync_account !== null) throw new Error('This prompt was approved for a different Cloud Sync account');
+      // Even a positive pre-launch stamp may describe a local-only baseline. Request the normal
+      // idempotent push once, then preserve later acknowledgments on repeated setup runs.
+      this.db.prepare(`UPDATE user_prompts SET workspace_sync_account = ?,
+        synced_at = CASE WHEN synced_at < 0 THEN synced_at ELSE NULL END WHERE id = ?`).run(account, id);
+      this.db.prepare("DELETE FROM sync_launch_exclusions WHERE kind = 'prompt' AND origin_local_id = ?").run(String(id));
+      return id;
+    }).immediate();
+  }
+
+  /** Only the normal validated push acknowledgment stamps an approved, previously queued native row. */
+  workspacePromptSyncCounts(ids: ReadonlySet<number>): { queued: number; confirmed: number; failed: number } {
+    const counts = this.db.prepare(`SELECT count(*) FILTER (WHERE synced_at IS NULL) AS queued,
+      count(*) FILTER (WHERE synced_at > 0) AS confirmed FROM user_prompts
+      WHERE id IN (SELECT value FROM json_each(?)) AND origin_device_id IS NULL
+        AND workspace_sync_account IS NOT NULL`).get(JSON.stringify([...ids])) as { queued: number; confirmed: number };
+    return { ...counts, failed: ids.size - counts.queued - counts.confirmed };
   }
 
   /** Prompts claude-mem's hooks recorded since `sinceEpochMs` (everything the transcript import did not write). */

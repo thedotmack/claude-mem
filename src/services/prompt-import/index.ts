@@ -74,6 +74,10 @@ export interface PromptScanOptions {
   agents?: PromptAgentId[];
   resolveProject?: (cwd: string | null) => string;
   memoryPrompts?: MemoryPrompt[];
+  /** Narrow a one-workspace import before retaining prompt text or building its authorship index. */
+  acceptTypedPrompt?: (prompt: TypedPrompt) => boolean;
+  /** Explicit publication fails closed if a candidate cannot be checked for agent authorship. */
+  requireReadableAgentText?: boolean;
   onProgress?: (progress: PromptScanProgress) => void;
 }
 
@@ -129,6 +133,9 @@ export async function scanOwnerPrompts(options: PromptScanOptions): Promise<Prom
           await read(located[index].reader, summaries[index], source);
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
+          if (phase === 'checking' && options.requireReadableAgentText) {
+            throw new Error('A local history source could not be read to verify prompt authorship. Retry after repairing the history source.');
+          }
           if (phase === 'reading') skippedSources.push({ path: source.path, reason });
           logger.warn('IMPORT', 'Skipped an unreadable transcript', { path: source.path, phase, reason });
         }
@@ -144,6 +151,7 @@ export async function scanOwnerPrompts(options: PromptScanOptions): Promise<Prom
     try {
       await reader.readPrompts(source, {
         prompt(prompt) {
+          if (options.acceptTypedPrompt && !options.acceptTypedPrompt(prompt)) return;
           if (isProjectExcluded(prompt.cwd ?? resolveProject(null), excluded)) return;
           typedPrompts.push(prompt); summary.typed++;
         },

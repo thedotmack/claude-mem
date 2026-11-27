@@ -1,4 +1,4 @@
-import { syncablePromptSql } from '../prompt-import/transcript-origin.mjs';
+import { syncablePromptSql, workspaceAccountSql } from '../prompt-import/transcript-origin.mjs';
 import type { Database } from 'bun:sqlite';
 import type { Worker } from 'node:worker_threads';
 import type { ContentKind } from './CanonicalContent.js';
@@ -8,6 +8,7 @@ import { affectedByMutationSql, FROZEN_SCOPE, HEAD_MUTATION_SQL, mutationPrerequ
 
 export interface SyncQueueFlags {
   deviceId: string;
+  workspaceAccount?: string;
   sharedWorkWritesEnabled: boolean;
   workStateSupported: boolean;
 }
@@ -63,6 +64,7 @@ export function readSyncQueueInventory(db: Database, flags: SyncQueueFlags): Syn
   const read = db.transaction(() => {
     const deviceSql = (db.prepare('SELECT quote(?) AS value').get(flags.deviceId) as { value: string }).value;
     const hasPromptOrigin = Boolean(db.prepare("SELECT 1 FROM pragma_table_info('user_prompts') WHERE name = 'native_prompt_id'").get());
+    const accountSql = workspaceAccountSql(db, flags.workspaceAccount);
     for (const [kind, table] of Object.entries(TABLES) as Array<[ContentKind, string]>) {
       const scope = nativeScope(kind);
       const nativeAlias = kind === 'prompt' ? 'up' : table;
@@ -77,7 +79,7 @@ export function readSyncQueueInventory(db: Database, flags: SyncQueueFlags): Syn
           COALESCE(SUM(${shared}), 0) AS shared, COALESCE(SUM(${nativeHeld}), 0) AS mutationHeld,
           MIN(${nativeAlias}.created_at_epoch) AS oldest
         FROM ${nativeFrom} WHERE ${nativeAlias}.synced_at IS NULL AND ${nativeAlias}.origin_device_id IS NULL
-          ${kind === 'prompt' && hasPromptOrigin ? `AND ${syncablePromptSql('up.native_prompt_id')}` : ''}
+          ${kind === 'prompt' && hasPromptOrigin ? `AND ${syncablePromptSql('up.native_prompt_id', accountSql)}` : ''}
           AND (${scope.localId}, ${scope.rev}) NOT IN
             (SELECT origin_local_id, entity_rev FROM sync_content_outbox WHERE kind = ?)
       `).get(kind) as Aggregate;
@@ -98,7 +100,7 @@ export function readSyncQueueInventory(db: Database, flags: SyncQueueFlags): Syn
           MIN(CASE WHEN ${frozenHeld} THEN o.created_at_epoch END) AS oldestMutationHeld
         FROM sync_content_outbox o WHERE o.kind = ?
           ${kind === 'prompt' && hasPromptOrigin ? `AND (o.deleted = 1 OR EXISTS (SELECT 1 FROM user_prompts p
-            WHERE p.id = o.origin_local_id AND p.origin_device_id IS NULL AND ${syncablePromptSql('p.native_prompt_id')}))` : ''}
+            WHERE p.id = o.origin_local_id AND p.origin_device_id IS NULL AND ${syncablePromptSql('p.native_prompt_id', accountSql)}))` : ''}
       `).get(kind) as Aggregate;
       const deleted = db.prepare(`
         SELECT COUNT(*) AS pending, COALESCE(SUM(${frozenAllowed}), 0) AS eligible,
@@ -199,5 +201,5 @@ export class SyncQueueEvidenceReader {
 }
 
 function sameFlags(a: SyncQueueFlags, b: SyncQueueFlags): boolean {
-  return a.deviceId === b.deviceId && a.sharedWorkWritesEnabled === b.sharedWorkWritesEnabled && a.workStateSupported === b.workStateSupported;
+  return a.deviceId === b.deviceId && a.workspaceAccount === b.workspaceAccount && a.sharedWorkWritesEnabled === b.sharedWorkWritesEnabled && a.workStateSupported === b.workStateSupported;
 }
