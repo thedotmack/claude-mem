@@ -2062,6 +2062,17 @@ export async function main() {
     console.log(packageVersion);
     return;
   }
+  // Historical imports are local, operator-initiated commands. A preview never opens the worker DB.
+  if (command === 'import-chats') {
+    const { runHistoricalChatImport } = await import('./history-import/cli.js');
+    try {
+      await runHistoricalChatImport(commandArgs);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : 'Chat import failed.');
+      process.exitCode = 1;
+    }
+    return;
+  }
   if (command === 'messages') {
     const { runMessagesCommand } = await import('../cli/messages-command.js');
     process.exitCode = runMessagesCommand(commandArgs);

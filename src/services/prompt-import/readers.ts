@@ -61,7 +61,7 @@ export interface AgentPromptReader {
 // Shared helpers
 
 /** Streams plain or Codex-compressed JSONL without holding the file in memory. */
-export async function* readLines(path: string): AsyncGenerator<string> {
+export async function* readLines(path: string, maxBytes = Infinity): AsyncGenerator<string> {
   let decompressor: Transform | undefined;
   if (path.endsWith('.jsonl.zst')) {
     // Older supported runtimes must still load this module and read plain files.
@@ -84,7 +84,13 @@ export async function* readLines(path: string): AsyncGenerator<string> {
   stream.setEncoding('utf8');
   try {
     let pending: string[] = [];
+    let bytes = 0;
     for await (const chunk of stream as AsyncIterable<string>) {
+      // Bound decompressed input before buffering the line (it can contain a huge tool result).
+      if (maxBytes !== Infinity) {
+        bytes += Buffer.byteLength(chunk);
+        if (bytes > maxBytes) throw new Error('Transcript exceeds the selected import size limit.');
+      }
       // Search each decoded chunk once. A large tool payload may span many
       // chunks; repeatedly joining and searching that growing line is quadratic.
       let start = 0;

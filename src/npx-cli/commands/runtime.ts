@@ -82,6 +82,11 @@ function spawnPlugin(bunPath: string, args: string[], cwd: string, startFailureL
   });
 }
 
+/** Use this CLI's matching worker bundle so a PR can be tested alongside an older installation. */
+export function runHistoricalChatImportCommand(args: string[]): void {
+  spawnPlugin(resolveBunOrExit(), [packagePluginScriptPath('worker-service.cjs'), 'import-chats', ...args], process.cwd());
+}
+
 function spawnBunWorkerCommand(command: string, extraArgs: string[] = []): void {
   const pluginRoot = pluginRootOrExit();
   const bunPath = resolveBunOrExit();
