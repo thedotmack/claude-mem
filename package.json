@@ -122,6 +122,7 @@
     "test": "bun scripts/test-lanes.ts fast",
     "test:integration": "bun scripts/test-lanes.ts integration",
     "test:all": "bun scripts/test-lanes.ts all",
+    "test:coverage": "bun scripts/test-lanes.ts fast --coverage",
     "test:lanes:check": "bun scripts/test-lanes.ts check",
     "test:sqlite": "bun test tests/sqlite/",
     "test:agents": "bun test tests/worker/agents/",
