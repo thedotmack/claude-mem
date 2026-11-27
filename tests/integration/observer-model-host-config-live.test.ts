@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, spyOn } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -7,6 +7,7 @@ import {
   HOST_MODEL_NOT_SERVED_CODE,
   OpenAICompatProvider,
   resetRefusedHostModelsForTesting,
+  resetServedModelsForTesting,
   resolveOpenAICompatConfig,
 } from '../../src/services/worker/OpenAICompatProvider.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
@@ -15,6 +16,14 @@ import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManage
 import { resolveOpenAICompatPreset } from '../../src/shared/openai-compat-presets.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import { logger } from '../../src/utils/logger.js';
+import { paths } from '../../src/shared/paths.js';
+import {
+  getQuotaCooldown,
+  QUOTA_COOLDOWN_FILENAME,
+  resetQuotaCooldownsForTesting,
+} from '../../src/shared/quota-cooldown.js';
+import { startGeneratorWithProvider } from '../../src/services/worker/session/GeneratorRunner.js';
+import type { GeneratorRunnerDependencies } from '../../src/services/worker/session/GeneratorRunner.js';
 
 /**
  * End-to-end guard for the host-configured observer model (issue #6485).
@@ -61,6 +70,8 @@ for (const key of ENV_KEYS) savedEnv.set(key, process.env[key]);
 afterEach(() => {
   SettingsDefaultsManager.loadFromFile = originalLoad;
   resetRefusedHostModelsForTesting();
+  resetServedModelsForTesting();
+  resetQuotaCooldownsForTesting();
   for (const key of ENV_KEYS) {
     const previous = savedEnv.get(key);
     if (previous === undefined) delete process.env[key];
@@ -75,8 +86,18 @@ interface HarnessOptions {
   fromHost?: boolean;
   fromSession?: boolean;
   observerModel?: string;
-  /** Ids the fake endpoint answers 404 for: a host provider that is not the observer's service. */
+  /** Ids the fake endpoint refuses: a host provider that is not the observer's service. */
   refusedModels?: string[];
+  /** The status of that refusal; 403 is the real Windows incident (no API key to rotate). */
+  refusedStatus?: 401 | 403 | 404;
+  /** Endpoint id the host config translates to; defaults to a host-only model. */
+  hostEndpointModel?: string;
+  /** Also yield a summary turn on the host's small model (tier routing on). */
+  withSummary?: boolean;
+  /** Explicit summary-tier model, used with the tier-routing opt-in. */
+  summaryModel?: string;
+  /** Refuse a listed model only from this request number on (1-based). */
+  refuseFromRequest?: number;
 }
 
 function harness(opts: HarnessOptions = {}) {
@@ -95,7 +116,7 @@ function harness(opts: HarnessOptions = {}) {
     provider: {
       host: {
         models: {
-          'main-hote': { modelID: HOST_ENDPOINT_MODEL },
+          'main-hote': { modelID: opts.hostEndpointModel ?? HOST_ENDPOINT_MODEL },
           'small-hote': { modelID: 'endpoint-small' },
         },
       },
@@ -111,12 +132,15 @@ function harness(opts: HarnessOptions = {}) {
     port: 0,
     async fetch(request) {
       const body = (await request.json()) as WireRequest;
+      const requestNumber = requests.length + 1;
       requests.push({ model: body.model, messages: body.messages });
-      if (opts.refusedModels?.includes(body.model)) {
-        return Response.json(
-          { error: { message: `The model \`${body.model}\` does not exist`, type: 'invalid_request_error', code: 'model_not_found' } },
-          { status: 404 },
-        );
+      if (opts.refusedModels?.includes(body.model)
+        && (opts.refuseFromRequest === undefined || requestNumber >= opts.refuseFromRequest)) {
+        const status = opts.refusedStatus ?? 404;
+        const refusalBody = status === 403
+          ? { error: { message: 'Model access is disabled', type: 'invalid_request_error', code: 'model_access_disabled' } }
+          : { error: { message: `The model \`${body.model}\` does not exist`, type: 'invalid_request_error', code: 'model_not_found' } };
+        return Response.json(refusalBody, { status });
       }
       return Response.json({
         model: body.model,
@@ -144,7 +168,8 @@ function harness(opts: HarnessOptions = {}) {
     // the init turn itself sends nothing.
     CLAUDE_MEM_OBSERVE_BARE_PROMPTS: 'false',
     CLAUDE_MEM_OBSERVER_ENABLED: 'true',
-    CLAUDE_MEM_TIER_ROUTING_ENABLED: 'false',
+    CLAUDE_MEM_TIER_ROUTING_ENABLED: opts.withSummary ? 'true' : 'false',
+    CLAUDE_MEM_TIER_SUMMARY_MODEL: opts.summaryModel ?? '',
     CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
     CLAUDE_MEM_AUTO_UPDATE: 'false',
   };
@@ -167,7 +192,12 @@ function harness(opts: HarnessOptions = {}) {
     cwd: root,
   };
   const manager = {
-    getMessageIterator: async function* () { yield observation; },
+    getMessageIterator: async function* () {
+      yield observation;
+      if (opts.withSummary) {
+        yield { type: 'summarize', last_assistant_message: 'done', prompt_number: 1, cwd: root };
+      }
+    },
     getClaimedMessages: () => [],
     confirmClaimedMessages: async () => 0,
     resetProcessingToPending: async () => 0,
@@ -199,7 +229,41 @@ function harness(opts: HarnessOptions = {}) {
     ...overrides,
   });
 
-  return { requests, provider, makeSession, store, root };
+  /**
+   * Drive the failure through GeneratorRunner, the only site that books an
+   * auth_invalid failure into the long credential cooldown. Calling
+   * provider.startSession() directly would leave bookClassifiedFailure out of
+   * the path and prove nothing about the cooldown this guard is about.
+   */
+  const ensureGeneratorRunning = mock(async () => {});
+  const runGenerator = async (session: ActiveSession): Promise<void> => {
+    const sessionManager = {
+      getMessageBuffer: () => ({ getPendingCount: () => 1 }),
+      getSession: () => session,
+      clearTransportResume: () => {},
+      discardBufferedWork: () => 1,
+      removeSessionImmediate: () => {},
+    };
+    const deps = {
+      sessionManager,
+      sdkAgent: undefined,
+      geminiAgent: undefined,
+      openRouterAgent: undefined,
+      codexAgent: undefined,
+      openAICompatAgent: provider,
+      workerService: undefined,
+      completionHandler: { finalizeSession: async () => {} },
+      ensureGeneratorRunning,
+      maybeSelfHealStaleClaudeSpawn: () => false,
+    } as unknown as GeneratorRunnerDependencies;
+    await startGeneratorWithProvider(session, 'openai-compatible', 'host-observer-live-test', null, null, deps);
+    // startGeneratorWithProvider assigns and detaches the promise; its catch
+    // (which books the failure) and finally (which handles the exit) live on
+    // that promise, so the test must await it.
+    await session.generatorPromise;
+  };
+
+  return { requests, provider, makeSession, store, root, runGenerator, ensureGeneratorRunning };
 }
 
 describe('host-configured observer model reaches the OpenAI-compatible endpoint', () => {
@@ -285,6 +349,242 @@ describe('a host-configured model the observer endpoint does not serve', () => {
       expect(JSON.stringify(refusals[0])).toContain(HOST_ENDPOINT_MODEL);
     } finally {
       warn.mockRestore();
+    }
+  });
+});
+
+/**
+ * The Windows incident: a 403 endpoint that does not serve the host's chosen
+ * model must not be mistaken for a bad API key. GeneratorRunner is in the path
+ * so the assertion on the cooldown is about the real booking site.
+ */
+describe('a host-chosen model refused with 403 is not a credential failure', () => {
+  it('host-refused-403: no auth cooldown, no replay, and the next turn uses the fallback model', async () => {
+    resetQuotaCooldownsForTesting();
+    const cooldownPath = path.join(paths.dataDir(), QUOTA_COOLDOWN_FILENAME);
+    expect(existsSync(cooldownPath)).toBe(false);
+
+    const h = harness({ fromHost: true, refusedModels: [HOST_ENDPOINT_MODEL], refusedStatus: 403 });
+    const session = h.makeSession();
+    const errorLog = spyOn(logger, 'error');
+    try {
+      await h.runGenerator(session);
+
+      // GeneratorRunner's one error line carries the real classification: the
+      // 403 was refused on the host's id, not on our credential.
+      const failed = errorLog.mock.calls.find(call => call[1] === 'Observer failed');
+      expect(failed?.[2]).toMatchObject({ provider: 'openai-compatible', kind: 'unrecoverable', code: HOST_MODEL_NOT_SERVED_CODE });
+      expect(failed?.[3]).toContain('CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST');
+      expect(failed?.[3]).not.toContain('CLAUDE_MEM_OPENAI_COMPAT_API_KEY');
+      expect(getQuotaCooldown('openai-compatible')).toBeNull();
+      expect(existsSync(cooldownPath)).toBe(false);
+      expect(h.requests.map(request => request.model)).toEqual([HOST_ENDPOINT_MODEL]);
+      // The auth-category exit discards pending work: no summarize rescue and
+      // no extra generation of the refused batch may be started by the failure.
+      expect(h.ensureGeneratorRunning).not.toHaveBeenCalled();
+      expect(session.pausedReason).toBe('auth');
+
+      // A fresh turn starts a new generation; the refused id is remembered and
+      // the configured model serves. No request for the refused batch is replayed.
+      await h.runGenerator(h.makeSession());
+      expect(h.requests.map(request => request.model)).toEqual([HOST_ENDPOINT_MODEL, PRESET_MODEL]);
+      expect(getQuotaCooldown('openai-compatible')).toBeNull();
+      expect(existsSync(cooldownPath)).toBe(false);
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+});
+
+/**
+ * Greptile P1 (2026-11-27): when the refused host id is also the preset
+ * default, no model is left. Dispatch must not silently choose Claude (another
+ * paid account); the real generator must stop on the classified refusal with
+ * no network call, no paid send and no credential cooldown.
+ */
+describe('a refused preset default stops the provider instead of switching it', () => {
+  it('host-refused-preset-default: no second request, no paid send, no cooldown', async () => {
+    resetQuotaCooldownsForTesting();
+    const cooldownPath = path.join(paths.dataDir(), QUOTA_COOLDOWN_FILENAME);
+    expect(existsSync(cooldownPath)).toBe(false);
+
+    const h = harness({
+      fromHost: true,
+      hostEndpointModel: PRESET_MODEL,
+      refusedModels: [PRESET_MODEL],
+      refusedStatus: 403,
+    });
+    const errorLog = spyOn(logger, 'error');
+    try {
+      const first = h.makeSession({ claimedMessageIds: [1] });
+      await h.runGenerator(first);
+      expect(h.requests.map(request => request.model)).toEqual([PRESET_MODEL]);
+      const failed = errorLog.mock.calls.find(call => call[1] === 'Observer failed');
+      expect(failed?.[2]).toMatchObject({
+        provider: 'openai-compatible', kind: 'unrecoverable', code: HOST_MODEL_NOT_SERVED_CODE,
+      });
+      expect(getQuotaCooldown('openai-compatible')).toBeNull();
+      expect(first.paidSendBudget?.spentPaidSends ?? 0).toBe(0);
+      expect(h.ensureGeneratorRunning).not.toHaveBeenCalled();
+
+      const after = resolveOpenAICompatConfig();
+      expect(after.model).toBe('');
+      expect(after.allModelsRefused).toBe(true);
+
+      const second = h.makeSession({ claimedMessageIds: [2] });
+      await h.runGenerator(second);
+      // The second generation stops before the socket: no request, no retry,
+      // no rotation to a second key, and no paid send against the new budget.
+      expect(h.requests.map(request => request.model)).toEqual([PRESET_MODEL]);
+      const stopped = errorLog.mock.calls.filter(call => call[1] === 'Observer failed').at(-1);
+      expect(stopped?.[2]).toMatchObject({
+        provider: 'openai-compatible', kind: 'unrecoverable', code: HOST_MODEL_NOT_SERVED_CODE,
+      });
+      expect(stopped?.[3]).toContain('no request was sent');
+      expect(getQuotaCooldown('openai-compatible')).toBeNull();
+      expect(existsSync(cooldownPath)).toBe(false);
+      expect(second.paidSendBudget?.spentPaidSends ?? 0).toBe(0);
+      expect(h.ensureGeneratorRunning).not.toHaveBeenCalled();
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+});
+
+/**
+ * C3: the summary tier has its own host id. A 404 on that small model is
+ * defused exactly like one on the main id: it is classified as an unserved
+ * host model, only that id is dropped, and the main host model still serves.
+ * This locks the documented rule that only the refused id is set aside.
+ */
+describe('a refused host summary model does not touch the main host model', () => {
+  it('host-and-summary-404-still-defused: the small id is dropped, the main host model still serves', async () => {
+    const h = harness({
+      fromHost: true,
+      withSummary: true,
+      refusedModels: ['endpoint-small'],
+      refusedStatus: 404,
+    });
+    const session = h.makeSession();
+    const errorLog = spyOn(logger, 'error');
+    try {
+      await h.runGenerator(session);
+
+      const failed = errorLog.mock.calls.find(call => call[1] === 'Observer failed');
+      expect(failed?.[2]).toMatchObject({
+        provider: 'openai-compatible',
+        kind: 'unrecoverable',
+        code: HOST_MODEL_NOT_SERVED_CODE,
+      });
+      expect(failed?.[3]).toContain('CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST');
+      // The observation went out on the main host id; only the summary turn
+      // carried the small id that the endpoint refused.
+      expect(h.requests.map(request => request.model)).toEqual([HOST_ENDPOINT_MODEL, 'endpoint-small']);
+      expect(session.pausedReason).toBe('auth');
+      expect(getQuotaCooldown('openai-compatible')).toBeNull();
+
+      // Only the refused id is left out: the main host id still wins and the
+      // summary tier no longer names the small id.
+      const resolved = resolveOpenAICompatConfig(undefined, { cwd: h.root });
+      expect(resolved.model).toBe(HOST_ENDPOINT_MODEL);
+      expect(resolved.summaryModel).toBeUndefined();
+
+      // The next generation keeps the main model. The refused batch is not
+      // replayed and no second request is sent on the refused small id.
+      await h.runGenerator(h.makeSession());
+      expect(h.requests.filter(request => request.model === 'endpoint-small')).toHaveLength(1);
+      expect(h.requests.map(request => request.model)).toEqual([
+        HOST_ENDPOINT_MODEL, 'endpoint-small', HOST_ENDPOINT_MODEL, HOST_ENDPOINT_MODEL,
+      ]);
+      expect(getQuotaCooldown('openai-compatible')).toBeNull();
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+});
+
+/**
+ * B5 x C1: when the host's translated id IS the preset default and the endpoint
+ * refuses it, no candidate is left. The empty sentinel must stop query() before
+ * the network, not send the same refused id again on every turn.
+ */
+describe('a refused model equal to the preset default is never re-sent', () => {
+  it('refused-preset-default-is-not-resent: no candidate means no doomed request', async () => {
+    const h = harness({
+      fromHost: true,
+      hostEndpointModel: PRESET_MODEL,
+      refusedModels: [PRESET_MODEL],
+      refusedStatus: 404,
+    });
+    const failure = await h.provider.startSession(h.makeSession()).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ kind: 'unrecoverable', code: HOST_MODEL_NOT_SERVED_CODE });
+    expect(h.requests.map(request => request.model)).toEqual([PRESET_MODEL]);
+
+    const resolved = resolveOpenAICompatConfig(undefined, { cwd: h.root });
+    // The refused id is dropped both as a host model and as the preset term,
+    // leaving the empty sentinel that keeps query() off the wire.
+    expect(resolved.model).toBe('');
+    expect(resolved.hostChosenModels?.[PRESET_MODEL]).toBeUndefined();
+
+    const second = await h.provider.startSession(h.makeSession()).catch((error: unknown) => error);
+    expect(second).toBeInstanceOf(Error);
+    expect(h.requests.map(request => request.model)).toEqual([PRESET_MODEL]);
+  });
+});
+
+/**
+ * Greptile P1: `lastServed` is the observer model's fallback, so a summary must
+ * not overwrite it with the summary tier's small id. Both generations go
+ * through the real loopback endpoint and the real config resolver: the second
+ * generation's observation must still be sent on the preset model.
+ */
+describe('a summary turn does not replace the remembered observer model', () => {
+  it('summary-tier-model-does-not-become-last-served', async () => {
+    const summaryModel = 'tier-only-small-model';
+    const h = harness({ fromHost: false, fromSession: false, withSummary: true, summaryModel });
+
+    await h.provider.startSession(h.makeSession());
+    expect(h.requests.map(request => request.model)).toEqual([PRESET_MODEL, summaryModel]);
+
+    const sent = h.requests.length;
+    await h.provider.startSession(h.makeSession());
+    expect(h.requests.slice(sent).map(request => request.model)).toEqual([PRESET_MODEL, summaryModel]);
+  });
+});
+
+/**
+ * Greptile P1: once `lastServed` supplies the session's own id, the equality
+ * early return in configForSession used to drop the FROM_SESSION marker. A
+ * later 403 was then booked as auth_invalid, with the long credential cooldown
+ * this PR exists to avoid. GeneratorRunner is in the path so the cooldown is
+ * asserted at its real booking site.
+ */
+describe('a session-chosen model refused after reuse is not a credential failure', () => {
+  it('reused-session-model-403-keeps-no-auth-cooldown', async () => {
+    resetQuotaCooldownsForTesting();
+    const cooldownPath = path.join(paths.dataDir(), QUOTA_COOLDOWN_FILENAME);
+    expect(existsSync(cooldownPath)).toBe(false);
+
+    const h = harness({
+      fromHost: false,
+      fromSession: true,
+      refusedModels: [SESSION_MODEL],
+      refusedStatus: 403,
+      refuseFromRequest: 2,
+    });
+    const errorLog = spyOn(logger, 'error');
+    try {
+      await h.runGenerator(h.makeSession({ observerModel: SESSION_MODEL }));
+      expect(h.requests.map(request => request.model)).toEqual([SESSION_MODEL]);
+
+      await h.runGenerator(h.makeSession({ observerModel: SESSION_MODEL }));
+      const failed = errorLog.mock.calls.find(call => call[1] === 'Observer failed');
+      expect(failed?.[2]).toMatchObject({ provider: 'openai-compatible', kind: 'unrecoverable', code: HOST_MODEL_NOT_SERVED_CODE });
+      expect(failed?.[3]).toContain('CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION');
+      expect(getQuotaCooldown('openai-compatible')).toBeNull();
+      expect(existsSync(cooldownPath)).toBe(false);
+    } finally {
+      errorLog.mockRestore();
     }
   });
 });

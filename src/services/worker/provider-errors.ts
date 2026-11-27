@@ -37,6 +37,16 @@ export const CODEX_COOLDOWN_REFUSAL_CODE = 'codex_cooldown_active';
 export const CODEX_AUTH_FROM_EXIT_TEXT_CODE = 'codex_auth_from_exit_text';
 
 /**
+ * `code` on an unrecoverable refusal of a request sent on a model id the host
+ * chose (a 401, 403 or 404 from an endpoint that does not serve that id). It is
+ * deliberately not `auth_invalid`: the credential is fine and arming a long
+ * auth cooldown would only stop later work on a configured model. It maps to
+ * the `auth` abort category so pending inference inputs are discarded, without
+ * booking a credential cooldown.
+ */
+export const HOST_MODEL_NOT_SERVED_CODE = 'host_model_not_served';
+
+/**
  * What one paid send ended as, for the "never pay twice" rule (xAI SDK retry
  * rules; retry.ts decides from it):
  *  - `refused_before_work`: the backend said no before doing anything (a 429,

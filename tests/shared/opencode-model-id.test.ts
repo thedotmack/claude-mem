@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { resolveEndpointModelId } from '../../src/shared/opencode-model-id.js';
+import { resolveEndpointModelId, resolveEndpointModelIdWithIdentity } from '../../src/shared/opencode-model-id.js';
 
 /** The `provider` field of an OpenCode host config, in its V2 and V1 forms. */
 const PROVIDER = {
@@ -84,5 +84,70 @@ describe('garde-fous-de-type', () => {
     expect(frozen).toEqual({
       openrouter: { models: { model: { modelID: 'endpoint-id' } } },
     });
+  });
+});
+
+const LOCAL_API_URL = 'http://127.0.0.1:1234/v1/chat/completions';
+
+describe('builtin-model-identity-when-provider-matches-endpoint', () => {
+  it('accepts the model key when the strict mapping fails and the provider points at the endpoint', () => {
+    expect(resolveEndpointModelIdWithIdentity(
+      'hy4/hy4-flash-free',
+      { hy4: { baseURL: 'http://127.0.0.1:1234/v1' } },
+      LOCAL_API_URL,
+    )).toEqual({ id: 'hy4-flash-free', identity: true });
+  });
+
+  it('accepts baseUrl and options.baseURL after URL normalization', () => {
+    expect(resolveEndpointModelIdWithIdentity(
+      'hy4/baseUrl-key',
+      { hy4: { baseUrl: 'HTTP://127.0.0.1:1234/v1/' } },
+      LOCAL_API_URL,
+    )).toEqual({ id: 'baseUrl-key', identity: true });
+    expect(resolveEndpointModelIdWithIdentity(
+      'hy4/options-key',
+      { hy4: { options: { baseURL: 'http://127.0.0.1:1234/v1/chat/completions' } } },
+      LOCAL_API_URL,
+    )).toEqual({ id: 'options-key', identity: true });
+  });
+});
+
+describe('identity-keeps-openrouter-slashes', () => {
+  it('returns the suffix after the first slash, including its own slashes', () => {
+    expect(resolveEndpointModelIdWithIdentity(
+      'openrouter/deepseek/r1',
+      { openrouter: { baseURL: 'https://openrouter.ai/api/v1' } },
+      'https://openrouter.ai/api/v1/chat/completions',
+    )).toEqual({ id: 'deepseek/r1', identity: true });
+  });
+});
+
+describe('strict-mapping-wins-before-identity', () => {
+  it('returns the strict endpoint id with identity false even when the provider shares the endpoint', () => {
+    expect(resolveEndpointModelIdWithIdentity('x/m', {
+      x: { baseURL: 'http://127.0.0.1:1234/v1', models: { m: { modelID: 'endpoint-x' } } },
+    }, LOCAL_API_URL)).toEqual({ id: 'endpoint-x', identity: false });
+  });
+});
+
+describe('no-identity-for-a-different-provider', () => {
+  it('returns undefined when the provider is absent or declares no URL', () => {
+    expect(resolveEndpointModelIdWithIdentity('hy4/model', undefined, LOCAL_API_URL)).toBeUndefined();
+    expect(resolveEndpointModelIdWithIdentity('hy4/model', { hy4: {} }, LOCAL_API_URL)).toBeUndefined();
+    expect(resolveEndpointModelIdWithIdentity('hy4/model', { other: { baseURL: 'http://127.0.0.1:1234/v1' } }, LOCAL_API_URL)).toBeUndefined();
+  });
+
+  it('returns undefined when the declared endpoint differs', () => {
+    expect(resolveEndpointModelIdWithIdentity('hy4/model', {
+      hy4: { baseURL: 'http://127.0.0.1:5678/v1' },
+    }, LOCAL_API_URL)).toBeUndefined();
+  });
+
+  it('returns undefined for a missing slash, a bad id, or no endpoint URL', () => {
+    const provider = { hy4: { baseURL: 'http://127.0.0.1:1234/v1' } };
+    expect(resolveEndpointModelIdWithIdentity('model', provider, LOCAL_API_URL)).toBeUndefined();
+    expect(resolveEndpointModelIdWithIdentity('/model', provider, LOCAL_API_URL)).toBeUndefined();
+    expect(resolveEndpointModelIdWithIdentity('hy4/', provider, LOCAL_API_URL)).toBeUndefined();
+    expect(resolveEndpointModelIdWithIdentity('hy4/model', provider, undefined)).toBeUndefined();
   });
 });

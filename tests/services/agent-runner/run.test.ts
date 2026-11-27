@@ -602,6 +602,44 @@ describe('agent runner', () => {
     }
   });
 
+  it('OpenCode: V2 providers are read and opencode.json and opencode.jsonc merge in the shared reader', () => {
+    const home = mkdtempSync(join(tmpdir(), 'opencode-user-config-shared-'));
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    const previousConfig = process.env.OPENCODE_CONFIG;
+    try {
+      const configDir = join(home, 'opencode');
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(join(configDir, 'opencode.json'), JSON.stringify({
+        model: 'json/default',
+        // V2 `providers` must win over the older `provider` field at this level.
+        provider: { legacy: { models: { 'legacy/model': {} } } },
+        providers: { json: { models: { 'json/model': {} } } },
+      }));
+      writeFileSync(join(configDir, 'opencode.jsonc'), `{
+        // The jsonc file overrides the json one field by field.
+        "model": "jsonc/default",
+        "providers": { "jsonc": { "models": { "jsonc/model": {} } } },
+      }`);
+      process.env.XDG_CONFIG_HOME = home;
+      delete process.env.OPENCODE_CONFIG;
+
+      // Characterization of the shared host-config reader run.ts now uses: it
+      // accepts V2 `providers` and merges both file names, jsonc winning each
+      // collision. The legacy `provider` map is dropped when `providers` exists.
+      expect(readOpenCodeUserConfig()).toEqual({
+        model: 'jsonc/default',
+        provider: {
+          json: { models: { 'json/model': {} } },
+          jsonc: { models: { 'jsonc/model': {} } },
+        },
+      });
+    } finally {
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = previousXdg;
+      if (previousConfig === undefined) delete process.env.OPENCODE_CONFIG; else process.env.OPENCODE_CONFIG = previousConfig;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('OpenCode: an explicit config replaces the global one instead of merging with it', () => {
     const home = mkdtempSync(join(tmpdir(), 'opencode-explicit-config-'));
     const previousXdg = process.env.XDG_CONFIG_HOME;

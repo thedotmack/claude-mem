@@ -47,6 +47,7 @@ import { findCodexExecutablePath, isCodexOnPath } from '../install/tool-path.js'
 import { getCredential } from '../../shared/EnvManager.js';
 import { buildKeyPool } from '../../shared/api-key-pool.js';
 import { resolveOpenAICompatPreset } from '../../shared/openai-compat-presets.js';
+import { diagnoseHostModel, HOST_MODEL_STATUS_WORDS } from '../../shared/openai-compat-host-diagnosis.js';
 import { findLegacyClaudeMemAlias, type LegacyClaudeMemAliasFile } from './uninstall.js';
 import { treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
 import { checkTreeSitterCliLoadable, resolveTreeSitterBinPathFor, TREE_SITTER_CLI_PATH_WORKAROUND } from '../../services/smart-file-read/tree-sitter-bin-path.js';
@@ -1291,9 +1292,30 @@ export async function runDoctorCommand(): Promise<void> {
     if (codexHooks) checks.push(codexHooks);
   }
 
+  // Settings are read once for the remaining rows; readOnly keeps doctor from
+  // seeding or migrating the file.
+  const doctorSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true });
+
   // 3d. claude-mem's own updater: on or off, what it last did, and the fix
   // when an automatic update may have left the install not working.
   checks.push(autoUpdateCheck(autoUpdateDoctorSources(pluginRoot)));
+
+  // 3e. The host's OpenCode model, as the observer would resolve it. Read-only
+  // and warn-only: the shared helper supplies both the line and the word's
+  // status, so doctor cannot disagree with the worker about either.
+  const hostModelPreset = resolveOpenAICompatPreset(doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_PRESET);
+  const hostModelDiagnostic = diagnoseHostModel({
+    settings: doctorSettings,
+    fallbackModel: (doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_MODEL ?? '').trim() || hostModelPreset.defaultModel,
+    hostOptions: { cwd: process.cwd() },
+    apiUrl: (doctorSettings.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL ?? '').trim() || hostModelPreset.baseUrl,
+  });
+  checks.push({
+    name: 'Host model',
+    status: HOST_MODEL_STATUS_WORDS[hostModelDiagnostic.status].check,
+    detail: hostModelDiagnostic.line,
+    required: false,
+  });
 
   // 4. Marketplace runtime root materialized. The .install-version marker is
   // written only by the npx installer; installs via Claude Code's own plugin
@@ -1336,7 +1358,6 @@ export async function runDoctorCommand(): Promise<void> {
 
   // 5. Worker health.
   // Where this client reaches the worker: settings.json, with env vars overriding it.
-  const doctorSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true });
   const configuredClaudePath = doctorSettings.CLAUDE_CODE_PATH?.trim() || process.env.CLAUDE_CODE_PATH?.trim() || undefined;
   const detectedClaudeCode = detectClaudeCodeVersion(configuredClaudePath);
 
