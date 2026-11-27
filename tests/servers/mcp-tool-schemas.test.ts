@@ -38,6 +38,11 @@ async function withServer(
   app.post('/api/tool-uses/batch', (_req, res) => res.json([]));
   app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
   app.post('/api/work-state/entries', (req, res) => {
+    if (req.body?.fields?.task === 'drop') { res.destroy(); return; }
+    if (req.body?.fields?.task === 'plain-refusal') {
+      res.status(409).type('text/plain').send('Not saved: Read its current state and retry.');
+      return;
+    }
     if (req.body?.fields?.task === 'fail') { res.status(400).json({ error: 'Worker refused item: fail' }); return; }
     res.json({ entries: [] });
   });
@@ -217,10 +222,57 @@ describe('work_state_write grouped writes (opt-in)', () => {
       });
       expect(result.isError).toBe(true);
       expect(textOf(result)).toContain('failed at item 2/3');
-      expect(textOf(result)).toContain('Earlier entries (1) are already saved');
+      expect(textOf(result)).toContain('1 earlier entry was confirmed saved');
+      expect(textOf(result)).toContain('The outcome of this item is unknown');
+      expect(textOf(result)).toContain('read the list before retrying');
       expect(textOf(result)).toContain('Worker refused item: fail');
       const posted = writes(requests);
       expect(posted.map(request => request.body.fields.task)).toEqual(['a', 'fail']);
+    }, false, enabled);
+  }, 30_000);
+
+  it('never claims a save outcome it cannot know when the first reply fails', async () => {
+    await withServer('worker', async (client, requests) => {
+      const result = await client.callTool({
+        name: 'work_state_write',
+        arguments: { list: 'schema-fixture', items: [{ task: 'fail' }, { task: 'never' }] },
+      });
+      const text = textOf(result);
+      expect(result.isError).toBe(true);
+      expect(text).toContain('failed at item 1/2');
+      expect(text).toContain('No entries were confirmed saved by this call.');
+      expect(text).toContain('The outcome of this item is unknown');
+      expect(text).toContain('read the list before retrying');
+      expect(writes(requests).map(request => request.body.fields.task)).toEqual(['fail']);
+    }, false, enabled);
+  }, 30_000);
+
+  it('reports a confirmed save when a later reply is lost', async () => {
+    await withServer('worker', async (client, requests) => {
+      const result = await client.callTool({
+        name: 'work_state_write',
+        arguments: { list: 'schema-fixture', items: [{ task: 'a' }, { task: 'drop' }, { task: 'never' }] },
+      });
+      const text = textOf(result);
+      expect(result.isError).toBe(true);
+      expect(text).toContain('failed at item 2/3');
+      expect(text).toContain('1 earlier entry was confirmed saved');
+      expect(text).toContain('The outcome of this item is unknown');
+      expect(text).toContain('read the list before retrying');
+      expect(writes(requests).map(request => request.body.fields.task)).toEqual(['a', 'drop']);
+    }, false, enabled);
+  }, 30_000);
+
+  it('relays a plain-text worker refusal through the real stdio handler', async () => {
+    await withServer('worker', async (client, requests) => {
+      const result = await client.callTool({
+        name: 'work_state_write',
+        arguments: { list: 'schema-fixture', items: [{ task: 'plain-refusal' }] },
+      });
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain('failed at item 1/1');
+      expect(textOf(result)).toContain('Not saved: Read its current state and retry.');
+      expect(writes(requests).map(request => request.body.fields.task)).toEqual(['plain-refusal']);
     }, false, enabled);
   }, 30_000);
 });

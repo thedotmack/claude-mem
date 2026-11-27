@@ -549,18 +549,19 @@ async function workStateWriteGrouped(args: any): Promise<McpTextResult> {
   let result: McpTextResult = mcpTextResult('');
   for (const [index, fields] of entries.entries()) {
     result = await callWorker('/api/work-state/entries', {
-      body: { cwd: getRequestCwd(), list: args?.list, fields },
+      body: { cwd: getRequestCwd(), list: parsed.list, fields },
       text: true,
     });
     if (!result.isError) continue;
-    // No retry and no rollback. Say exactly how much was already saved, with
-    // the worker's own words, in this same tool result.
+    // No retry and no rollback. A failed reply proves only that earlier entries
+    // got successful replies; this item's outcome stays unknown either way.
     const progress = index === 0
-      ? 'Nothing was saved by this call.'
-      : `Earlier entries (${index}) are already saved; grouped writes are not transactional and are not retried.`;
+      ? 'No entries were confirmed saved by this call.'
+      : `${index} earlier ${index === 1 ? 'entry was' : 'entries were'} confirmed saved; grouped writes are not transactional and are not retried.`;
     const workerText = result.content.map(block => block.text).join('\n').trim();
+    const guidance = 'The outcome of this item is unknown: read the list before retrying.';
     return mcpTextResult(
-      `Work-state write failed at item ${index + 1}/${entries.length}. ${progress}\n${workerText}`,
+      `Work-state write failed at item ${index + 1}/${entries.length}. ${progress} ${guidance}\n${workerText}`,
       true,
     );
   }

@@ -31,7 +31,7 @@ async function writeBatch(
       await fetch(`http://127.0.0.1:${port}/api/work-state/entries`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cwd: checkout, list, fields }),
+        body: JSON.stringify({ cwd: checkout, list: parsed.list, fields }),
       });
     }
   }
@@ -56,18 +56,25 @@ describe('isWorkStateFields — one predicate for the worker and the grouped-wri
 describe('parseWorkStateWriteArgs', () => {
   it('keeps the single form and groups a valid batch', () => {
     expect(parseWorkStateWriteArgs({ list: 'release', fields: { task: 'a' } }))
-      .toEqual({ kind: 'single', fields: { task: 'a' } });
+      .toEqual({ kind: 'single', list: 'release', fields: { task: 'a' } });
     expect(parseWorkStateWriteArgs({ list: 'release', items: [{ task: 'a' }, { task: 'b' }] }))
-      .toEqual({ kind: 'batch', items: [{ task: 'a' }, { task: 'b' }] });
+      .toEqual({ kind: 'batch', list: 'release', items: [{ task: 'a' }, { task: 'b' }] });
   });
 
   it('measures the 200-character list bound after trimming, like the worker', () => {
     const list = ` ${'x'.repeat(200)} `;
     expect(list.length).toBe(202);
     expect(parseWorkStateWriteArgs({ list, fields: { task: 'a' } }))
-      .toEqual({ kind: 'single', fields: { task: 'a' } });
+      .toEqual({ kind: 'single', list: 'x'.repeat(200), fields: { task: 'a' } });
     expect(parseWorkStateWriteArgs({ list: ` ${'x'.repeat(201)} `, fields: { task: 'a' } }))
       .toEqual({ kind: 'error', message: WORK_STATE_WRITE_ARGS_ERROR });
+  });
+
+  it('returns the same trimmed list in both success forms', () => {
+    expect(parseWorkStateWriteArgs({ list: ' release ', fields: { task: 'a' } }))
+      .toEqual({ kind: 'single', list: 'release', fields: { task: 'a' } });
+    expect(parseWorkStateWriteArgs({ list: ' owner-goals/2026-11 ', items: [{ task: 'Ask: a', goal_kind: 'ask' }] }))
+      .toEqual({ kind: 'batch', list: 'owner-goals/2026-11', items: [{ task: 'Ask: a', goal_kind: 'ask' }] });
   });
 
   it.each([
@@ -148,6 +155,32 @@ describe('grouped writes have worker parity before the first POST', () => {
     expect((await writeBatch(port, checkout, 'owner-goals', [{ task: 'Ask: draft', status: 'todo' }])).kind).toBe('error');
     expect(posts).toEqual([]);
     expect(rowCount()).toBe(0);
+  });
+
+  it('refuses the same lists with surrounding spaces, like the trimmed worker name', async () => {
+    expect((await writeBatch(port, checkout, ' __my_work_v1:entry ', [{ task: 'ok' }])).kind).toBe('error');
+    expect((await writeBatch(port, checkout, ' my-rules ', [{ task: 'Rule: draft' }])).kind).toBe('error');
+    expect((await writeBatch(port, checkout, ' my-focus ', [{ task: 'Focus area: draft' }])).kind).toBe('error');
+    expect(posts).toEqual([]);
+    expect(rowCount()).toBe(0);
+  });
+
+  it('posts nothing when a trimmed owner-goals list has an unkind second item', async () => {
+    const parsed = await writeBatch(port, checkout, ' owner-goals ', [
+      { task: 'Ask: a', goal_kind: 'ask' },
+      { task: 'Ask: b' },
+    ]);
+
+    expect(parsed).toEqual({ kind: 'error', message: WORK_STATE_WRITE_ARGS_ERROR });
+    expect(posts).toEqual([]);
+    expect(rowCount()).toBe(0);
+  });
+
+  it('posts the trimmed list, never the raw spacing', async () => {
+    expect((await writeBatch(port, checkout, ' release ', [{ task: 'a' }, { task: 'b' }])).kind).toBe('batch');
+
+    expect(posts.map(post => (post as { list: string }).list)).toEqual(['release', 'release']);
+    expect(rowCount()).toBe(2);
   });
 
   it('accepts a whole batch the worker accepts, including kinded owner-goals rows', async () => {

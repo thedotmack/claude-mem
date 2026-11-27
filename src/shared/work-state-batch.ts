@@ -17,8 +17,8 @@ export const MAX_WORK_STATE_WRITE_ITEMS = 25;
 export const WORK_STATE_WRITE_ARGS_ERROR = 'Invalid work_state_write arguments: pass a non-empty list and exactly one of fields (a scalar-key object) or items (1-25 such objects).';
 
 export type ParsedWorkStateWrite =
-  | { kind: 'single'; fields: WorkStateFields }
-  | { kind: 'batch'; items: WorkStateFields[] }
+  | { kind: 'single'; list: string; fields: WorkStateFields }
+  | { kind: 'batch'; list: string; items: WorkStateFields[] }
   | { kind: 'error'; message: string };
 
 const error = (): ParsedWorkStateWrite => ({ kind: 'error', message: WORK_STATE_WRITE_ARGS_ERROR });
@@ -38,12 +38,15 @@ export function parseWorkStateWriteArgs(args: unknown): ParsedWorkStateWrite {
   const record = args as Record<string, unknown>;
   const list = record.list;
   if (typeof list !== 'string' || list.trim().length === 0 || list.trim().length > 200) return error();
+  // One value for the checks and for every POST: the worker trims list with
+  // z.string().trim(), so the raw spacing must never decide a different rule.
+  const trimmedList = list.trim();
 
   // Decide both list rules once, rather than per entry inside the caller's loop.
   // Mirror every list the worker refuses before any POST: the shared-records
   // prefix plus My Rules and My Focus (403 in WorkStateRoutes.handleWrite).
-  const reserved = isSharedWorkList(list) || isMyRulesList(list) || isMyFocusList(list);
-  const ownerGoals = isOwnerGoalsList(list);
+  const reserved = isSharedWorkList(trimmedList) || isMyRulesList(trimmedList) || isMyFocusList(trimmedList);
+  const ownerGoals = isOwnerGoalsList(trimmedList);
   if (reserved) return error();
 
   const hasFields = Object.hasOwn(record, 'fields');
@@ -53,7 +56,7 @@ export function parseWorkStateWriteArgs(args: unknown): ParsedWorkStateWrite {
   if (hasFields) {
     if (!validEntry(record.fields)) return error();
     if (ownerGoals && ownerGoalsRowRefusal(record.fields)) return error();
-    return { kind: 'single', fields: record.fields };
+    return { kind: 'single', list: trimmedList, fields: record.fields };
   }
 
   const items = record.items;
@@ -62,5 +65,5 @@ export function parseWorkStateWriteArgs(args: unknown): ParsedWorkStateWrite {
     if (!validEntry(item)) return error();
     if (ownerGoals && ownerGoalsRowRefusal(item)) return error();
   }
-  return { kind: 'batch', items: items as WorkStateFields[] };
+  return { kind: 'batch', list: trimmedList, items: items as WorkStateFields[] };
 }
