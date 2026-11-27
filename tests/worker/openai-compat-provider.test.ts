@@ -121,6 +121,7 @@ describe('resolveOpenAICompatConfig', () => {
     ['aigrow', 'https://aigrow.gg/v1', 'claude-haiku-5.5'],
     ['straitly', 'https://api.straitly.ai/v1', 'deepseek/deepseek-v4-1-flash-1017'],
     ['teamorouter', 'https://api.teamorouter.com/v1', 'glm-5.3-flash'],
+    ['llmtr', 'https://llmtr.com/v1', 'qwen/qwen3.8-flash'],
   ])('resolves %s with its hosted endpoint and default model', (id, baseUrl, defaultModel) => {
     process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = id;
     process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'fixture-preset-key';

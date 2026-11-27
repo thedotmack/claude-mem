@@ -261,6 +261,16 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'Key from the API Keys page at teamorouter.com/dashboard; model ids such as glm-5.3-flash or deepseek-v4-flash, listed with prices by GET api.teamorouter.com/v1/models/pricing, no key needed.',
   },
   {
+    id: 'llmtr',
+    label: 'LLMTR (llmtr.com)',
+    baseUrl: 'https://llmtr.com/v1',
+    // A cheap, fast model for the same reason as NVIDIA's default: extraction
+    // is high volume. Ids carry a vendor prefix and are passed verbatim.
+    defaultModel: 'qwen/qwen3.8-flash',
+    requiresApiKey: true,
+    hint: 'Key from the API keys page at llmtr.com/dashboard/keys; vendor-prefixed model ids such as qwen/qwen3.8-flash or qwen/qwen3.8-max, listed by GET llmtr.com/v1/models, no key needed.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
