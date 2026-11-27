@@ -267,8 +267,17 @@ export class ChatDbSource implements MessageSource {
          GROUP BY c.ROWID
          ORDER BY last_ms DESC`,
       );
+      const membersByChat = new Map<number, string[]>();
+      for (const member of db.all<{ chat_id: number; address: string }>(
+        'SELECT chj.chat_id, h.id AS address FROM chat_handle_join chj JOIN handle h ON h.ROWID = chj.handle_id ORDER BY chj.chat_id, h.ROWID',
+      )) {
+        if (!member.address) continue;
+        const members = membersByChat.get(member.chat_id);
+        if (members) members.push(member.address);
+        else membersByChat.set(member.chat_id, [member.address]);
+      }
       return rows.map(row => {
-        const addresses = this.members(db, row.rowid).map(p => p.address);
+        const addresses = membersByChat.get(row.rowid) ?? [];
         const isGroup = row.style === GROUP_STYLE || row.guid.includes(';+;');
         return {
           guid: row.guid,
