@@ -345,6 +345,48 @@ test('a request with only asks maps cleanly: its asks show, no activity, and a f
   assert.equal(old.state, 'idle')
 })
 
+test("a review's recorded owner move makes the request your move with its sentence, until something newer is recorded", () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const hour = 3600000
+  const ownerMove = { what: 'Merge PR #4845 once the card spacing looks right to you.', since: '2026-10-22T08:00:00Z' }
+  // The reviewer read the evidence through 70 minutes ago and recorded the review an hour ago.
+  const review = { state: 'in-progress' as const, percent: 90, summary: 'The card PR is open.', narrative: '', milestones: [], reviewedThrough: new Date(now - 70 * 60000).toISOString(), checkedAt: new Date(now - hour).toISOString(), readings: [{ at: new Date(now - hour).toISOString(), percent: 90 }], ownerMove }
+  // Recorded three hours ago: nothing came after what the reviewer saw.
+  const waiting = { ...syntheticRequest(), id: 'waiting', updatedAtEpoch: now - 3 * hour, progress: review }
+  // An idle request (last update days ago) waiting on the owner reads as theirs too.
+  const idle = { ...waiting, id: 'idle', updatedAtEpoch: now - 3 * 86400000, progress: { ...review, reviewedThrough: new Date(now - 2 * 86400000 - 60000).toISOString(), checkedAt: new Date(now - 2 * 86400000).toISOString() } }
+  // A new ask after the review: the agent may be on it, so the move clears until the next review.
+  const movedOn = { ...waiting, id: 'moved-on', updatedAtEpoch: now - 60000 }
+  // An ask while the review was being written (after what the reviewer saw, before it was recorded): the reviewer never
+  // saw it, so the move does not count.
+  const meanwhile = { ...waiting, id: 'meanwhile', updatedAtEpoch: now - 65 * 60000 }
+  // A review that does not say what it saw (an older or minimal shared record) records no move.
+  const unseen = { ...waiting, id: 'unseen', progress: { ...review, reviewedThrough: undefined } }
+  // A status the agent recorded after the review wins over it (the review no longer counts).
+  const reopened = { ...waiting, id: 'reopened', updatedAtEpoch: now - 3 * hour, lifecycle: { status: 'in-progress', explicit: true, complete: false, atEpoch: now - 30 * 60000 } }
+  // The same review without a move is the plain status.
+  const noMove = { ...waiting, id: 'no-move', updatedAtEpoch: now - 60000, progress: { ...review, ownerMove: undefined } }
+  // Reviewed as finished (100%) with the owner still to confirm it: done, not checked, and the step is the sentence.
+  const toCheck = { ...waiting, id: 'to-check', progress: { ...review, percent: 100, readings: [{ at: review.checkedAt, percent: 100 }] } }
+  const model = toWorkModel(snapshotWith([waiting, idle, movedOn, meanwhile, unseen, reopened, noMove, toCheck]), now)
+  assert.deepEqual(model.requestReadErrors, [])
+  const byId = new Map(model.requests.map((request) => [request.id, request]))
+  for (const id of ['waiting', 'idle']) {
+    const request = byId.get(id)!
+    assert.equal(request.state, 'your-move', id)
+    assert.deepEqual(request.next, { who: 'human', text: ownerMove.what }, id)
+  }
+  const toCheckCard = byId.get('to-check')!
+  assert.equal(toCheckCard.state, 'needs-check')
+  assert.deepEqual(toCheckCard.next, { who: 'human', text: ownerMove.what })
+  for (const id of ['moved-on', 'meanwhile', 'unseen', 'reopened', 'no-move']) {
+    const request = byId.get(id)!
+    assert.equal(request.state, 'working', id)
+    assert.equal(request.next.who, 'bot', id)
+    assert.notEqual(request.next.text, ownerMove.what, id)
+  }
+})
+
 test('the build story recap is its first paragraph; no story hides it', () => {
   const now = Date.parse('2026-10-22T12:00:00Z')
   const model = toWorkModel(snapshotWith([], { story: { story: { narrative: '## Velocity\n\nFirst **part**.\n\nSecond part.', writtenAt: '2026-10-22T10:00:00Z' } } }), now)

@@ -9,6 +9,7 @@ import { basename } from 'node:path';
 import { isSharedReviewValue } from './shared-review-value.mjs';
 import { isReviewStackKind } from '../../shared/review-stack.js';
 import { isReviewStackValue } from './review-stack-schema.js';
+import { PROGRESS_STATES } from './progress-states.mjs';
 
 const TABLES = { observation: 'observations', summary: 'session_summaries', prompt: 'user_prompts', 'work-state': 'work_state_entries' };
 const SOURCE_KINDS = { 'user-prompt': 'prompt', 'session-summary-request': 'summary', 'session-summary': 'summary', 'session-initial-request': 'session', 'work-state': 'work-state', observation: 'observation' };
@@ -131,7 +132,7 @@ export function isSharedProjectionValue(kind, key, value, deleted = false, write
       && suggestion.requestId === key && optional(suggestion.confidence, score => typeof score === 'number' && score >= 0 && score <= 1)
       && optional(suggestion.evidence, evidence => string(evidence, 4000)) && optional(suggestion.status, status => ['open', 'joined', 'declined', 'dismissed'].includes(status))));
   if (kind === 'progress') return value.groupId === key
-    && ['shipped', 'in-progress', 'stalled', 'abandoned', 'unknown'].includes(value.state)
+    && PROGRESS_STATES.includes(value.state)
     && Number.isInteger(value.percent) && value.percent >= 0 && value.percent <= 100
     && ['summary', 'narrative', 'title'].every(key => optional(value[key], text => string(text, 12000)))
     && ['startedAt', 'shippedAt', 'lastActivityAt', 'reviewedThrough', 'checkedAt', 'changedAt'].every(key => optional(value[key], date))
@@ -139,7 +140,9 @@ export function isSharedProjectionValue(kind, key, value, deleted = false, write
     && optional(value.preferences, preferences => list(preferences, preference, 100))
     && optional(value.readings, readings => list(readings, item => object(item) && date(item.at) && Number.isInteger(item.percent) && item.percent >= 0 && item.percent <= 100, 100))
     && optional(value.reviewedConversations, keys => list(keys, conversation)) && optional(value.coercedFields, fields => list(fields, field => string(field, 200)))
-    && optional(value.evidence, evidence) && optional(value.outcome, outcome);
+    && optional(value.evidence, evidence) && optional(value.outcome, outcome)
+    // 200: the writer's cap for ownerMove.what (request-groups.mjs validateProgress, the milestone text cap).
+    && optional(value.ownerMove, move => object(move) && string(move.what, 200) && move.what.trim().length > 0 && optional(move.since, date));
   if (kind === 'story') return optional(value.narrative, narrative => string(narrative, 48000)) && list(value.preferences, preference, 100)
     && optional(value.writtenAt, date) && optional(value.generatedAt, at => date(at) || epoch(at)) && optional(value.source, source => string(source, 80));
   if (kind === 'refresh') return value.originDeviceId === key && ['idle', 'running', 'ok', 'failed', 'waiting-for-agent'].includes(value.state)
@@ -341,7 +344,7 @@ export function buildSharedProjectionUpdates(database, { ledger, records = {}, v
     add('group', id, portableWorkValue(database, { group: portableGroup, members, suggestions }, deviceId));
   }
   for (const [key, ignored] of Object.entries(ledger?.groups?.ignored ?? {})) add('ignored', key, portableWorkValue(database, ignored, deviceId));
-  for (const [id, progress] of Object.entries(ledger?.progress ?? {})) add('progress', id, portableWorkValue(database, pick(progress, ['groupId', 'state', 'percent', 'startedAt', 'shippedAt', 'lastActivityAt', 'summary', 'narrative', 'milestones', 'preferences', 'outcome', 'evidence', 'reviewedThrough', 'reviewedConversations', 'coercedFields', 'checkedAt', 'changedAt', 'readings', 'title']), deviceId));
+  for (const [id, progress] of Object.entries(ledger?.progress ?? {})) add('progress', id, portableWorkValue(database, pick(progress, ['groupId', 'state', 'percent', 'startedAt', 'shippedAt', 'lastActivityAt', 'summary', 'narrative', 'milestones', 'preferences', 'outcome', 'ownerMove', 'evidence', 'reviewedThrough', 'reviewedConversations', 'coercedFields', 'checkedAt', 'changedAt', 'readings', 'title']), deviceId));
   if (ledger?.story) add('story', 'current', portableWorkValue(database, pick(ledger.story, ['narrative', 'preferences', 'writtenAt', 'generatedAt', 'source']), deviceId));
   if (ledger?.refresh) {
     const fields = ['state', 'reason', 'agent', 'result', 'startedAt', 'finishedAt', 'checkedAt'];

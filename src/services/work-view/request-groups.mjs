@@ -33,6 +33,7 @@ import { NO_PROJECT, projectRoot, upgradedGroupRoot, withDerivedProjects } from 
 import { isOwnerDismissedArea, isPlaceableArea, OTHER_FOCUS_AREA_ID, PROPOSAL_KINDS, readFocus } from './my-focus.mjs';
 import { beforeSharedFileWrite } from './shared-file-hooks.mjs';
 import { isClosedWorkStateStatus } from './work-state-status.mjs';
+import { PROGRESS_STATES } from './progress-states.mjs';
 import { writeJsonFileAtomic } from '../../shared/atomic-json.js';
 
 const DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
@@ -44,7 +45,8 @@ const DAY_MS = 86400000;
 export const GOALS_STALE_MS = DAY_MS;
 // A list touched by many conversations is a shared bucket, not proof of one goal.
 const MAX_CONVERSATIONS_PER_LINKING_LIST = 8;
-export const PROGRESS_STATES = ['shipped', 'in-progress', 'stalled', 'abandoned', 'unknown'];
+// Finished reviews: grouping lists no request in these states as open, and none of them waits on the owner.
+const CLOSED_STATES = new Set(['shipped', 'abandoned']);
 export const PREFERENCE_KINDS = ['directive', 'correction', 'praise', 'frustration'];
 export const USAGE_LEVELS = ['in-use', 'some-use', 'no-evidence', 'unknown'];
 export const VALUE_LEVELS = ['high', 'medium', 'low', 'unclear'];
@@ -428,6 +430,14 @@ export function validateProgress(entry, knownGroups, options = {}) {
   if (entry.state === 'shipped' && (entry.percent !== 100 || !entry.shippedAt)) throw new TypeError('A shipped request needs percent 100 and shippedAt.');
   if (entry.state !== 'shipped' && entry.shippedAt) throw new TypeError('Only a shipped request has shippedAt.');
   const milestones = reviewList(entry.milestones, 12, 'milestones', options), preferences = reviewList(quotedPreferences(entry.preferences, options), 10, 'preferences', options);
+  // What the owner has to do next (confirm, reply, review, decide, merge), only while the next action is theirs. Its text
+  // cap is the milestones' (200). A finished review waits on no one.
+  if (entry.ownerMove != null) {
+    if (typeof entry.ownerMove !== 'object' || Array.isArray(entry.ownerMove)) throw new TypeError('ownerMove must be an object with what and since, or left out.');
+    if (CLOSED_STATES.has(entry.state)) throw new TypeError(`A request reviewed as ${entry.state} waits on no one; leave ownerMove out.`);
+    if (!isIsoOrNull(entry.ownerMove.since ?? null)) throw new TypeError('ownerMove.since must be an ISO date or null.');
+  }
+  const ownerMove = entry.ownerMove == null ? null : { what: text(entry.ownerMove.what, 200, 'ownerMove.what'), since: entry.ownerMove.since ?? null };
   return {
     groupId: entry.groupId, state: entry.state, percent: entry.percent,
     startedAt: entry.startedAt ?? null, shippedAt: entry.shippedAt ?? null, lastActivityAt: entry.lastActivityAt ?? null,
@@ -443,6 +453,7 @@ export function validateProgress(entry, knownGroups, options = {}) {
       return { kind: preference.kind, preference: text(preference.preference, 200, `preferences[${index}].preference`), quote: reviewQuote(preference.quote, 300, `preferences[${index}].quote`, options), at: preference.at ?? null };
     }),
     outcome: validateOutcome(entry.outcome, options),
+    ...(ownerMove ? { ownerMove } : {}),
     evidence: evidenceList(entry.evidence, 20),
     // What the reviewer actually saw: later activity or membership changes make it due again.
     reviewedThrough: new Date(Date.parse(basis.checkedThrough)).toISOString(),
@@ -1020,7 +1031,6 @@ export const FOCUS_BATCH = GROUPING_BATCH;
  * named all 20 requests of a 20-request batch (a 55 KB title-input) in one answer, and validateTitleAnswer accepted
  * every title. It is the size grouping and focus already ask that model to answer for, one item each. */
 export const TITLE_BATCH = GROUPING_BATCH;
-const CLOSED_STATES = new Set(['shipped', 'abandoned']);
 
 /** One grouping question: only conversations the ledger has not decided,
  * earliest first and all from one project root, each judged from its opening

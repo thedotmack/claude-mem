@@ -73,7 +73,7 @@ test('canonical shared records preserve grouping, progress, attribution and safe
   const keys = records.sessions.map(conversationKey).filter(Boolean);
   const anchor = conversationKey(records.sessions.find((row: any) => row.id === sessionA));
   const groupId = groupIdFor(anchor);
-  const ledger = { groups: { groups: { [groupId]: { title: 'Release cards', anchor, projectRoot: 'repo' } }, conversations: Object.fromEntries(keys.map((key: string) => [key, groupId])), ignored: {} }, progress: { [groupId]: { groupId, state: 'in-progress', percent: 60, summary: 'The cards are taking shape.' } }, story: null, refresh: null, agentWrittenPromptIds: new Set() };
+  const ledger = { groups: { groups: { [groupId]: { title: 'Release cards', anchor, projectRoot: 'repo' } }, conversations: Object.fromEntries(keys.map((key: string) => [key, groupId])), ignored: {} }, progress: { [groupId]: { groupId, state: 'in-progress', percent: 60, summary: 'The cards are taking shape.', ownerMove: { what: 'Reply to the agent about the card spacing.', since: '2026-10-20T00:00:00.000Z' } } }, story: null, refresh: null, agentWrittenPromptIds: new Set() };
   const view = decorateSharedView(buildAgentView(state(a.db, 'a'), records, { ledger, now: NOW }), { records });
   expect(view.coverage.linkedWork).toBe(1);
   const updates = buildSharedProjectionUpdates(a.db, { ledger, records, view, deviceId: 'a' });
@@ -89,6 +89,8 @@ test('canonical shared records preserve grouping, progress, attribution and safe
   const replica = decorateSharedView(buildAgentView(state(b.db, 'b'), merged.records, { ledger: merged.ledger, now: NOW }), merged);
   expect(replica.humanRequests).toHaveLength(1);
   expect(replica.humanRequests[0].progress.percent).toBe(60);
+  // What the owner has to do travels with the review, so the other device shows the same move.
+  expect(replica.humanRequests[0].progress.ownerMove).toEqual({ what: 'Reply to the agent about the card spacing.', since: '2026-10-20T00:00:00.000Z' });
   expect(replica.coverage.linkedWork).toBe(1);
   expect(replica.coverage.unattributedWork).toBe(0);
   expect(replica.humanRequests[0].title).toBe('Release cards');
@@ -346,7 +348,7 @@ test('incompatible independent group memberships surface the same conflict in op
 test('malformed nested shared values cannot replace valid state or carry private process and file fields', () => {
   const key = 'g_0123456789ab';
   const base = { groupId: key, state: 'in-progress', percent: 60 };
-  for (const invalid of [{ ...base, readings: {} }, { ...base, milestones: [null] }, { ...base, preferences: [{ preference: 'Keep it small', quotes: 'wrong' }] }, { ...base, outcome: { changes: 'wrong' } }]) {
+  for (const invalid of [{ ...base, readings: {} }, { ...base, milestones: [null] }, { ...base, preferences: [{ preference: 'Keep it small', quotes: 'wrong' }] }, { ...base, outcome: { changes: 'wrong' } }, { ...base, ownerMove: 'Reply.' }, { ...base, ownerMove: { what: ' ' } }, { ...base, ownerMove: { what: 'Reply.', since: 'last week' } }, { ...base, ownerMove: { what: 'x'.repeat(201), since: null } }]) {
     expect(isSharedProjectionValue('progress', key, invalid)).toBe(false);
   }
   expect(isSharedProjectionValue('story', 'current', { narrative: 'Good story', preferences: [{ preference: 'Keep it small', quotes: {} }] })).toBe(false);

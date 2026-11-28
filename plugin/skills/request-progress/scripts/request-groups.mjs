@@ -1137,6 +1137,8 @@ var init_SettingsDefaultsManager = __esm({
         // Model id passed verbatim. Empty = the preset's default model.
         CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_SESSION: "false",
         // opt-in: use the model selected in the host session
+        CLAUDE_MEM_OPENAI_COMPAT_MODEL_FROM_HOST: "false",
+        // opt-in: read host configured model
         CLAUDE_MEM_OPENAI_COMPAT_REASONING_EFFORT: "",
         CLAUDE_MEM_OPENAI_COMPAT_REASONING: "",
         // off | on. Empty = off: every openai-compatible request sends reasoning:{enabled:false}. "on" leaves reasoning to the endpoint.
@@ -1273,6 +1275,8 @@ var init_SettingsDefaultsManager = __esm({
         // chroma-mcp starts as `nice -n N uvx ...` where `nice` exists (not Windows). 0 = off, max 19
         CLAUDE_MEM_CHROMA_MAX_THREADS: "0",
         // Opt-in cap on chroma-mcp's embedding threads and Linux CPU affinity (`taskset`). 0 = off: 39f110260 removed an always-on cap that slowed backfill. 2 suits machines where chroma-mcp pins cores (#6365)
+        CLAUDE_MEM_CHROMA_EXCLUDE_NEWER: "default",
+        // uvx --exclude-newer cutoff that freezes chroma-mcp's resolve (#3610). Not a date: this file seeds every default, and a seeded date would never follow a release's bump. '' = off (mirrors without PEP 700 upload times); or a YYYY-MM-DD date / RFC 3339 timestamp
         // Embedding function used when creating the Chroma collection. 'default' is
         // the local all-MiniLM-L6-v2 (English-tuned). The pinned chroma-mcp also
         // accepts 'openai', 'cohere', 'jina', 'voyageai' and 'roboflow'; those are
@@ -4426,6 +4430,15 @@ var init_shared_file_hooks = __esm({
   }
 });
 
+// src/services/work-view/progress-states.mjs
+var PROGRESS_STATES;
+var init_progress_states = __esm({
+  "src/services/work-view/progress-states.mjs"() {
+    "use strict";
+    PROGRESS_STATES = ["shipped", "in-progress", "stalled", "abandoned", "unknown"];
+  }
+});
+
 // src/shared/gemini-error-details.ts
 var init_gemini_error_details = __esm({
   "src/shared/gemini-error-details.ts"() {
@@ -5345,6 +5358,12 @@ function validateProgress(entry, knownGroups, options = {}) {
   if (entry.state === "shipped" && (entry.percent !== 100 || !entry.shippedAt)) throw new TypeError("A shipped request needs percent 100 and shippedAt.");
   if (entry.state !== "shipped" && entry.shippedAt) throw new TypeError("Only a shipped request has shippedAt.");
   const milestones = reviewList(entry.milestones, 12, "milestones", options), preferences = reviewList(quotedPreferences(entry.preferences, options), 10, "preferences", options);
+  if (entry.ownerMove != null) {
+    if (typeof entry.ownerMove !== "object" || Array.isArray(entry.ownerMove)) throw new TypeError("ownerMove must be an object with what and since, or left out.");
+    if (CLOSED_STATES.has(entry.state)) throw new TypeError(`A request reviewed as ${entry.state} waits on no one; leave ownerMove out.`);
+    if (!isIsoOrNull(entry.ownerMove.since ?? null)) throw new TypeError("ownerMove.since must be an ISO date or null.");
+  }
+  const ownerMove = entry.ownerMove == null ? null : { what: text6(entry.ownerMove.what, 200, "ownerMove.what"), since: entry.ownerMove.since ?? null };
   return {
     groupId: entry.groupId,
     state: entry.state,
@@ -5364,6 +5383,7 @@ function validateProgress(entry, knownGroups, options = {}) {
       return { kind: preference2.kind, preference: text6(preference2.preference, 200, `preferences[${index}].preference`), quote: reviewQuote(preference2.quote, 300, `preferences[${index}].quote`, options), at: preference2.at ?? null };
     }),
     outcome: validateOutcome(entry.outcome, options),
+    ...ownerMove ? { ownerMove } : {},
     evidence: evidenceList(entry.evidence, 20),
     // What the reviewer actually saw: later activity or membership changes make it due again.
     reviewedThrough: new Date(Date.parse(basis.checkedThrough)).toISOString(),
@@ -5926,7 +5946,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   if (command2 === "refresh-needs") return print2(refreshNeeds({ dir, database: db(), now, days: option(args, "days", 14), localDeviceId: localDeviceId2 }));
   throw new TypeError("Usage: request-groups.mjs candidates|grouping-input|judge|apply|pending|show|record-progress|title-input|record-titles|story-input|record-story|focus-input|record-focus|refresh-needs (see file header).");
 }
-var DATA_DIR2, LEDGER_DIR, AGENT_WRITTEN_PROMPTS_FILE, DAY_MS2, GOALS_STALE_MS, MAX_CONVERSATIONS_PER_LINKING_LIST, PROGRESS_STATES, PREFERENCE_KINDS, USAGE_LEVELS, VALUE_LEVELS, LINK_KINDS, MAX_READINGS, iso3, groupIdFor, emptyGroups, isIsoOrNull, textTarget, evidenceList, STORY_NARRATIVE_MAX, STORY_NARRATIVE_TARGET, STORY_RECAP_BUDGET, STORY_CHAPTER_MIN_BUDGET, STORY_CHARS_PER_WORD, STORY_REFUSAL_PARTS, CONVERSATIONS_PER_QUERY, records, otherPassHash, focusAreaRecord, AREA_NAME_MAX, AREA_SENTENCE_MAX, requireDeviceId, GROUPING_BATCH, FOCUS_BATCH, TITLE_BATCH, CLOSED_STATES;
+var DATA_DIR2, LEDGER_DIR, AGENT_WRITTEN_PROMPTS_FILE, DAY_MS2, GOALS_STALE_MS, MAX_CONVERSATIONS_PER_LINKING_LIST, CLOSED_STATES, PREFERENCE_KINDS, USAGE_LEVELS, VALUE_LEVELS, LINK_KINDS, MAX_READINGS, iso3, groupIdFor, emptyGroups, isIsoOrNull, textTarget, evidenceList, STORY_NARRATIVE_MAX, STORY_NARRATIVE_TARGET, STORY_RECAP_BUDGET, STORY_CHAPTER_MIN_BUDGET, STORY_CHARS_PER_WORD, STORY_REFUSAL_PARTS, CONVERSATIONS_PER_QUERY, records, otherPassHash, focusAreaRecord, AREA_NAME_MAX, AREA_SENTENCE_MAX, requireDeviceId, GROUPING_BATCH, FOCUS_BATCH, TITLE_BATCH;
 var init_request_groups = __esm({
   "src/services/work-view/request-groups.mjs"() {
     "use strict";
@@ -5936,6 +5956,7 @@ var init_request_groups = __esm({
     init_my_focus();
     init_shared_file_hooks();
     init_work_state_status();
+    init_progress_states();
     init_atomic_json();
     init_request_projection();
     DATA_DIR2 = process.env.CLAUDE_MEM_DATA_DIR || join11(homedir9(), ".claude-mem");
@@ -5944,7 +5965,7 @@ var init_request_groups = __esm({
     DAY_MS2 = 864e5;
     GOALS_STALE_MS = DAY_MS2;
     MAX_CONVERSATIONS_PER_LINKING_LIST = 8;
-    PROGRESS_STATES = ["shipped", "in-progress", "stalled", "abandoned", "unknown"];
+    CLOSED_STATES = /* @__PURE__ */ new Set(["shipped", "abandoned"]);
     PREFERENCE_KINDS = ["directive", "correction", "praise", "frustration"];
     USAGE_LEVELS = ["in-use", "some-use", "no-evidence", "unknown"];
     VALUE_LEVELS = ["high", "medium", "low", "unclear"];
@@ -5978,7 +5999,6 @@ var init_request_groups = __esm({
     GROUPING_BATCH = 20;
     FOCUS_BATCH = GROUPING_BATCH;
     TITLE_BATCH = GROUPING_BATCH;
-    CLOSED_STATES = /* @__PURE__ */ new Set(["shipped", "abandoned"]);
   }
 });
 
@@ -6809,6 +6829,20 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
     if (stop) evidence2.push({ evidence: stop.source, atEpoch: stop.stoppedAtEpoch, sourceRef: { kind: "work-state", id: stop.entryId } });
     if (group.launch?.returnedAtEpoch) evidence2.push({ evidence: "agent-call-returned", atEpoch: group.launch.returnedAtEpoch, sourceRef: group.launch.shared ? null : { kind: "tool-use", id: group.launch.toolUseId } });
     return evidence2.filter((entry) => entry.atEpoch >= lastActive).sort((a, b) => b.atEpoch - a.atEpoch)[0] ?? null;
+  }
+  const promptsBySessionId = /* @__PURE__ */ new Map();
+  for (const prompt of prompts) {
+    if (!promptsBySessionId.has(prompt.session_db_id)) promptsBySessionId.set(prompt.session_db_id, []);
+    promptsBySessionId.get(prompt.session_db_id).push(prompt);
+  }
+  const groupedSessionIds = new Set([...groups.values()].filter((group) => !group.isSubagent).map((group) => group.sessionId));
+  for (const session of sessions) {
+    if (session.id == null || groupedSessionIds.has(session.id)) continue;
+    if (ledger?.groups?.ignored?.[conversationKey(session)]) continue;
+    const own2 = promptsBySessionId.get(session.id) ?? [];
+    if (!originalFor(session, own2)) continue;
+    const group = getGroup({ session, agentId: null, agentType: null, project: session.project });
+    group.lastActivityEpoch = Math.max(group.lastActivityEpoch, session.started_at_epoch ?? 0, ...own2.map((prompt) => prompt.created_at_epoch ?? 0));
   }
   const agents = [...groups.values()].map((group) => {
     const { lastActivityEpoch, ...publicGroup } = group;
@@ -26913,6 +26947,7 @@ function isReviewStackValue(kind, key, value, deleted = false) {
 }
 
 // src/services/work-view/shared-projection.mjs
+init_progress_states();
 var TABLES = { observation: "observations", summary: "session_summaries", prompt: "user_prompts", "work-state": "work_state_entries" };
 var SOURCE_KINDS = { "user-prompt": "prompt", "session-summary-request": "summary", "session-summary": "summary", "session-initial-request": "session", "work-state": "work-state", observation: "observation" };
 var values = (shared) => [...shared?.records?.values?.() ?? []];
@@ -27001,7 +27036,7 @@ function isSharedProjectionValue(kind, key, value, deleted = false, writer = voi
   if (kind === "ignored") return string4(value, 48e3);
   if (!object3(value)) return false;
   if (kind === "group") return object3(value.group) && string4(value.group.title, 120) && value.group.title.trim().length > 0 && conversation(value.group.anchor) && list(value.members, conversation) && value.members.length > 0 && new Set(value.members).size === value.members.length && value.members.includes(value.group.anchor) && optional2(value.group.projectRoot, (root) => string4(root, 2e3)) && optional2(value.group.rootNamed, (root) => typeof root === "boolean") && optional2(value.group.product, (product) => string4(product, 48e3)) && optional2(value.group.anchorAsk, (ask) => object3(ask) && string4(ask.text, 2e3) && optional2(ask.atEpoch, epoch)) && optional2(value.group.links, (links) => list(links, (link) => object3(link) && string4(link.kind, 80) && string4(link.evidence, 48e3) && list(link.conversations, conversation))) && optional2(value.suggestions, (suggestions) => object3(suggestions) && Object.entries(suggestions).every(([candidate, suggestion]) => conversation(candidate) && object3(suggestion) && suggestion.requestId === key && optional2(suggestion.confidence, (score) => typeof score === "number" && score >= 0 && score <= 1) && optional2(suggestion.evidence, (evidence2) => string4(evidence2, 4e3)) && optional2(suggestion.status, (status) => ["open", "joined", "declined", "dismissed"].includes(status))));
-  if (kind === "progress") return value.groupId === key && ["shipped", "in-progress", "stalled", "abandoned", "unknown"].includes(value.state) && Number.isInteger(value.percent) && value.percent >= 0 && value.percent <= 100 && ["summary", "narrative", "title"].every((key2) => optional2(value[key2], (text6) => string4(text6, 12e3))) && ["startedAt", "shippedAt", "lastActivityAt", "reviewedThrough", "checkedAt", "changedAt"].every((key2) => optional2(value[key2], date5)) && optional2(value.milestones, (milestones) => list(milestones, (item) => object3(item) && string4(item.text, 4e3) && optional2(item.at, date5) && optional2(item.evidence, evidence), 100)) && optional2(value.preferences, (preferences) => list(preferences, preference, 100)) && optional2(value.readings, (readings) => list(readings, (item) => object3(item) && date5(item.at) && Number.isInteger(item.percent) && item.percent >= 0 && item.percent <= 100, 100)) && optional2(value.reviewedConversations, (keys) => list(keys, conversation)) && optional2(value.coercedFields, (fields) => list(fields, (field) => string4(field, 200))) && optional2(value.evidence, evidence) && optional2(value.outcome, outcome);
+  if (kind === "progress") return value.groupId === key && PROGRESS_STATES.includes(value.state) && Number.isInteger(value.percent) && value.percent >= 0 && value.percent <= 100 && ["summary", "narrative", "title"].every((key2) => optional2(value[key2], (text6) => string4(text6, 12e3))) && ["startedAt", "shippedAt", "lastActivityAt", "reviewedThrough", "checkedAt", "changedAt"].every((key2) => optional2(value[key2], date5)) && optional2(value.milestones, (milestones) => list(milestones, (item) => object3(item) && string4(item.text, 4e3) && optional2(item.at, date5) && optional2(item.evidence, evidence), 100)) && optional2(value.preferences, (preferences) => list(preferences, preference, 100)) && optional2(value.readings, (readings) => list(readings, (item) => object3(item) && date5(item.at) && Number.isInteger(item.percent) && item.percent >= 0 && item.percent <= 100, 100)) && optional2(value.reviewedConversations, (keys) => list(keys, conversation)) && optional2(value.coercedFields, (fields) => list(fields, (field) => string4(field, 200))) && optional2(value.evidence, evidence) && optional2(value.outcome, outcome) && optional2(value.ownerMove, (move) => object3(move) && string4(move.what, 200) && move.what.trim().length > 0 && optional2(move.since, date5));
   if (kind === "story") return optional2(value.narrative, (narrative) => string4(narrative, 48e3)) && list(value.preferences, preference, 100) && optional2(value.writtenAt, date5) && optional2(value.generatedAt, (at) => date5(at) || epoch(at)) && optional2(value.source, (source) => string4(source, 80));
   if (kind === "refresh") return value.originDeviceId === key && ["idle", "running", "ok", "failed", "waiting-for-agent"].includes(value.state) && ["reason", "agent", "result"].every((key2) => optional2(value[key2], (text6) => string4(text6, 12e3))) && ["startedAt", "finishedAt", "checkedAt"].every((key2) => optional2(value[key2], date5));
   if (kind === "exclusion") {
@@ -27193,7 +27228,7 @@ function buildSharedProjectionUpdates(database, { ledger, records: records2 = {}
     add("group", id, portableWorkValue(database, { group: portableGroup, members: members3, suggestions }, deviceId));
   }
   for (const [key, ignored] of Object.entries(ledger?.groups?.ignored ?? {})) add("ignored", key, portableWorkValue(database, ignored, deviceId));
-  for (const [id, progress] of Object.entries(ledger?.progress ?? {})) add("progress", id, portableWorkValue(database, pick2(progress, ["groupId", "state", "percent", "startedAt", "shippedAt", "lastActivityAt", "summary", "narrative", "milestones", "preferences", "outcome", "evidence", "reviewedThrough", "reviewedConversations", "coercedFields", "checkedAt", "changedAt", "readings", "title"]), deviceId));
+  for (const [id, progress] of Object.entries(ledger?.progress ?? {})) add("progress", id, portableWorkValue(database, pick2(progress, ["groupId", "state", "percent", "startedAt", "shippedAt", "lastActivityAt", "summary", "narrative", "milestones", "preferences", "outcome", "ownerMove", "evidence", "reviewedThrough", "reviewedConversations", "coercedFields", "checkedAt", "changedAt", "readings", "title"]), deviceId));
   if (ledger?.story) add("story", "current", portableWorkValue(database, pick2(ledger.story, ["narrative", "preferences", "writtenAt", "generatedAt", "source"]), deviceId));
   if (ledger?.refresh) {
     const fields = ["state", "reason", "agent", "result", "startedAt", "finishedAt", "checkedAt"];

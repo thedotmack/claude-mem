@@ -357,13 +357,20 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
   // An explicit status recorded after the review (a reopen) wins, and the older review cannot claim it finished.
   const reviewCounts = !!recordedReview && reviewIsNewerThanLifecycle(recordedReview, raw.lifecycle)
   const review = reviewCounts || (recordedReview && recordedReview.percent < 100) ? recordedReview : null
+  // The owner's move the review recorded holds only while nothing was recorded after what the reviewer saw
+  // (reviewedThrough, the comparison request-groups.mjs reviewIsCurrent makes): any later activity clears it until the
+  // next review decides it again. A review without reviewedThrough records no move here.
+  const currentOwnerMove = reviewCounts && recordedReview.ownerMove && Date.parse(recordedReview.reviewedThrough ?? '') >= updatedAt ? recordedReview.ownerMove : null
   // With only asks, the latest ask is the request's last update.
   const statusItems = raw.items.length ? raw.items : [{ kind: 'prompt', status: '', lastUpdateEpoch: updatedAt }]
-  const status = normalizeRequestStatus({ items: statusItems, lifecycle: raw.lifecycle, checked: raw.review?.checked === true, progressState: reviewCounts ? review?.state : null, progressPercent: reviewCounts ? review?.percent : null }, now)
+  const status = normalizeRequestStatus({ items: statusItems, lifecycle: raw.lifecycle, checked: raw.review?.checked === true, progressState: reviewCounts ? review?.state : null, progressPercent: reviewCounts ? review?.percent : null, ownerMoveRecorded: !!currentOwnerMove }, now)
   const shippedAt = review?.state === 'shipped' && review.shippedAt ? Date.parse(review.shippedAt) : NaN
   const completedEpoch = raw.completedAtEpoch ?? (Number.isFinite(shippedAt) ? shippedAt : null)
   const { state, stage, who } = presentStatus(status, now - updatedAt <= STALE_AFTER_MS)
-  const recordedNext = (copyReady && cleanText(copy.next, 240))
+  // The recorded sentence is the step while the request waits on the owner: their move, or a 100% review to check.
+  // 200: the review check's cap for it (request-groups.mjs validateProgress).
+  const recordedNext = (currentOwnerMove && (status === 'needs-you' || status === 'needs-review') && cleanText(currentOwnerMove.what, 200))
+    || (copyReady && cleanText(copy.next, 240))
     || cleanText(raw.items.find((item) => item.nextStep?.text)?.nextStep?.text, 140)
     || null
   // With no step recorded: did any agent record work (items, activity or a review), or are there only asks?

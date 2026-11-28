@@ -41,8 +41,11 @@ your own request. The Python owner-goals export uses the same normalization.
 - **In progress** means the latest saved work state says work is underway. It is
   not a live-presence signal or a promise that an agent is currently running.
 - **Needs you** appears when recorded work explicitly asks for human input.
-  Open the handoff, inspect the original request and evidence, then continue in
-  the agent conversation where the work is happening.
+  It also appears when the latest progress review found the request waiting on
+  you to confirm, reply, review, decide or merge, and nothing new has been
+  recorded since that review. Open the handoff, inspect the original request
+  and evidence, then continue in the agent conversation where the work is
+  happening.
 - **Ready to check** means the parent request was explicitly reported complete.
   A finished subtask or a closed agent session does not finish its parent.
 - **Checked** means you pressed **Mark checked** for that version of the result.

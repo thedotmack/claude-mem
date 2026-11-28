@@ -68,10 +68,16 @@ export interface RequestStatusInput {
   progressState?: string | null
   /** The latest review's percent. 100 means the work is done, even while recorded items still say doing. */
   progressPercent?: number | null
+  /** The latest review recorded a move the owner has to make (its `ownerMove`) and nothing was recorded after it. The
+   * caller decides that (to-work-model.ts); this rule only reads it. */
+  ownerMoveRecorded?: boolean
 }
 
+/** What recorded items leave open: a review that counts decides these (done at 100%, or the owner's move). */
+const OPEN_STATUSES_A_CURRENT_REVIEW_OVERRIDES: NormalizedStatus[] = ['in-progress', 'todo', 'unknown', 'quiet']
+
 /** Lifecycle first (an explicit request_status / request_complete), then item statuses. */
-export function normalizeRequestStatus({ items, lifecycle, checked, progressState, progressPercent }: RequestStatusInput, now: number): NormalizedStatus {
+export function normalizeRequestStatus({ items, lifecycle, checked, progressState, progressPercent, ownerMoveRecorded }: RequestStatusInput, now: number): NormalizedStatus {
   let status = statusFor(items, now)
   const recordedStatus = lifecycle?.explicit ? normalizeRecordedStatus(lifecycle.status) : null
   const lifecycleStatus = !lifecycle?.explicit ? null
@@ -83,7 +89,9 @@ export function normalizeRequestStatus({ items, lifecycle, checked, progressStat
   if (lifecycleStatus && lifecycleStatus in STATUS) status = lifecycleStatus as NormalizedStatus
   if (progressState === 'shipped') status = 'shipped'
   // Reviewed as finished but not shipped: done, waiting on a person's check, never still "working" at 100%.
-  else if (progressPercent === 100 && ['in-progress', 'todo', 'unknown', 'quiet'].includes(status)) status = 'needs-review'
+  else if (progressPercent === 100 && OPEN_STATUSES_A_CURRENT_REVIEW_OVERRIDES.includes(status)) status = 'needs-review'
+  // Reviewed as waiting on the owner (confirm, reply, review, decide, merge): their move until something new is recorded.
+  else if (ownerMoveRecorded && OPEN_STATUSES_A_CURRENT_REVIEW_OVERRIDES.includes(status)) status = 'needs-you'
   if (checked && (status === 'done' || status === 'needs-review')) status = 'checked'
   return status
 }

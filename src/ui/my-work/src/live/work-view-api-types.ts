@@ -3,6 +3,7 @@
 // A status the worker declares a type for is taken from that declaration, never retyped here.
 import type { FocusAreaStatus } from '../../../../services/work-view/my-focus.mjs'
 import type { SavedRule } from '../../../../services/work-view/my-rules.mjs'
+import type { ProgressState } from '../../../../services/work-view/progress-states.mjs'
 
 /** One image ref, as src/shared/media-contract.ts MediaAttachmentRef defines it. Restated because My Work's tsconfig
  * (erasableSyntaxOnly) cannot load that file; src/services/work-view/overview.ts fails the root typecheck if they differ. */
@@ -86,17 +87,23 @@ export interface WorkViewReview {
 
 /** A request-progress memory review of one overall request (request-groups.mjs `record-progress`). */
 export interface WorkViewProgress {
-  state: 'shipped' | 'in-progress' | 'stalled' | 'abandoned' | 'unknown'
+  state: ProgressState
   percent: number
   summary?: string
   narrative?: string
   milestones?: { at: string | null; text: string }[]
   /** ISO time the review was recorded. */
   checkedAt?: string
+  /** ISO time the reviewer's `show` ran: everything recorded before it was in front of the reviewer. Earlier than checkedAt.
+   * Older shared records may omit it. */
+  reviewedThrough?: string
   /** ISO time the work shipped; set only when state is shipped. */
   shippedAt?: string | null
   /** Recorded history, oldest first; valid older or minimal shared records may omit it. */
   readings?: { at: string; percent: number }[]
+  /** Present only while the next action is the owner's: what they have to do, and when the wait began (ISO, or null).
+   * Never on a shipped or abandoned review. Older workers leave it out. */
+  ownerMove?: { what: string; since: string | null }
 }
 
 /** One thing a request produced (work-product.mjs). Git kinds carry the sha or branch; `url` is absent when there is

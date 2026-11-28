@@ -1,0 +1,1 @@
+import{X as e}from"./parse-sse-frame-BhouwKGn.js";var t={recorded:e=>e,unblock:(t,n)=>e(n(`Unblock: {step}`),{step:t}),ship:(e,t)=>t(`Ship it`)};function n(e,n){return t[e.step](e.text??``,n)}export{n as t};

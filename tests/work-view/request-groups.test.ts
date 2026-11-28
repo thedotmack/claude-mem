@@ -83,6 +83,56 @@ describe('overall requests and progress reviews', () => {
   expect(() => validateProgress({ ...base, reviewBasis: undefined }, groups)).toThrow(/reviewBasis/);
 });
 
+  it('a review records the owner\'s move while the next action is theirs, and never on a finished request', () => {
+  const groups = { g_000000000001: { title: 'Cards' } };
+  const base = { groupId: 'g_000000000001', state: 'in-progress', percent: 90, summary: 'The card PR is open and waits on a merge.', reviewBasis: { checkedThrough: '2026-10-04T00:00:00Z', conversations: [key('a')] } };
+  const ownerMove = { what: 'Merge PR #4845 once the card spacing looks right to you.', since: '2026-10-03T00:00:00Z' };
+  expect(validateProgress({ ...base, ownerMove }, groups).ownerMove).toEqual(ownerMove);
+  expect(validateProgress({ ...base, state: 'stalled', ownerMove: { what: 'Reply to the agent\'s question about the layout.' } }, groups).ownerMove)
+    .toEqual({ what: 'Reply to the agent\'s question about the layout.', since: null });
+  // Absent when the next action is not the owner's.
+  expect(Object.hasOwn(validateProgress(base, groups), 'ownerMove')).toBe(false);
+  expect(Object.hasOwn(validateProgress({ ...base, ownerMove: null }, groups), 'ownerMove')).toBe(false);
+  // The milestones' 200-character cap, with the same target in the refusal.
+  expect(validateProgress({ ...base, ownerMove: { what: 'x'.repeat(200), since: null } }, groups).ownerMove.what).toHaveLength(200);
+  expect(() => validateProgress({ ...base, ownerMove: { what: 'x'.repeat(201), since: null } }, groups))
+    .toThrow('ownerMove.what is 201 characters; it must be 1–200. Bring it to about 150 characters (cut at least 51).');
+  expect(() => validateProgress({ ...base, ownerMove: { what: ' ', since: null } }, groups)).toThrow(/ownerMove\.what/);
+  expect(() => validateProgress({ ...base, ownerMove: { what: 'Reply.', since: 'last week' } }, groups)).toThrow('ownerMove.since must be an ISO date or null.');
+  expect(() => validateProgress({ ...base, ownerMove: 'Reply.' }, groups)).toThrow('ownerMove must be an object with what and since, or left out.');
+  const shipped = { ...base, state: 'shipped', percent: 100, shippedAt: '2026-10-03T00:00:00Z' };
+  expect(() => validateProgress({ ...shipped, ownerMove }, groups)).toThrow('A request reviewed as shipped waits on no one; leave ownerMove out.');
+  expect(() => validateProgress({ ...base, state: 'abandoned', ownerMove }, groups)).toThrow('A request reviewed as abandoned waits on no one; leave ownerMove out.');
+  // On the retry, an over-long sentence is cut like any other review text and named in coercedFields.
+  const coercedFields = new Set<string>();
+  const coerced = validateProgress({ ...base, ownerMove: { what: 'Merge it. '.repeat(30), since: null } }, groups, { coerce: true, coercedFields }) as any;
+  expect(coerced.ownerMove.what.length).toBeLessThanOrEqual(200);
+  expect([...coercedFields]).toEqual(['ownerMove.what']);
+});
+
+  it('record-progress saves the owner\'s move, and a later review without one clears it', () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    let output: any;
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; }, localDeviceId: '' }); return output; };
+    const decisions = join(dir, 'decisions.json');
+    writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Pricing page', conversations: [key('c')] }] }));
+    run(['apply', decisions]);
+    const groupId = groupIdFor(key('c'));
+    const review = join(dir, 'review.json');
+    const ownerMove = { what: 'Confirm the pricing page copy reads right before it goes live.', since: new Date(NOW - DAY).toISOString() };
+    writeFileSync(review, JSON.stringify({ groupId, state: 'in-progress', percent: 90, summary: 'The pricing page is written and waits on your read.', ownerMove, reviewBasis: run(['show', groupId]).reviewBasis }));
+    run(['record-progress', review]);
+    expect(JSON.parse(readFileSync(join(dir, 'progress', `${groupId}.json`), 'utf8')).ownerMove).toEqual(ownerMove);
+    expect(readLedger(dir).progress[groupId].ownerMove).toEqual(ownerMove);
+    // The next review is open work again, now without a move for the owner: it replaces the saved one.
+    writeFileSync(review, JSON.stringify({ groupId, state: 'in-progress', percent: 95, summary: 'The copy was confirmed; the page is being published.', reviewBasis: run(['show', groupId], NOW + 1000).reviewBasis }));
+    expect(run(['record-progress', review], NOW + 1000).state).toBe('in-progress');
+    expect(Object.hasOwn(readLedger(dir).progress[groupId], 'ownerMove')).toBe(false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
   it('a review over a cap is refused with a target well under it, so the retry does not miss again (Oct 31)', () => {
   const groups = { g_000000000001: { title: 'Cards' } };
   const base = { groupId: 'g_000000000001', state: 'in-progress', percent: 50, summary: 'Under way.', reviewBasis: { checkedThrough: '2026-10-04T00:00:00Z', conversations: [key('a')] } };
