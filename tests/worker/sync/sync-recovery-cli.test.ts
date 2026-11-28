@@ -11,6 +11,22 @@ describe('recovery CLI', () => {
     expect(requests).toBe(0);
   });
 
+  it('defaults to the configured worker port, not the old fixed 37777', async () => {
+    const previous = process.env.CLAUDE_MEM_WORKER_PORT;
+    process.env.CLAUDE_MEM_WORKER_PORT = '37741';
+    try {
+      const urls: string[] = [];
+      await runRecoveryCommand(['inventory'], {
+        fetch: (async url => { urls.push(String(url)); return Response.json({}); }) as typeof fetch,
+        readJson: async () => ({}),
+      });
+      expect(urls).toEqual(['http://127.0.0.1:37741/api/sync/recovery/inventory']);
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_MEM_WORKER_PORT;
+      else process.env.CLAUDE_MEM_WORKER_PORT = previous;
+    }
+  });
+
   it('preview is one read-only request and never creates or resumes a job', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const scope = { project: 'fixture', from: '2020-01-01T00:00:00Z', to: '2021-01-01T00:00:00Z', kinds: ['prompt'] };
