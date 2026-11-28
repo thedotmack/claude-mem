@@ -252,6 +252,7 @@ export const myworkRu: Record<string, string> = {
   'Moved “{title}” to {area}': '«{title}» перемещено в {area}',
   'the request': 'запрос',
   'the area': 'область',
+  'the sub focus': 'подобласть',
   'Put “{name}” back in Suggested': '«{name}» возвращено в предложенные',
   'Wireframe: kept on this page only, not actually written.': 'Вайрфрейм: только на этой странице, на самом деле не записано.',
   'Saved in your cloud viewer; it syncs to your computers. A refresh never overrides it.': 'Сохранено в вашем облачном просмотрщике; синхронизируется с вашими компьютерами. Обновление его не перезапишет.',

@@ -2,9 +2,9 @@ import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { appendReading, applyGroupDecisions, groupIdFor, hasPlaceholderTitle, ledgerSignature, linkBackwards, MAX_READINGS, placeholderTitleFromAsk, readCandidates, readGoals, readLedger, refreshNeeds, runCli, storyChaptersToMerge, storyParts, textTarget, trimStoryPreferences, validateProgress, validateStory, validateTitleAnswer } from '../../src/services/work-view/request-groups.mjs';
+import { appendReading, applyGroupDecisions, groupIdFor, hasPlaceholderTitle, ledgerSignature, linkBackwards, MAX_READINGS, placeholderTitleFromAsk, readCandidates, readGoals, readLedger, refreshNeeds, runCli, storyChaptersToMerge, storyParts, textTarget, trimStoryPreferences, validateProgress, validateStory, validateSubFocusAnswer, validateTitleAnswer } from '../../src/services/work-view/request-groups.mjs';
 import { readFocus, readFocusAreas } from '../../src/services/work-view/data-source.mjs';
-import { focusAreaRowFields, placementRowFields, routerFocusRows, type RouterFocusBody } from '../../src/services/work-view/my-focus.mjs';
+import { focusAreaRowFields, placementRowFields, routerFocusRows, subFocusPlacementRowFields, type RouterFocusBody } from '../../src/services/work-view/my-focus.mjs';
 import { buildHumanRequests } from '../../src/services/work-view/request-projection.mjs';
 import { scratchDir } from '../helpers/scratch-dir.js';
 
@@ -806,11 +806,11 @@ describe('overall requests and progress reviews', () => {
     const database = fixtureDatabase();
     const focus = focusFixture(database);
     const { run, write } = cliRunner(dir, database, focus.save);
-    expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' })).toEqual({ due: 0, ungrouped: 3, goalsStale: true, unplaced: 0, otherChanged: false, needed: true });
+    expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' })).toEqual({ due: 0, ungrouped: 3, goalsStale: true, unplaced: 0, otherChanged: false, subFocusDue: 0, subFocusFailed: 0, needed: true });
     saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
     run(['apply', write('decisions.json', { groups: [{ title: 'Release cards', conversations: [key('a'), key('b')], links: [{ kind: 'shared-work-list', conversations: [key('a'), key('b')], evidence: 'work list "release-cards" in repo/tree' }] }, { title: 'Pricing page', conversations: [key('c')] }] })]);
     // With no focus areas at all, every request still needs a place (Other, or an area the step proposes).
-    expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' })).toEqual({ due: 2, ungrouped: 0, goalsStale: true, unplaced: 2, otherChanged: false, needed: true });
+    expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' })).toEqual({ due: 2, ungrouped: 0, goalsStale: true, unplaced: 2, otherChanged: false, subFocusDue: 0, subFocusFailed: 0, needed: true });
     for (const groupId of [groupIdFor(key('a')), groupIdFor(key('c'))]) {
       run(['record-progress', write('review.json', { groupId, state: 'in-progress', percent: 50, summary: 'Under way.', reviewBasis: run(['show', groupId]).reviewBasis })]);
     }
@@ -818,7 +818,7 @@ describe('overall requests and progress reviews', () => {
     // Two requests newly in Other: the proposal pass is due until it has looked at them.
     expect(refreshNeeds({ dir, database, now: NOW - 2 * DAY + 1000, localDeviceId: '' })).toMatchObject({ otherChanged: true, needed: true });
     await run(['record-focus', '--other', write('other.json', { placements: [], proposals: [] })]);
-    expect(refreshNeeds({ dir, database, now: NOW - 2 * DAY + 1000, localDeviceId: '' })).toEqual({ due: 0, ungrouped: 0, goalsStale: false, unplaced: 0, otherChanged: false, needed: false });
+    expect(refreshNeeds({ dir, database, now: NOW - 2 * DAY + 1000, localDeviceId: '' })).toEqual({ due: 0, ungrouped: 0, goalsStale: false, unplaced: 0, otherChanged: false, subFocusDue: 0, subFocusFailed: 0, needed: false });
     expect(run(['refresh-needs'], NOW - 2 * DAY + 1000).needed).toBe(false);
     const before = ledgerSignature(dir);
     writeFileSync(join(dir, 'refresh.json'), JSON.stringify({ state: 'running' }));
@@ -853,6 +853,220 @@ describe('overall requests and progress reviews', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+});
+
+describe('sub focuses', () => {
+  const RELEASES = ['a', 'b', 'c', 'd', 'e'];
+  /** Five one-conversation requests a–e, all placed by the router in the kept area Releases. */
+  async function releases(dir: string, sessions = RELEASES) {
+    const database = fixtureDatabase();
+    const session = database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)');
+    const prompt = database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)');
+    for (const [id, name, ask] of [[4, 'd', 'Create the v16.0.0 announcement image'], [5, 'e', 'Create the v15.18.3 announcement image'], [6, 'f', 'Create the v15.18.2 announcement image']] as const) {
+      session.run(id, 'claude', name, `m${id}`, 'repo/tree', ask, NOW - DAY);
+      prompt.run(id, 1, ask, NOW - DAY);
+    }
+    const focus = focusFixture(database);
+    focus.area('fa_releases', 'Releases', 'kept');
+    const { run, write } = cliRunner(dir, database, focus.save);
+    run(['apply', write('d.json', { groups: [...sessions, 'f'].map((name) => ({ title: `Request ${name}`, conversations: [key(name)] })) })]);
+    await run(['record-focus', write('f.json', { placements: [...sessions, 'f'].map((name) => ({ anchor: key(name), focusAreaId: name === 'f' ? 'other' : 'fa_releases', evidence: 'A release task.' })), proposals: [] })]);
+    return { database, focus, run, write };
+  }
+
+  it('the validator refuses unknown ids and double membership, and ungroups a group of one', async () => {
+    const dir = ledgerDir();
+    try {
+      const { run } = await releases(dir);
+      const input = run(['sub-focus-input', '--area', 'fa_releases']);
+      expect(input).toMatchObject({ area: { focusAreaId: 'fa_releases', name: 'Releases', goal: 'Make Releases good.' }, subFocuses: [], passHash: expect.stringMatching(/^[0-9a-f]{16}$/) });
+      expect(input.requests.map((request: any) => [request.anchor, request.title, request.summary])).toEqual(RELEASES.map((name) => [key(name), `Request ${name}`, null]));
+      const images = { name: 'Announcement images', anchors: [key('d'), key('e')] };
+      const answer = (change: Record<string, unknown>) => ({ groups: [], newGroups: [images], ungrouped: [key('a'), key('b'), key('c')], ...change });
+      expect(() => validateSubFocusAnswer(answer({ ungrouped: [key('a'), key('b'), key('c'), key('zzz')] }), input)).toThrow(/ungrouped\[3\] names .+, which was not asked about/);
+      expect(() => validateSubFocusAnswer(answer({ groups: [{ subFocusId: 'sf_nope', anchors: [key('a')] }], ungrouped: [key('b'), key('c')] }), input)).toThrow(/"sf_nope", which is not a listed sub focus/);
+      expect(() => validateSubFocusAnswer(answer({ ungrouped: [key('a'), key('b'), key('c'), key('d')] }), input)).toThrow(/places .+ a second time; a request sits in one sub focus/);
+      expect(() => validateSubFocusAnswer(answer({ ungrouped: [key('a'), key('b')] }), input)).toThrow(/Decide every request asked about.+missing/);
+      expect(() => validateSubFocusAnswer({ groups: [], newGroups: [] }, input)).toThrow(/needs a ungrouped array/);
+      // A group of one is not a group: that request is left ungrouped, and the rest of the answer stands.
+      const body = validateSubFocusAnswer(answer({ newGroups: [{ name: 'Lonely', anchors: [key('a')] }, images], ungrouped: [key('b'), key('c')] }), input);
+      expect(body.subFocus.newSubFocuses).toEqual([{ name: 'Announcement images', anchorConversationKeys: [key('d'), key('e')] }]);
+      expect(body.subFocus.placements).toEqual([key('a'), key('b'), key('c')].map((anchor) => ({ anchorConversationKey: anchor, subFocusId: null })));
+      expect(body.subFocus.passHash).toBe(input.passHash);
+      expect(validateSubFocusAnswer(answer({}), input, { recordPass: false }).subFocus.passHash).toBeNull();
+      // The retry keeps what it can: an unknown request and a second mention are dropped, and a left-out request is ungrouped.
+      const coerced = validateSubFocusAnswer(answer({ groups: [{ subFocusId: 'sf_nope', anchors: [key('a')] }], ungrouped: [key('zzz'), key('b'), key('d')] }), input, { coerce: true });
+      expect(coerced.subFocus.newSubFocuses).toEqual([{ name: 'Announcement images', anchorConversationKeys: [key('d'), key('e')] }]);
+      expect(coerced.subFocus.placements.map((placement) => placement.anchorConversationKey).sort()).toEqual([key('a'), key('b'), key('c')].sort());
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('record-sub-focus saves through the worker; an area is due again only when its set of requests changes, and an area of 3 never', async () => {
+    const dir = ledgerDir();
+    try {
+      const { database, focus, run, write } = await releases(dir);
+      expect(run(['sub-focus-input'])).toEqual({ due: [{ focusAreaId: 'fa_releases', name: 'Releases', requests: 5 }], failed: [] });
+      expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' })).toMatchObject({ subFocusDue: 1, needed: true });
+      const rowsBefore = focus.rows();
+      await expect(run(['record-sub-focus', '--area', 'fa_releases', write('s0.json', { groups: [], newGroups: [], ungrouped: [key('a')] })])).rejects.toThrow(/Decide every request/);
+      expect(() => runCli(['record-sub-focus', write('s0b.json', {})], { dir, database, now: NOW, print: () => {}, localDeviceId: '', saveFocus: focus.save })).toThrow(/needs --area/);
+      expect(focus.rows()).toBe(rowsBefore);
+      expect(await run(['record-sub-focus', '--area', 'fa_releases', write('s1.json', { groups: [], newGroups: [{ name: 'Announcement images', anchors: [key('d'), key('e')] }], ungrouped: [key('a'), key('b'), key('c')] })]))
+        .toEqual({ grouped: 2, ungrouped: 3, newSubFocuses: 1 });
+      const saved = readFocus(database, { localDeviceId: '' });
+      const subFocusId = saved.focusAreas[0].subFocuses[0].subFocusId;
+      expect(saved.focusAreas[0].subFocuses).toEqual([{ subFocusId, name: 'Announcement images', decidedBy: 'system' }]);
+      expect(subFocusId).toMatch(/^sf_[0-9a-f]{12}$/);
+      expect([key('d'), key('e')].map((anchor) => saved.subFocusIdByAnchor.get(anchor))).toEqual([subFocusId, subFocusId]);
+      // The pass is recorded: a quiet refresh asks nothing, and a new review does not change the set.
+      expect(run(['sub-focus-input']).due).toEqual([]);
+      run(['record-progress', write('r.json', { groupId: groupIdFor(key('a')), state: 'in-progress', percent: 40, summary: 'Under way.', reviewBasis: run(['show', groupIdFor(key('a'))]).reviewBasis })]);
+      expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' })).toMatchObject({ subFocusDue: 0 });
+      // The next pass keeps the group with its members, and lists the requests left ungrouped to decide again.
+      const next = run(['sub-focus-input', '--area', 'fa_releases']);
+      expect(next.subFocuses).toEqual([{ subFocusId, name: 'Announcement images', members: [key('d'), key('e')].map((anchor, index) => ({ anchor, title: `Request ${['d', 'e'][index]}`, summary: null })) }]);
+      expect(next.requests.map((request: any) => request.anchor)).toEqual([key('a'), key('b'), key('c')]);
+      expect(next.requests[0].summary).toBe('Under way.');
+      // A request the owner placed is the owner's: never listed to decide, wherever they put it.
+      focus.insert(subFocusPlacementRowFields({ anchorConversationKey: key('a'), subFocusId, focusAreaId: 'fa_releases', placedBy: 'owner' }));
+      focus.insert(subFocusPlacementRowFields({ anchorConversationKey: key('b'), subFocusId: null, focusAreaId: 'fa_releases', placedBy: 'owner' }));
+      const owned = run(['sub-focus-input', '--area', 'fa_releases']);
+      expect(owned.requests.map((request: any) => request.anchor)).toEqual([key('c')]);
+      expect(owned.subFocuses[0].members.map((member: any) => member.anchor)).toEqual([key('a'), key('d'), key('e')]);
+      // A request moves into the area: its set changed, so it is due again.
+      focus.insert(placementRowFields({ anchorConversationKey: key('f'), focusAreaId: 'fa_releases', placedBy: 'owner', evidence: 'Moved by you in My Work.' }));
+      expect(run(['sub-focus-input']).due).toEqual([{ focusAreaId: 'fa_releases', name: 'Releases', requests: 6 }]);
+      expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' }).subFocusDue).toBe(1);
+      expect(() => run(['sub-focus-input', '--area', 'fa_nope'])).toThrow(/not a kept focus area/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a sub focus left with one request is no group: the router\'s member is decided again, and the owner\'s stays', async () => {
+    const dir = ledgerDir();
+    try {
+      const { focus, run, write } = await releases(dir);
+      await run(['record-sub-focus', '--area', 'fa_releases', write('s1.json', { groups: [], newGroups: [{ name: 'Announcement images', anchors: [key('d'), key('e')] }], ungrouped: [key('a'), key('b'), key('c')] })]);
+      const { subFocusId } = run(['sub-focus-input', '--area', 'fa_releases']).subFocuses[0];
+      // The owner moves d out of the sub focus: e is left alone in it, which is not a group.
+      focus.insert(subFocusPlacementRowFields({ anchorConversationKey: key('d'), subFocusId: null, focusAreaId: 'fa_releases', placedBy: 'owner' }));
+      const alone = run(['sub-focus-input', '--area', 'fa_releases']);
+      expect(alone.subFocuses).toEqual([{ subFocusId, name: 'Announcement images', members: [] }]);
+      expect(alone.requests.map((request: any) => request.anchor)).toEqual([key('a'), key('b'), key('c'), key('e')]);
+      expect(alone.alreadyUngrouped).toEqual([key('a'), key('b'), key('c')]);
+      // Put back alone it stays ungrouped (a group of one); with another request it holds again.
+      const back = (anchors: string[]) => validateSubFocusAnswer({ groups: [{ subFocusId, anchors }], newGroups: [], ungrouped: [key('a'), key('b'), key('c'), key('e')].filter((anchor) => !anchors.includes(anchor)) }, alone).subFocus.placements;
+      expect(back([key('e')])).toEqual([{ anchorConversationKey: key('e'), subFocusId: null }]);
+      expect(back([key('e'), key('a')])).toEqual([{ anchorConversationKey: key('e'), subFocusId }, { anchorConversationKey: key('a'), subFocusId }]);
+      // A member the owner placed stays where the owner put it, even alone.
+      focus.insert(subFocusPlacementRowFields({ anchorConversationKey: key('e'), subFocusId, focusAreaId: 'fa_releases', placedBy: 'owner' }));
+      const owned = run(['sub-focus-input', '--area', 'fa_releases']);
+      expect(owned.subFocuses[0].members.map((member: any) => member.anchor)).toEqual([key('e')]);
+      expect(owned.requests.map((request: any) => request.anchor)).toEqual([key('a'), key('b'), key('c')]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('leaving an already ungrouped request ungrouped writes no row; only a changed decision and the pass are saved', async () => {
+    const dir = ledgerDir();
+    try {
+      const { database, focus, run, write } = await releases(dir);
+      await run(['record-sub-focus', '--area', 'fa_releases', write('s1.json', { groups: [], newGroups: [{ name: 'Announcement images', anchors: [key('d'), key('e')] }], ungrouped: [key('a'), key('b'), key('c')] })]);
+      focus.insert(placementRowFields({ anchorConversationKey: key('f'), focusAreaId: 'fa_releases', placedBy: 'owner', evidence: 'Moved by you in My Work.' }));
+      const input = run(['sub-focus-input', '--area', 'fa_releases']);
+      expect(input.requests.map((request: any) => request.anchor)).toEqual([key('a'), key('b'), key('c'), key('f')]);
+      expect(input.alreadyUngrouped).toEqual([key('a'), key('b'), key('c')]);
+      const answer = { groups: [], newGroups: [], ungrouped: [key('a'), key('b'), key('c'), key('f')] };
+      expect(validateSubFocusAnswer(answer, input).subFocus.placements).toEqual([{ anchorConversationKey: key('f'), subFocusId: null }]);
+      const rowsBefore = focus.rows();
+      await run(['record-sub-focus', '--area', 'fa_releases', write('s2.json', answer)]);
+      // f's placement and the pass row.
+      expect(focus.rows() - rowsBefore).toBe(2);
+      expect(run(['sub-focus-input']).due).toEqual([]);
+      expect(readFocus(database, { localDeviceId: '' }).subFocusPlacementFor(key('a'), 'fa_releases')).toEqual({ placedBy: 'router', subFocusId: null });
+      // Grouping one of them now is a change, and is saved.
+      focus.insert(placementRowFields({ anchorConversationKey: key('f'), focusAreaId: 'other', placedBy: 'owner', evidence: 'Moved by you in My Work.' }));
+      const next = run(['sub-focus-input', '--area', 'fa_releases']);
+      const regrouped = validateSubFocusAnswer({ groups: [], newGroups: [{ name: 'Docs', anchors: [key('a'), key('b')] }], ungrouped: [key('c')] }, next).subFocus;
+      expect(regrouped.newSubFocuses).toEqual([{ name: 'Docs', anchorConversationKeys: [key('a'), key('b')] }]);
+      expect(regrouped.placements).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('refuses a new group named like a listed sub focus, and the retry puts its requests in that sub focus', async () => {
+    const dir = ledgerDir();
+    try {
+      const { focus, run, write } = await releases(dir);
+      await run(['record-sub-focus', '--area', 'fa_releases', write('s1.json', { groups: [], newGroups: [{ name: 'Announcement images', anchors: [key('d'), key('e')] }], ungrouped: [key('a'), key('b'), key('c')] })]);
+      focus.insert(placementRowFields({ anchorConversationKey: key('f'), focusAreaId: 'fa_releases', placedBy: 'owner', evidence: 'Moved by you in My Work.' }));
+      const input = run(['sub-focus-input', '--area', 'fa_releases']);
+      const { subFocusId } = input.subFocuses[0];
+      const answer = { groups: [], newGroups: [{ name: ' announcement  IMAGES ', anchors: [key('f')] }], ungrouped: [key('a'), key('b'), key('c')] };
+      expect(() => validateSubFocusAnswer(answer, input)).toThrow(`newGroups[0] is named "announcement  IMAGES", like the listed sub focus ${subFocusId}. Put its requests in "groups" with "subFocusId": "${subFocusId}" instead of making a second one.`);
+      const coerced = validateSubFocusAnswer(answer, input, { coerce: true });
+      expect(coerced.subFocus.newSubFocuses).toEqual([]);
+      expect(coerced.subFocus.placements).toEqual([{ anchorConversationKey: key('f'), subFocusId }]);
+      // A different name is a new sub focus as before.
+      expect(validateSubFocusAnswer({ ...answer, newGroups: [{ name: 'Announcement copy', anchors: [key('f'), key('a')] }], ungrouped: [key('b'), key('c')] }, input).subFocus.newSubFocuses).toEqual([{ name: 'Announcement copy', anchorConversationKeys: [key('f'), key('a')] }]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('the retry names each new group it dropped, so the refresh can report it; a group of one the model wrote is not a drop', async () => {
+    const dir = ledgerDir();
+    try {
+      const { run } = await releases(dir);
+      const input = run(['sub-focus-input', '--area', 'fa_releases']);
+      const answer = { groups: [], ungrouped: [], newGroups: [
+        { name: 'x'.repeat(81), anchors: [key('a'), key('b')] },
+        { name: 'Announcement images', anchors: [key('d'), key('zzz')] },
+        { name: 'Lonely', anchors: [key('c')] },
+      ] };
+      expect(() => validateSubFocusAnswer(answer, input)).toThrow(/newGroups\[0\]\.name/);
+      const dropped = new Set<string>();
+      const body = validateSubFocusAnswer(answer, input, { coerce: true, droppedNewGroups: dropped });
+      expect([...dropped]).toEqual(['newGroups[0]', 'newGroups[1]']);
+      expect(body.subFocus.newSubFocuses).toEqual([]);
+      // Nothing is lost: every listed request is recorded ungrouped.
+      expect(body.subFocus.placements.map((placement) => placement.anchorConversationKey).sort()).toEqual(RELEASES.map(key).sort());
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a failed pass keeps its area from being due until its set of requests changes, and an answered pass clears it', async () => {
+    const dir = ledgerDir();
+    try {
+      const { database, focus, run, write } = await releases(dir);
+      const releasesArea = { focusAreaId: 'fa_releases', name: 'Releases', requests: 5 };
+      const { passHash } = run(['sub-focus-input', '--area', 'fa_releases']);
+      // The refresh records a failed pass on the requests it looked at (refresh-task.ts).
+      await focus.save({ placements: [], proposals: [], subFocus: { focusAreaId: 'fa_releases', newSubFocuses: [], placements: [], passHash: null, failedPassHash: passHash } });
+      expect(run(['sub-focus-input'])).toEqual({ due: [], failed: [releasesArea] });
+      expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' })).toMatchObject({ subFocusDue: 0, subFocusFailed: 1 });
+      // Not an answered pass: nothing was grouped, and the pass record names no set.
+      expect(readFocus(database, { localDeviceId: '' }).subFocusPassHashes.has('fa_releases')).toBe(false);
+      // A request joins the area: a new set, so it is due again.
+      focus.insert(placementRowFields({ anchorConversationKey: key('f'), focusAreaId: 'fa_releases', placedBy: 'owner', evidence: 'Moved by you in My Work.' }));
+      expect(run(['sub-focus-input'])).toEqual({ due: [{ ...releasesArea, requests: 6 }], failed: [] });
+      expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' })).toMatchObject({ subFocusDue: 1, subFocusFailed: 0 });
+      // That pass is answered, which clears the failure: moving the request out again is a change, so the area is due.
+      await run(['record-sub-focus', '--area', 'fa_releases', write('s.json', { groups: [], newGroups: [], ungrouped: [...RELEASES, 'f'].map(key) })]);
+      expect(run(['sub-focus-input'])).toEqual({ due: [], failed: [] });
+      focus.insert(placementRowFields({ anchorConversationKey: key('f'), focusAreaId: 'other', placedBy: 'owner', evidence: 'Moved by you in My Work.' }));
+      expect(run(['sub-focus-input'])).toEqual({ due: [releasesArea], failed: [] });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('an area with fewer than four placed requests is never due, and a suggested area is never grouped', async () => {
+    const dir = ledgerDir();
+    try {
+      const { database, run, focus } = await releases(dir, ['a', 'b', 'c']);
+      expect(run(['sub-focus-input']).due).toEqual([]);
+      expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' }).subFocusDue).toBe(0);
+      // A fourth request makes two groups of two possible.
+      focus.insert(placementRowFields({ anchorConversationKey: key('f'), focusAreaId: 'fa_releases', placedBy: 'owner', evidence: 'Moved by you in My Work.' }));
+      expect(run(['sub-focus-input']).due.map((area: any) => area.requests)).toEqual([4]);
+      // The same area back among suggestions: not kept, so not grouped.
+      focus.area('fa_releases', 'Releases', 'suggested', 'owner');
+      expect(run(['sub-focus-input']).due).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 });
 
 describe('request titles', () => {
@@ -958,7 +1172,7 @@ function focusFixture(database: Database) {
 function cliRunner(dir: string, database: Database, saveFocus: (body: RouterFocusBody) => { placed: number; focusAreaIds: string[] }) {
   let output: any;
   const options = (now: number) => ({ dir, database, now, print: (value: unknown) => { output = value; }, saveFocus, localDeviceId: '' });
-  const run = (argv: string[], now = NOW): any => argv[0] === 'record-focus'
+  const run = (argv: string[], now = NOW): any => argv[0] === 'record-focus' || argv[0] === 'record-sub-focus'
     ? Promise.resolve().then(() => runCli(argv, options(now))).then(() => output)
     : (runCli(argv, options(now)), output);
   const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };

@@ -12,6 +12,10 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { refreshNeeds, writeJsonAtomic } from './request-groups.mjs';
 
+/** The reason of a run the owner started with My Work's Refresh (POST /api/work-view/refresh). Scheduled checks use
+ * 'scheduled', and the setup scan 'setup-scan'. */
+export const OWNER_REFRESH_REASON = 'manual';
+
 const TEN_MINUTES_MS = 10 * 60000;
 // setInterval stores its delay in a 32-bit signed integer and fires at once for anything larger.
 const MAX_CHECK_MS = 2 ** 31 - 1;
@@ -197,8 +201,9 @@ export class AutoRefreshWorker {
         this.log('warn', `Work view refresh failed before starting (${reason})`, { error: message });
         return 'failed';
       }
-      // A re-scan that found nothing new starts no agent.
-      if (!needs.needed) return 'idle';
+      // A re-scan that found nothing new starts no agent. The owner's Refresh also asks again the sub focus areas whose last
+      // pass failed on the same requests, which no scheduled check asks (refresh-task.ts).
+      if (!needs.needed && !(reason === OWNER_REFRESH_REASON && needs.subFocusFailed)) return 'idle';
       return await this.run(needs, reason);
     } finally { this.busy = false; }
   }

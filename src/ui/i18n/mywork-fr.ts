@@ -255,6 +255,7 @@ export const myworkFr: Record<string, string> = {
   'Moved “{title}” to {area}': '« {title} » déplacé vers {area}',
   'the request': 'la demande',
   'the area': 'le domaine',
+  'the sub focus': 'le sous-domaine',
   'Put “{name}” back in Suggested': '« {name} » remis dans les suggestions',
   'Wireframe: kept on this page only, not actually written.': 'Maquette : conservé uniquement sur cette page, sans être réellement enregistré.',
   'Saved in your cloud viewer; it syncs to your computers. A refresh never overrides it.': 'Enregistré dans votre visualiseur cloud et synchronisé sur vos ordinateurs. Une actualisation ne l’écrase jamais.',

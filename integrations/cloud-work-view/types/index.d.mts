@@ -84,21 +84,39 @@ export function createSharedBatch(entries: SharedEntryFields[], options: { batch
 export function isSharedProjectionValue(kind: string, key: string, value: unknown, deleted?: boolean, writer?: string): boolean;
 export function isSharedReviewValue(kind: string, key: string, value: unknown, deleted?: boolean): boolean;
 
+// The writers of my-focus rows, as src/services/work-view/my-focus.d.mts names them. This file ships without src, so it
+// restates them; src/services/work-view/cloud-renderer.ts fails the root typecheck when the two drift apart.
+/** 'owner-restore': the owner handed a decided area back to the system. */
+export type FocusAreaDecidedBy = 'owner' | 'system' | 'owner-restore';
+/** Who wrote a sub focus: the owner, or the system (a refresh). */
+export type SubFocusDecidedBy = 'owner' | 'system';
+/** Who wrote a placement, of a request in an area or in a sub focus: the router or the owner. */
+export type PlacementPlacedBy = 'router' | 'owner';
 interface FocusArea {
   focusAreaId: string; name: string; goal: string | null; about?: string | null;
   status: 'suggested' | 'kept' | 'dismissed' | 'done';
   source: 'owner-goals' | 'clustering' | 'promotion' | 'seed' | 'owner';
-  decidedBy: 'owner' | 'system' | 'owner-restore'; priorityRank: number | null; ownerRank: number | null;
+  decidedBy: FocusAreaDecidedBy; priorityRank: number | null; ownerRank: number | null;
   mergedInto: string | null; evidence: string | null;
 }
 export function focusAreaRowFields(area: FocusArea): RowFields;
 export function placementRowFields(placement: {
-  anchorConversationKey: string; focusAreaId: string; placedBy: 'router' | 'owner';
+  anchorConversationKey: string; focusAreaId: string; placedBy: PlacementPlacedBy;
   confidence?: number | null; basis?: string | null; evidence?: string | null;
 }): RowFields;
-type VersionArea = Omit<FocusArea, 'focusAreaId' | 'decidedBy' | 'evidence'> & ({ id: string } | { focusAreaId: string });
-export function focusChangeVersion(change: { action: string; focusAreaId?: string; requestId?: string },
-  areas: readonly VersionArea[], requests: readonly { id: string; focusAreaId?: string }[]): string | null;
+/** A sub focus: a named group of related requests inside one focus area. editContext.focusAreas[].subFocuses lists each
+ * area's live ones ({ subFocusId, name, decidedBy }); editContext.requests[].subFocusId is a request's, when it has one. */
+export function subFocusRowFields(subFocus: {
+  subFocusId: string; focusAreaId: string; name: string; decidedBy: SubFocusDecidedBy; mergedInto: string | null;
+}): RowFields;
+/** subFocusId null: the request sits in no sub focus of its area (ungrouped). */
+export function subFocusPlacementRowFields(placement: {
+  anchorConversationKey: string; subFocusId: string | null; focusAreaId: string; placedBy: PlacementPlacedBy;
+}): RowFields;
+type VersionArea = Omit<FocusArea, 'focusAreaId' | 'decidedBy' | 'evidence'>
+  & { subFocuses?: readonly ({ name: string } & ({ id: string } | { subFocusId: string }))[] } & ({ id: string } | { focusAreaId: string });
+export function focusChangeVersion(change: { action: string; focusAreaId?: string; requestId?: string; subFocusId?: string | null },
+  areas: readonly VersionArea[], requests: readonly { id: string; focusAreaId?: string; subFocusId?: string }[]): string | null;
 export function navWordIn(name: string): string | null;
 export function ruleRowFields(rule: {
   ruleId: string; scopeTier: 'everywhere' | 'project' | 'situation'; scopeName: string;

@@ -9,7 +9,7 @@ import type { Server } from 'node:http';
 import { WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
 import { focusChangeVersion } from '../../../../src/shared/focus-change-version.js';
 import { toWorkModel } from '../../../../src/ui/my-work/src/live/to-work-model.ts';
-import { focusAreaRowFields, placementRowFields } from '../../../../src/services/work-view/my-focus.mjs';
+import { focusAreaRowFields, placementRowFields, subFocusRowFields } from '../../../../src/services/work-view/my-focus.mjs';
 import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 import { SyncApply, type SyncOp } from '../../../../src/services/sync/SyncApply.js';
 
@@ -320,6 +320,114 @@ describe('My Focus routes', () => {
     expect(request(view).focusAreaId).toBe('other');
     await saveFocus({ action: 'dismiss', focusAreaId: 'fa_viewer' });
     expect((await saveFocus({ action: 'move-request', requestId: REQUEST_ID, focusAreaId: 'fa_viewer' })).status).toBe(409);
+  });
+
+  describe('sub focuses', () => {
+    const subFocus = (subFocusId: string, focusAreaId: string, name: string) => subFocusRowFields({ subFocusId, focusAreaId, name, decidedBy: 'system', mergedInto: null });
+    const subFocusesOf = (view: any, focusAreaId: string) => areaById(view, focusAreaId).subFocuses;
+    async function viewerWithSubFocuses() {
+      await saveFocus({ action: 'keep', focusAreaId: 'fa_viewer' });
+      await saveFocus({ action: 'keep', focusAreaId: 'fa_endless' });
+      await saveFocus({ action: 'move-request', requestId: REQUEST_ID, focusAreaId: 'fa_viewer' });
+      insertRow(subFocus('sf_layout', 'fa_viewer', 'Layout'));
+      insertRow(subFocus('sf_speed', 'fa_viewer', 'Speed'));
+      insertRow(subFocus('sf_endless', 'fa_endless', 'Endless sessions'));
+    }
+
+    it('moves a request into a sub focus, renames and merges sub focuses as owner rows, and reads each back', async () => {
+      await viewerWithSubFocuses();
+      let response = await saveFocus({ action: 'move-to-sub-focus', requestId: REQUEST_ID, subFocusId: 'sf_layout' });
+      expect(response.status).toBe(200);
+      let view = await response.json();
+      expect(request(view)).toMatchObject({ focusAreaId: 'fa_viewer', subFocusId: 'sf_layout' });
+      expect(subFocusesOf(view, 'fa_viewer')).toEqual([{ subFocusId: 'sf_layout', name: 'Layout', decidedBy: 'system' }, { subFocusId: 'sf_speed', name: 'Speed', decidedBy: 'system' }]);
+      expect(ownerRows().at(-1)!.fields).toEqual({ task: `Sub focus placement: ${CONVERSATION}`, anchor_conversation_key: CONVERSATION, sub_focus_id: 'sf_layout', focus_area_id: 'fa_viewer', placed_by: 'owner' });
+
+      view = await (await saveFocus({ action: 'rename-sub-focus', subFocusId: 'sf_layout', name: 'Layout and navigation' })).json();
+      expect(subFocusesOf(view, 'fa_viewer')[0]).toEqual({ subFocusId: 'sf_layout', name: 'Layout and navigation', decidedBy: 'owner' });
+      expect(ownerRows().at(-1)).toEqual({ project: 'home', fields: { task: 'Sub focus: sf_layout', sub_focus_id: 'sf_layout', focus_area_id: 'fa_viewer', name: 'Layout and navigation', decided_by: 'owner', merged_into: null } });
+      // A later refresh's row for it is ignored: the owner's name stands.
+      insertRow(subFocus('sf_layout', 'fa_viewer', 'Renamed by a refresh'), { at: Date.now() + 60_000 });
+
+      view = await (await saveFocus({ action: 'merge-sub-focus', subFocusId: 'sf_layout', intoSubFocusId: 'sf_speed' })).json();
+      expect(subFocusesOf(view, 'fa_viewer')).toEqual([{ subFocusId: 'sf_speed', name: 'Speed', decidedBy: 'system' }]);
+      expect(request(view).subFocusId).toBe('sf_speed');
+      expect(ownerRows().at(-1)!.fields).toMatchObject({ task: 'Sub focus: sf_layout', name: 'Layout and navigation', merged_into: 'sf_speed', decided_by: 'owner' });
+      // My Work's model reads the same: the request's sub focus and the area's sub focuses.
+      const model = toWorkModel(view, Date.now());
+      expect(model.requests.find(item => item.id === REQUEST_ID)!.subFocusId).toBe('sf_speed');
+      expect(model.focusAreas.find(area => area.id === 'fa_viewer')!.subFocuses).toEqual([{ id: 'sf_speed', name: 'Speed', decidedBy: 'system' }]);
+
+      // Into none of the area's sub focuses: the request stays in its area, with no sub focus.
+      view = await (await saveFocus({ action: 'move-to-sub-focus', requestId: REQUEST_ID, subFocusId: null })).json();
+      expect(request(view).focusAreaId).toBe('fa_viewer');
+      expect('subFocusId' in request(view)).toBe(false);
+      expect(ownerRows().at(-1)!.fields).toMatchObject({ task: `Sub focus placement: ${CONVERSATION}`, sub_focus_id: null, placed_by: 'owner' });
+    });
+
+    it('checks an Undo version of a sub focus edit, the same from the worker\'s snapshot and My Work\'s model', async () => {
+      await viewerWithSubFocuses();
+      await saveFocus({ action: 'move-to-sub-focus', requestId: REQUEST_ID, subFocusId: 'sf_layout' });
+      const receipt = await (await saveFocus({ action: 'rename-sub-focus', subFocusId: 'sf_layout', name: 'Saved name' })).json();
+      const shown = toWorkModel(receipt, Date.now());
+      const rename = { action: 'rename-sub-focus', subFocusId: 'sf_layout', name: 'Layout' };
+      const move = { action: 'move-to-sub-focus', requestId: REQUEST_ID, subFocusId: null };
+      const renameVersion = focusChangeVersion(rename, shown.focusAreas, shown.requests);
+      const moveVersion = focusChangeVersion(move, shown.focusAreas, shown.requests);
+      expect([renameVersion, moveVersion]).toEqual([JSON.stringify(['sf_layout', 'Saved name', 'fa_viewer']), JSON.stringify([REQUEST_ID, 'fa_viewer', 'sf_layout'])]);
+      expect([focusChangeVersion(rename, receipt.focusAreas, receipt.humanRequests), focusChangeVersion(move, receipt.focusAreas, receipt.humanRequests)]).toEqual([renameVersion, moveVersion]);
+      // A newer move: the move's Undo is refused, the rename's still matches.
+      await saveFocus({ action: 'move-to-sub-focus', requestId: REQUEST_ID, subFocusId: 'sf_speed' });
+      expect((await saveFocus({ ...move, expectedVersion: moveVersion })).status).toBe(409);
+      expect((await saveFocus({ ...rename, expectedVersion: renameVersion })).status).toBe(200);
+      expect((await saveFocus({ ...rename, name: 'Again', expectedVersion: renameVersion })).status).toBe(409);
+    });
+
+    it('refuses an unknown action and sub focus edits that do not fit, writing nothing', async () => {
+      await viewerWithSubFocuses();
+      const before = ownerRows().length;
+      for (const body of [{ action: 'split-sub-focus', subFocusId: 'sf_layout' }, { action: 'rename-sub-focus', subFocusId: 'sf_layout', name: 'x'.repeat(81) },
+        { action: 'rename-sub-focus', subFocusId: '', name: 'Empty id' }]) {
+        expect((await saveFocus(body)).status).toBe(400);
+      }
+      expect((await saveFocus({ action: 'rename-sub-focus', subFocusId: 'sf_layout' })).status).toBe(400);
+      expect((await saveFocus({ action: 'merge-sub-focus', subFocusId: 'sf_layout' })).status).toBe(400);
+      expect((await saveFocus({ action: 'merge-sub-focus', subFocusId: 'sf_layout', intoSubFocusId: 'sf_layout' })).status).toBe(400);
+      expect((await saveFocus({ action: 'move-to-sub-focus', requestId: REQUEST_ID })).status).toBe(400);
+      expect((await saveFocus({ action: 'rename-sub-focus', subFocusId: 'sf_missing', name: 'Missing' })).status).toBe(404);
+      expect((await saveFocus({ action: 'move-to-sub-focus', requestId: 'missing', subFocusId: 'sf_layout' })).status).toBe(404);
+      // A sub focus never takes a request, or another sub focus, out of its own area.
+      expect((await saveFocus({ action: 'merge-sub-focus', subFocusId: 'sf_layout', intoSubFocusId: 'sf_endless' })).status).toBe(409);
+      expect((await saveFocus({ action: 'move-to-sub-focus', requestId: REQUEST_ID, subFocusId: 'sf_endless' })).status).toBe(409);
+      expect(ownerRows()).toHaveLength(before);
+      // A request in Other has no sub focuses to move into.
+      await saveFocus({ action: 'move-request', requestId: REQUEST_ID, focusAreaId: 'other' });
+      const inOther = await saveFocus({ action: 'move-to-sub-focus', requestId: REQUEST_ID, subFocusId: null });
+      expect(inOther.status).toBe(409);
+      expect((await inOther.json()).error).toBe('Put this request in a focus area before choosing its sub focus.');
+    });
+
+    it('the focus step writes a sub focus answer as the system through the router route; the owner\'s placement still wins', async () => {
+      await viewerWithSubFocuses();
+      const route = (body: unknown) => fetch(`${origin}/api/work-view/focus/router`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: JSON.stringify(body) });
+      const answer = (subFocusChange: Record<string, unknown>) => ({ placements: [], proposals: [], subFocus: { focusAreaId: 'fa_viewer', newSubFocuses: [], placements: [], passHash: '0123456789abcdef', ...subFocusChange } });
+      let response = await route(answer({ placements: [{ anchorConversationKey: CONVERSATION, subFocusId: 'sf_speed' }] }));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ placed: 0, focusAreaIds: [] });
+      expect(request(await (await saveFocus({ action: 'rename-sub-focus', subFocusId: 'sf_speed', name: 'Speed' })).json()).subFocusId).toBe('sf_speed');
+      await saveFocus({ action: 'move-to-sub-focus', requestId: REQUEST_ID, subFocusId: 'sf_layout' });
+      await route(answer({ placements: [{ anchorConversationKey: CONVERSATION, subFocusId: 'sf_speed' }] }));
+      expect(request(await (await saveFocus({ action: 'rename-sub-focus', subFocusId: 'sf_speed', name: 'Speed again' })).json()).subFocusId).toBe('sf_layout');
+      // Refused before any write: a new sub focus of one request, a sub focus of another area, a malformed body.
+      const rows = (source.prepare("SELECT COUNT(*) AS count FROM work_state_entries WHERE list_name = 'my-focus'").get() as { count: number }).count;
+      expect((await route(answer({ newSubFocuses: [{ name: 'Alone', anchorConversationKeys: [CONVERSATION] }] }))).status).toBe(400);
+      const crossed = await route(answer({ placements: [{ anchorConversationKey: CONVERSATION, subFocusId: 'sf_endless' }] }));
+      expect(crossed.status).toBe(400);
+      expect(JSON.stringify(await crossed.json())).toContain('sf_endless, which is not a sub focus of fa_viewer');
+      expect((await route(answer({ passHash: 'not-a-hash' }))).status).toBe(400);
+      expect((await route(answer({ placements: [{ anchorConversationKey: CONVERSATION, subFocusId: 'sf_speed', placedBy: 'owner' }] }))).status).toBe(400);
+      expect((source.prepare("SELECT COUNT(*) AS count FROM work_state_entries WHERE list_name = 'my-focus'").get() as { count: number }).count).toBe(rows);
+    });
   });
 
   describe('owner-goals suggestions', () => {

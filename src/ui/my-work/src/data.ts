@@ -1,6 +1,7 @@
 // Request types, the sample fixtures (SAMPLE_*) and pure request rules. The model every page reads is in the store (store/).
 import type { WorkModel } from './live/work-data-source.ts'
-import type { WorkViewFocusArea, WorkViewMediaManifest, WorkViewRequestMedia } from './live/work-view-api-types.ts'
+import type { WorkViewFocusArea, WorkViewMediaManifest, WorkViewRequestMedia, WorkViewSubFocus } from './live/work-view-api-types.ts'
+import type { WorkViewFocusAction } from '../../../shared/work-view-focus-actions.ts'
 import { SAMPLE_MEDIA_REFS } from './components/observation-media/sample-media.ts'
 import { estimateDayIsPast } from './live/measured-estimate.ts'
 
@@ -110,6 +111,8 @@ export interface Request {
   nextRepeatsPrompt?: boolean
   /** The focus area it sits in: an area id, OTHER_FOCUS_AREA_ID, or absent while it is not sorted yet ("Not sorted yet"). */
   focusAreaId?: string
+  /** Its sub focus in that area (an id in the area's subFocuses); absent while it has none. */
+  subFocusId?: string
   /** False when the request has no conversation to file a move under (the worker refuses it). Sample fixtures leave it out. */
   canMoveFocus?: boolean
   askedBy: string
@@ -219,6 +222,13 @@ export const OTHER_FOCUS_AREA_ID = 'other'
 /** One finishable ask the owner-goals run found, under the focus area it belongs to. Asks are not linked to requests. */
 export interface FocusAsk { id: string; title: string; timesAsked: number; latestAt: string; quotes: Quote[] }
 
+/** One sub focus: a named group of related requests inside one focus area. A request sits in at most one. */
+export interface SubFocus {
+  id: string
+  name: string
+  decidedBy: WorkViewSubFocus['decidedBy']
+}
+
 /** One focus area (the my-focus list): the top level of My Work. Every request sits in one area, or in Other. */
 export interface FocusArea {
   id: string
@@ -247,12 +257,19 @@ export interface FocusArea {
    * (my-focus.mjs). Past focus shows it as a done area's date. Null unless done; workers before 16.0.0 leave it out.
    */
   doneAt?: string | null
+  /** Its live sub focuses, in the order they were first written, one with no request now included. Workers before the
+   * sub focus step and sample fixtures leave it out. */
+  subFocuses?: SubFocus[]
 }
 
 /** One owner change to My Focus, as POST /api/work-view/focus takes it (WorkViewRoutes.ts focusBody). */
 export interface FocusChange {
-  action: 'keep' | 'rename' | 'edit-goal' | 'merge' | 'dismiss' | 'done' | 'reorder' | 'move-request' | 'restore-suggestion'
+  action: WorkViewFocusAction
   focusAreaId?: string
+  /** rename-sub-focus and merge-sub-focus: the sub focus changed. move-to-sub-focus: the one to move into; null for none. */
+  subFocusId?: string | null
+  /** merge-sub-focus: a sub focus of the same area. */
+  intoSubFocusId?: string
   /** False when the request has no conversation to file a move under (the worker refuses it). Sample fixtures leave it out. */
   canMoveFocus?: boolean
   name?: string

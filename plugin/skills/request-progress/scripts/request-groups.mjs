@@ -4285,12 +4285,19 @@ function buildFocusAreas(state, { localDeviceId: localDeviceId2 = null } = {}) {
   if (typeof state.entryCount === "number" && state.events.length !== state.entryCount) {
     throw new Error("My Focus needs every work-state row; the events were cut.");
   }
-  const areas = /* @__PURE__ */ new Map(), placements = /* @__PURE__ */ new Map();
+  const areas = /* @__PURE__ */ new Map(), placements = /* @__PURE__ */ new Map(), subFocusRows = /* @__PURE__ */ new Map(), subFocusPlacements = /* @__PURE__ */ new Map();
   let otherPassHash2 = null;
+  const subFocusPassHashes = /* @__PURE__ */ new Map();
+  const subFocusFailedHashes = /* @__PURE__ */ new Map();
   for (const event2 of [...state.events].reverse()) {
     if (!isMyFocusList(event2.listName)) continue;
     if (event2.task === null) {
-      if (localDeviceId2 !== null && event2.sourceOrder?.[1] === localDeviceId2 && Object.hasOwn(event2.fields, "other_pass_hash")) otherPassHash2 = text2(event2.fields.other_pass_hash) || null;
+      if (localDeviceId2 !== null && event2.sourceOrder?.[1] === localDeviceId2) {
+        if (Object.hasOwn(event2.fields, "other_pass_hash")) otherPassHash2 = text2(event2.fields.other_pass_hash) || null;
+        const passArea = text2(event2.fields.sub_focus_area_id);
+        if (passArea && Object.hasOwn(event2.fields, "sub_focus_pass_hash")) subFocusPassHashes.set(passArea, text2(event2.fields.sub_focus_pass_hash) || null);
+        if (passArea && Object.hasOwn(event2.fields, "sub_focus_failed_hash")) subFocusFailedHashes.set(passArea, text2(event2.fields.sub_focus_failed_hash) || null);
+      }
       continue;
     }
     if (event2.task.startsWith(FOCUS_AREA_TASK_PREFIX)) {
@@ -4315,8 +4322,43 @@ function buildFocusAreas(state, { localDeviceId: localDeviceId2 = null } = {}) {
       applyPatch(placement[placedBy].fields, event2.fields);
       placement[placedBy].device = event2.sourceOrder?.[1] ?? null;
       placements.set(anchor2, placement);
+    } else if (event2.task.startsWith(SUB_FOCUS_TASK_PREFIX)) {
+      const subFocusId = text2(event2.fields.sub_focus_id) || event2.task.slice(SUB_FOCUS_TASK_PREFIX.length);
+      const decidedBy = event2.fields.decided_by;
+      if (!SUB_FOCUS_DECIDED_BY.includes(decidedBy)) throw new Error(`Sub focus ${subFocusId} has an unknown writer: ${decidedBy}`);
+      const subFocus = subFocusRows.get(subFocusId) ?? { fields: {}, ownerDecided: false };
+      if (subFocus.ownerDecided && decidedBy === "system") continue;
+      const focusAreaId = subFocus.fields.focus_area_id;
+      applyPatch(subFocus.fields, event2.fields);
+      if (focusAreaId) subFocus.fields.focus_area_id = focusAreaId;
+      if (decidedBy === "owner") subFocus.ownerDecided = true;
+      subFocusRows.set(subFocusId, subFocus);
+    } else if (event2.task.startsWith(SUB_FOCUS_PLACEMENT_TASK_PREFIX)) {
+      const anchor2 = text2(event2.fields.anchor_conversation_key) || event2.task.slice(SUB_FOCUS_PLACEMENT_TASK_PREFIX.length);
+      const placedBy = event2.fields.placed_by;
+      if (!PLACEMENT_PLACED_BY.includes(placedBy)) throw new Error(`A sub focus placement has an unknown writer: ${placedBy}`);
+      const placement = subFocusPlacements.get(anchor2) ?? { owner: null, router: null };
+      placement[placedBy] ??= {};
+      applyPatch(placement[placedBy], event2.fields);
+      subFocusPlacements.set(anchor2, placement);
     }
   }
+  const subFocuses = [...subFocusRows].map(([subFocusId, { fields }]) => {
+    if (!text2(fields.name)) throw new Error(`Sub focus ${subFocusId} has no name.`);
+    const focusAreaId = text2(fields.focus_area_id);
+    if (!focusAreaId || focusAreaId === OTHER_FOCUS_AREA_ID) throw new Error(`Sub focus ${subFocusId} names no focus area it is in.`);
+    return { subFocusId, focusAreaId, name: text2(fields.name), decidedBy: fields.decided_by, mergedInto: text2(fields.merged_into) || null };
+  });
+  const subFocusById = new Map(subFocuses.map((subFocus) => [subFocus.subFocusId, subFocus]));
+  const resolveSubFocus = (subFocusId) => {
+    const seen = /* @__PURE__ */ new Set();
+    let subFocus = subFocusById.get(subFocusId);
+    while (subFocus?.mergedInto && !seen.has(subFocus.subFocusId)) {
+      seen.add(subFocus.subFocusId);
+      subFocus = subFocusById.get(subFocus.mergedInto);
+    }
+    return subFocus && !subFocus.mergedInto ? subFocus : null;
+  };
   const focusAreas = [...areas].map(([focusAreaId, { fields, savedAt, doneAt }]) => {
     if (!text2(fields.name)) throw new Error(`Focus area ${focusAreaId} has no name.`);
     if (!FOCUS_AREA_STATUSES.includes(fields.status)) throw new Error(`Focus area ${focusAreaId} has an unknown status: ${fields.status}`);
@@ -4334,7 +4376,8 @@ function buildFocusAreas(state, { localDeviceId: localDeviceId2 = null } = {}) {
       evidence: text2(fields.evidence) || null,
       decidedBy: fields.decided_by,
       savedAt,
-      doneAt
+      doneAt,
+      subFocuses: []
     };
   }).sort((a, b) => (a.ownerRank ?? Infinity) - (b.ownerRank ?? Infinity) || (a.priorityRank ?? Infinity) - (b.priorityRank ?? Infinity) || a.name.localeCompare(b.name));
   const byId = new Map(focusAreas.map((area) => [area.focusAreaId, area]));
@@ -4348,6 +4391,9 @@ function buildFocusAreas(state, { localDeviceId: localDeviceId2 = null } = {}) {
     }
     return area && !area.mergedInto && area.status !== "dismissed" ? area.focusAreaId : null;
   };
+  for (const { subFocusId, focusAreaId, name, decidedBy, mergedInto } of subFocuses) {
+    if (!mergedInto) byId.get(resolve4(focusAreaId))?.subFocuses.push({ subFocusId, name, decidedBy });
+  }
   const focusAreaIdByAnchor = /* @__PURE__ */ new Map();
   const placementsByAnchor = /* @__PURE__ */ new Map();
   const side = (written) => written && { focusAreaId: text2(written.fields.focus_area_id), basis: text2(written.fields.basis) || null, evidence: text2(written.fields.evidence) || null, device: written.device };
@@ -4356,7 +4402,24 @@ function buildFocusAreas(state, { localDeviceId: localDeviceId2 = null } = {}) {
     if (focusAreaId) focusAreaIdByAnchor.set(anchor2, focusAreaId);
     placementsByAnchor.set(anchor2, { owner: side(owner), router: side(router) });
   }
-  return { focusAreas, focusAreaIdByAnchor, placementsByAnchor, resolveFocusAreaId: resolve4, otherPassHash: otherPassHash2 };
+  const subFocusPlacementFor = (anchor2, focusAreaId) => {
+    const placement = subFocusPlacements.get(anchor2);
+    if (!placement || !focusAreaId || focusAreaId === OTHER_FOCUS_AREA_ID) return null;
+    for (const placedBy of ["owner", "router"]) {
+      const fields = placement[placedBy];
+      if (!fields || resolve4(text2(fields.focus_area_id)) !== focusAreaId) continue;
+      if (!text2(fields.sub_focus_id)) return { placedBy, subFocusId: null };
+      const subFocus = resolveSubFocus(text2(fields.sub_focus_id));
+      if (subFocus && resolve4(subFocus.focusAreaId) === focusAreaId) return { placedBy, subFocusId: subFocus.subFocusId };
+    }
+    return null;
+  };
+  const subFocusIdByAnchor = /* @__PURE__ */ new Map();
+  for (const anchor2 of subFocusPlacements.keys()) {
+    const subFocusId = subFocusPlacementFor(anchor2, focusAreaIdByAnchor.get(anchor2))?.subFocusId;
+    if (subFocusId) subFocusIdByAnchor.set(anchor2, subFocusId);
+  }
+  return { focusAreas, focusAreaIdByAnchor, placementsByAnchor, resolveFocusAreaId: resolve4, otherPassHash: otherPassHash2, subFocusIdByAnchor, subFocusPlacementFor, subFocusPassHashes, subFocusFailedHashes };
 }
 function readFocus(database, { localDeviceId: localDeviceId2 } = {}) {
   if (typeof localDeviceId2 !== "string") throw new TypeError(`readFocus needs the worker's sync device id ("" when cloud sync never started).`);
@@ -4367,14 +4430,15 @@ function anchorConversationKeyFor(request, ledger) {
   const anchor2 = (request.groupId ? ledger?.groups?.groups?.[request.groupId]?.anchor : null) || request.conversationKey;
   return typeof anchor2 === "string" && anchor2 ? anchor2 : null;
 }
-function placeRequests(humanRequests, focusAreaIdByAnchor, ledger) {
+function placeRequests(humanRequests, focusAreaIdByAnchor, ledger, subFocusIdByAnchor = /* @__PURE__ */ new Map()) {
   return humanRequests.map((request) => {
     const anchorConversationKey = anchorConversationKeyFor(request, ledger);
     const focusAreaId = anchorConversationKey ? focusAreaIdByAnchor.get(anchorConversationKey) : void 0;
-    return { ...request, anchorConversationKey, ...focusAreaId ? { focusAreaId } : {} };
+    const subFocusId = focusAreaId ? subFocusIdByAnchor.get(anchorConversationKey) : void 0;
+    return { ...request, anchorConversationKey, ...focusAreaId ? { focusAreaId } : {}, ...subFocusId ? { subFocusId } : {} };
   });
 }
-var MY_FOCUS_LIST, OTHER_FOCUS_AREA_ID, FOCUS_AREA_TASK_PREFIX, PLACEMENT_TASK_PREFIX, FOCUS_AREA_STATUSES, FOCUS_AREA_SOURCES, PROPOSAL_SOURCES, PROPOSAL_KINDS, FOCUS_AREA_DECIDED_BY, PLACEMENT_PLACED_BY, isMyFocusList, text2, rank, isPlaceableArea, isOwnerDismissedArea;
+var MY_FOCUS_LIST, OTHER_FOCUS_AREA_ID, FOCUS_AREA_TASK_PREFIX, PLACEMENT_TASK_PREFIX, FOCUS_AREA_STATUSES, FOCUS_AREA_SOURCES, PROPOSAL_SOURCES, PROPOSAL_KINDS, FOCUS_AREA_DECIDED_BY, PLACEMENT_PLACED_BY, SUB_FOCUS_TASK_PREFIX, SUB_FOCUS_PLACEMENT_TASK_PREFIX, SUB_FOCUS_DECIDED_BY, SUB_FOCUS_MIN_REQUESTS, isMyFocusList, text2, rank, isPlaceableArea, isOwnerDismissedArea;
 var init_my_focus = __esm({
   "src/services/work-view/my-focus.mjs"() {
     "use strict";
@@ -4392,6 +4456,10 @@ var init_my_focus = __esm({
     PROPOSAL_KINDS = Object.freeze(Object.keys(PROPOSAL_SOURCES));
     FOCUS_AREA_DECIDED_BY = ["owner", "system", "owner-restore"];
     PLACEMENT_PLACED_BY = ["router", "owner"];
+    SUB_FOCUS_TASK_PREFIX = "Sub focus: ";
+    SUB_FOCUS_PLACEMENT_TASK_PREFIX = "Sub focus placement: ";
+    SUB_FOCUS_DECIDED_BY = ["owner", "system"];
+    SUB_FOCUS_MIN_REQUESTS = 2;
     isMyFocusList = (name) => name === MY_FOCUS_LIST;
     text2 = (value) => typeof value === "string" ? value.trim() : "";
     rank = (value) => typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -5718,6 +5786,130 @@ function validateFocusAnswer(answer, input2, ledger, { other = false } = {}) {
     ...other ? { otherPassHash: otherPassHash(ledger, [...listed.keys()].filter((anchor2) => !held.has(anchor2)).map((anchor2) => listed.get(anchor2).groupId), requestIndex) } : {}
   };
 }
+function requestsByKeptArea(ledger, focus2) {
+  const kept = new Map(focus2.focusAreas.filter((area) => area.status === "kept" && !area.mergedInto).map((area) => [area.focusAreaId, { area, groupIds: [] }]));
+  for (const [groupId, group] of Object.entries(ledger.groups.groups)) kept.get(focus2.focusAreaIdByAnchor.get(group.anchor))?.groupIds.push(groupId);
+  return [...kept.values()];
+}
+function subFocusAreas(ledger, focus2) {
+  const due = [], failed = [];
+  for (const entry of requestsByKeptArea(ledger, focus2)) {
+    if (entry.groupIds.length < SUB_FOCUS_AREA_MIN_REQUESTS) continue;
+    const hash3 = subFocusPassHash(ledger, entry.groupIds);
+    if (hash3 === focus2.subFocusPassHashes.get(entry.area.focusAreaId)) continue;
+    (hash3 === focus2.subFocusFailedHashes.get(entry.area.focusAreaId) ? failed : due).push(entry);
+  }
+  return { due, failed };
+}
+function subFocusInput(ledger, focus2, focusAreaId) {
+  const entry = requestsByKeptArea(ledger, focus2).find(({ area: area2 }) => area2.focusAreaId === focusAreaId);
+  if (!entry) throw new TypeError(`${focusAreaId} is not a kept focus area.`);
+  const { area, groupIds } = entry;
+  const anchorOf = (groupId) => ledger.groups.groups[groupId].anchor;
+  const record2 = (groupId) => ({ anchor: anchorOf(groupId), title: ledger.groups.groups[groupId].title, summary: ledger.progress[groupId]?.summary ?? null });
+  const decisions = groupIds.map((groupId) => ({ groupId, decided: focus2.subFocusPlacementFor(anchorOf(groupId), focusAreaId) }));
+  const held = /* @__PURE__ */ new Map();
+  for (const { decided } of decisions) if (decided?.subFocusId) held.set(decided.subFocusId, (held.get(decided.subFocusId) ?? 0) + 1);
+  const members3 = new Map(area.subFocuses.map((subFocus) => [subFocus.subFocusId, []]));
+  const requests = [], alreadyUngrouped = [];
+  for (const { groupId, decided } of decisions) {
+    if (decided?.placedBy === "owner") {
+      if (decided.subFocusId) members3.get(decided.subFocusId).push(record2(groupId));
+    } else if (decided?.subFocusId && held.get(decided.subFocusId) >= SUB_FOCUS_MIN_REQUESTS) members3.get(decided.subFocusId).push(record2(groupId));
+    else {
+      requests.push(record2(groupId));
+      if (decided && !decided.subFocusId) alreadyUngrouped.push(anchorOf(groupId));
+    }
+  }
+  return {
+    area: { focusAreaId, name: area.name, goal: area.goal },
+    subFocuses: area.subFocuses.map((subFocus) => ({ subFocusId: subFocus.subFocusId, name: subFocus.name, members: members3.get(subFocus.subFocusId) })),
+    requests,
+    alreadyUngrouped,
+    passHash: subFocusPassHash(ledger, groupIds)
+  };
+}
+function validateSubFocusAnswer(answer, input2, { coerce = false, recordPass = true, droppedNewGroups = /* @__PURE__ */ new Set() } = {}) {
+  for (const key of ["groups", "newGroups", "ungrouped"]) if (!Array.isArray(answer?.[key])) throw new TypeError(`The answer needs a ${key} array (empty when it has none).`);
+  const listed = new Set(input2.requests.map((request) => request.anchor));
+  const membersOf = new Map(input2.subFocuses.map((subFocus) => [subFocus.subFocusId, subFocus.members.length]));
+  const listedByName = new Map(input2.subFocuses.map((subFocus) => [subFocusNameKey(subFocus.name), subFocus.subFocusId]));
+  const refuse = (message) => {
+    if (!coerce) throw new TypeError(message);
+  };
+  const decided = /* @__PURE__ */ new Set();
+  const take = (anchors, label) => (Array.isArray(anchors) ? anchors : []).filter((anchor2, index) => {
+    if (!listed.has(anchor2)) {
+      refuse(`${label}[${index}] names ${JSON.stringify(anchor2)}, which was not asked about.`);
+      return false;
+    }
+    if (decided.has(anchor2)) {
+      refuse(`${label}[${index}] places ${anchor2} a second time; a request sits in one sub focus.`);
+      return false;
+    }
+    decided.add(anchor2);
+    return true;
+  });
+  const joining = /* @__PURE__ */ new Map();
+  const join14 = (subFocusId, anchors) => joining.set(subFocusId, [...joining.get(subFocusId) ?? [], ...anchors]);
+  const ungrouped = [], newSubFocuses = [];
+  for (const [index, group] of answer.groups.entries()) {
+    const label = `groups[${index}]`;
+    if (!membersOf.has(group?.subFocusId)) {
+      refuse(`${label} names ${JSON.stringify(group?.subFocusId)}, which is not a listed sub focus. Use an exact subFocusId from "subFocuses", or put the requests in "newGroups".`);
+      continue;
+    }
+    join14(group.subFocusId, take(group.anchors, `${label}.anchors`));
+  }
+  for (const [index, group] of answer.newGroups.entries()) {
+    const label = `newGroups[${index}]`;
+    let name;
+    try {
+      name = boundedText(group?.name, AREA_NAME_MAX, `${label}.name`);
+    } catch (error62) {
+      if (!coerce) throw error62;
+      droppedNewGroups.add(label);
+      continue;
+    }
+    const same = listedByName.get(subFocusNameKey(name));
+    if (same) refuse(`${label} is named "${name}", like the listed sub focus ${same}. Put its requests in "groups" with "subFocusId": "${same}" instead of making a second one.`);
+    const asked = Array.isArray(group.anchors) ? group.anchors.length : 0;
+    const anchors = take(group.anchors, `${label}.anchors`);
+    if (same) {
+      join14(same, anchors);
+      continue;
+    }
+    if (anchors.length < SUB_FOCUS_MIN_REQUESTS) {
+      if (anchors.length < asked) droppedNewGroups.add(label);
+      ungrouped.push(...anchors);
+    } else newSubFocuses.push({ name, anchorConversationKeys: anchors });
+  }
+  const placements = [];
+  for (const [subFocusId, anchors] of joining) {
+    if (membersOf.get(subFocusId) + anchors.length < SUB_FOCUS_MIN_REQUESTS) ungrouped.push(...anchors);
+    else placements.push(...anchors.map((anchor2) => ({ anchorConversationKey: anchor2, subFocusId })));
+  }
+  ungrouped.push(...take(answer.ungrouped, "ungrouped"));
+  const missing = [...listed].filter((anchor2) => !decided.has(anchor2));
+  if (missing.length && !coerce) throw new TypeError(`Decide every request asked about, in a sub focus or in "ungrouped"; missing ${missing.join(", ")}.`);
+  ungrouped.push(...missing);
+  const unchanged = new Set(input2.alreadyUngrouped);
+  return {
+    placements: [],
+    proposals: [],
+    subFocus: {
+      focusAreaId: input2.area.focusAreaId,
+      newSubFocuses,
+      placements: [...placements, ...ungrouped.filter((anchor2) => !unchanged.has(anchor2)).map((anchor2) => ({ anchorConversationKey: anchor2, subFocusId: null }))],
+      passHash: recordPass ? input2.passHash : null
+    }
+  };
+}
+function subFocusAnswerCounts(body) {
+  const placements = body.subFocus?.placements ?? [], newSubFocuses = body.subFocus?.newSubFocuses ?? [];
+  const inNew = newSubFocuses.reduce((total, group) => total + group.anchorConversationKeys.length, 0);
+  return { grouped: inNew + placements.filter((placement) => placement.subFocusId !== null).length, ungrouped: placements.filter((placement) => placement.subFocusId === null).length, newSubFocuses: newSubFocuses.length };
+}
 function hasPlaceholderTitle(group) {
   return copiesOpeningAsk(group.title, group.anchorAsk?.text ?? null);
 }
@@ -5742,7 +5934,18 @@ function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), days = 14,
   const queued = focusDue(ledger, focus2, localDeviceId2, requests);
   const otherHash = otherPassHash(ledger, routerOther(ledger, focus2, new Set(queued)), requests);
   const otherChanged = otherHash !== null && otherHash !== focus2.otherPassHash;
-  return { due: due.length, ungrouped, goalsStale, unplaced: queued.length, otherChanged, needed: Boolean(due.length || ungrouped || goalsStale || queued.length || otherChanged) };
+  const subFocus = subFocusAreas(ledger, focus2);
+  const subFocusDue = subFocus.due.length;
+  return {
+    due: due.length,
+    ungrouped,
+    goalsStale,
+    unplaced: queued.length,
+    otherChanged,
+    subFocusDue,
+    subFocusFailed: subFocus.failed.length,
+    needed: Boolean(due.length || ungrouped || goalsStale || queued.length || otherChanged || subFocusDue)
+  };
 }
 function readInput(source) {
   return JSON.parse(readFileSync9(source === "-" ? 0 : source, "utf8"));
@@ -5943,10 +6146,25 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     const body = validateFocusAnswer(readInput(file2), input2, ledger, { other });
     return Promise.resolve(saveFocus2(body)).then((saved) => print2({ placed: saved.placed, proposed: saved.focusAreaIds.length, focusAreaIds: saved.focusAreaIds }));
   }
+  if (command2 === "sub-focus-input" || command2 === "record-sub-focus") {
+    const ledger = readLedger(dir), focus2 = readFocus(db(), { localDeviceId: requireDeviceId(localDeviceId2) });
+    const focusAreaId = textOption(args, "area");
+    if (command2 === "sub-focus-input") {
+      if (focusAreaId) return print2(subFocusInput(ledger, focus2, focusAreaId));
+      const listed = ({ area, groupIds }) => ({ focusAreaId: area.focusAreaId, name: area.name, requests: groupIds.length });
+      const { due, failed } = subFocusAreas(ledger, focus2);
+      return print2({ due: due.map(listed), failed: failed.map(listed) });
+    }
+    if (!saveFocus2) throw new Error("record-sub-focus saves through the claude-mem worker, and none was given.");
+    if (!focusAreaId) throw new TypeError("record-sub-focus needs --area <focusAreaId>, the area sub-focus-input --area asked about.");
+    const file2 = args.filter((arg, index) => !arg.startsWith("--") && args[index - 1] !== "--area").at(-1) ?? "-";
+    const body = validateSubFocusAnswer(readInput(file2), subFocusInput(ledger, focus2, focusAreaId));
+    return Promise.resolve(saveFocus2(body)).then(() => print2(subFocusAnswerCounts(body)));
+  }
   if (command2 === "refresh-needs") return print2(refreshNeeds({ dir, database: db(), now, days: option(args, "days", 14), localDeviceId: localDeviceId2 }));
-  throw new TypeError("Usage: request-groups.mjs candidates|grouping-input|judge|apply|pending|show|record-progress|title-input|record-titles|story-input|record-story|focus-input|record-focus|refresh-needs (see file header).");
+  throw new TypeError("Usage: request-groups.mjs candidates|grouping-input|judge|apply|pending|show|record-progress|title-input|record-titles|story-input|record-story|focus-input|record-focus|sub-focus-input|record-sub-focus|refresh-needs (see file header).");
 }
-var DATA_DIR2, LEDGER_DIR, AGENT_WRITTEN_PROMPTS_FILE, DAY_MS2, GOALS_STALE_MS, MAX_CONVERSATIONS_PER_LINKING_LIST, CLOSED_STATES, PREFERENCE_KINDS, USAGE_LEVELS, VALUE_LEVELS, LINK_KINDS, MAX_READINGS, iso3, groupIdFor, emptyGroups, isIsoOrNull, textTarget, evidenceList, STORY_NARRATIVE_MAX, STORY_NARRATIVE_TARGET, STORY_RECAP_BUDGET, STORY_CHAPTER_MIN_BUDGET, STORY_CHARS_PER_WORD, STORY_REFUSAL_PARTS, CONVERSATIONS_PER_QUERY, records, otherPassHash, focusAreaRecord, AREA_NAME_MAX, AREA_SENTENCE_MAX, requireDeviceId, GROUPING_BATCH, FOCUS_BATCH, TITLE_BATCH;
+var DATA_DIR2, LEDGER_DIR, AGENT_WRITTEN_PROMPTS_FILE, DAY_MS2, GOALS_STALE_MS, MAX_CONVERSATIONS_PER_LINKING_LIST, CLOSED_STATES, PREFERENCE_KINDS, USAGE_LEVELS, VALUE_LEVELS, LINK_KINDS, MAX_READINGS, iso3, groupIdFor, emptyGroups, isIsoOrNull, textTarget, evidenceList, STORY_NARRATIVE_MAX, STORY_NARRATIVE_TARGET, STORY_RECAP_BUDGET, STORY_CHAPTER_MIN_BUDGET, STORY_CHARS_PER_WORD, STORY_REFUSAL_PARTS, CONVERSATIONS_PER_QUERY, records, otherPassHash, focusAreaRecord, AREA_NAME_MAX, AREA_SENTENCE_MAX, SUB_FOCUS_AREA_MIN_REQUESTS, subFocusPassHash, subFocusNameKey, requireDeviceId, GROUPING_BATCH, FOCUS_BATCH, TITLE_BATCH;
 var init_request_groups = __esm({
   "src/services/work-view/request-groups.mjs"() {
     "use strict";
@@ -5992,6 +6210,9 @@ var init_request_groups = __esm({
     focusAreaRecord = (area) => ({ focusAreaId: area.focusAreaId, name: area.name, goal: area.goal, about: area.about, status: area.status });
     AREA_NAME_MAX = 80;
     AREA_SENTENCE_MAX = 300;
+    SUB_FOCUS_AREA_MIN_REQUESTS = 2 * SUB_FOCUS_MIN_REQUESTS;
+    subFocusPassHash = (ledger, groupIds) => createHash5("sha256").update(JSON.stringify(groupIds.map((groupId) => ledger.groups.groups[groupId].anchor).sort())).digest("hex").slice(0, 16);
+    subFocusNameKey = (name) => name.toLowerCase().replace(/\s+/g, "");
     requireDeviceId = (localDeviceId2) => {
       if (typeof localDeviceId2 !== "string") throw new TypeError(`My Focus needs the worker's sync device id ("" when cloud sync never started).`);
       return localDeviceId2;
@@ -6866,7 +7087,7 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
   }).sort((a, b) => String(b.presence.lastActivityAt ?? "").localeCompare(String(a.presence.lastActivityAt ?? "")));
   const recentActivity = activity.sort((a, b) => b.atEpoch - a.atEpoch).slice(0, activityLimit);
   const requestProjection = buildHumanRequests({ agents, recentActivity }, records2, { titleCache, ledger, onProductFile, localFiles, getProjectRoot });
-  const { focusAreas, focusAreaIdByAnchor } = buildFocusAreas(state);
+  const { focusAreas, focusAreaIdByAnchor, subFocusIdByAnchor } = buildFocusAreas(state);
   return {
     version: 1,
     generatedAt: stamp(now),
@@ -6879,7 +7100,7 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
     ...buildRules(state, ledger),
     ...requestProjection,
     focusAreas,
-    humanRequests: placeRequests(requestProjection.humanRequests, focusAreaIdByAnchor, ledger),
+    humanRequests: placeRequests(requestProjection.humanRequests, focusAreaIdByAnchor, ledger, subFocusIdByAnchor),
     coverage: { workRows: candidates.length, workLimit, linkedWork, ownerWork, unattributedWork, observations: observations.length, observationLimit: 300, summaries: summaries.length, livePresenceAvailable: false, summaryMethod: "bounded-recorded-text", fullHistoryUrl: "/viewer" }
   };
 }

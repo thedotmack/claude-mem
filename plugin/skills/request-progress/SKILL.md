@@ -1,6 +1,6 @@
 ---
 name: request-progress
-description: Group recent conversations into overall requests, review each one's progress from memory, sort each into one of the owner's focus areas, and write the build story, so My Work shows progress meters, shipping velocity and learned working preferences. Use when asked to "group requests", "group by overall request", "review request progress", "refresh progress", "build story", "shipping velocity", or "how do I like to work with agents".
+description: Group recent conversations into overall requests, review each one's progress from memory, sort each into one of the owner's focus areas and group each area's requests into sub focuses, and write the build story, so My Work shows progress meters, shipping velocity and learned working preferences. Use when asked to "group requests", "group by overall request", "review request progress", "refresh progress", "build story", "shipping velocity", or "how do I like to work with agents".
 ---
 
 # Request Progress
@@ -13,9 +13,9 @@ My Work shows one card per **human request**, built from the human's own prompts
 CLI="bun ${CLAUDE_SKILL_DIR}/scripts/request-groups.mjs"
 ```
 
-It opens `~/.claude-mem/claude-mem.db` read-only and writes only to `~/.claude-mem/work-view/`, except `record-focus`, which saves through the running claude-mem worker because focus areas sync between computers. My Work picks up changes within a second: grouped conversations show as one card that starts at the earliest ask, with a progress meter; the request page shows the build story, how released work landed (usage, value, regressions, why each change was made) and its work product; each card shows the focus area it sits in; the build story's first paragraph is My Work's recap, and the story sheet shows shipping velocity, the narrative and preferences. A review never changes a request's recorded status.
+It opens `~/.claude-mem/claude-mem.db` read-only and writes only to `~/.claude-mem/work-view/`, except `record-focus` and `record-sub-focus`, which save through the running claude-mem worker because focus areas and sub focuses sync between computers. My Work picks up changes within a second: grouped conversations show as one card that starts at the earliest ask, with a progress meter; the request page shows the build story, how released work landed (usage, value, regressions, why each change was made) and its work product; each card shows the focus area it sits in; the build story's first paragraph is My Work's recap, and the story sheet shows shipping velocity, the narrative and preferences. A review never changes a request's recorded status.
 
-**Language.** Write every value My Work shows (request titles, review summaries, narratives, milestones and outcome texts, focus-area names, goals and abouts, the build story and preferences) in the human language most of the owner's asks are written in, ignoring code, file paths, URLs, repository and product names. Decide that language once, from the asks across this run's requests, and give it to every subagent. The automatic refresh, which asks for one section at a time, names it in each question: `CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE` when it is set, otherwise the language its grouping step found in the asks, kept for later runs. A step that runs on its own and is not told the language decides it from all of the owner's words its input holds, previous reviews' quotes included, not from the latest asks alone. Quotes stay verbatim, in the language they were typed in. A review or the story's narrative written earlier in another language is rewritten in the owner's language the next time it is updated. Two things keep their wording: the title of an open request a conversation continues, and every preference statement carried over from the previous story, because My Rules ties the owner's decisions to that exact text. New titles and new statements follow the owner's language.
+**Language.** Write every value My Work shows (request titles, review summaries, narratives, milestones and outcome texts, focus-area names, goals and abouts, sub focus names, the build story and preferences) in the human language most of the owner's asks are written in, ignoring code, file paths, URLs, repository and product names. Decide that language once, from the asks across this run's requests, and give it to every subagent. The automatic refresh, which asks for one section at a time, names it in each question: `CLAUDE_MEM_WORK_VIEW_TEXT_LANGUAGE` when it is set, otherwise the language its grouping step found in the asks, kept for later runs. A step that runs on its own and is not told the language decides it from all of the owner's words its input holds, previous reviews' quotes included, not from the latest asks alone. Quotes stay verbatim, in the language they were typed in. A review or the story's narrative written earlier in another language is rewritten in the owner's language the next time it is updated. Two things keep their wording: the title of an open request a conversation continues, and every preference statement carried over from the previous story, because My Rules ties the owner's decisions to that exact text. New titles and new statements follow the owner's language.
 
 Default window: 14 days. Use the window the user asks for.
 
@@ -180,4 +180,32 @@ $CLI record-story - <<'JSON'
 JSON
 ```
 
-Finish by telling the user how many requests were reviewed, how many were named, how many were placed in focus areas and which areas were proposed, the shipping velocity in two sentences, and the five strongest preferences.
+## 6. Group each focus area's requests into sub focuses
+
+A **sub focus** is a named group of related requests inside one focus area: a subject the owner would look for when the area holds more than they can scan. A request sits in at most one sub focus of its area. One that shares a subject with no other request stays ungrouped, and My Work lists it under "More in <area>". The goal and the priority stay on the area. Run this after section 4. Sub focuses are only ever proposed: the owner renames and merges them and moves requests between them, and no later pass overrides that.
+
+1. Run `$CLI sub-focus-input`. `due` lists the kept areas to group now: each holds at least 4 placed requests (fewer cannot make two sub focuses of two), and its set of requests changed since this computer last grouped it. `failed` lists areas whose last automatic pass failed on the same requests; group them too when the user asked for this run. If both are empty, skip this section.
+2. For each area to group, run `$CLI sub-focus-input --area <focusAreaId>`. It returns:
+   - `area`: its `focusAreaId`, `name` and `goal`.
+   - `subFocuses`: the area's sub focuses (`subFocusId`, `name`) with their `members` (`anchor`, `title`, `summary`). They stay as they are. Do not list their members; decide only the requests in `requests`.
+   - `requests`: the requests to decide now (`anchor`, `title`, `summary`): new to the area, left ungrouped last time, or left alone in a sub focus that lost its other requests. A request the owner placed is never listed.
+   - `alreadyUngrouped`: those of `requests` left ungrouped last time. Decide them like the others.
+   - `passHash`: which requests this pass looks at. `record-sub-focus` records it, so the area is not asked again until its requests change.
+3. Decide every listed request exactly once, by its `anchor`:
+   - `groups`: into a listed sub focus, by its exact `subFocusId`, when the request is about that sub focus's subject.
+   - `newGroups`: a new sub focus, only for **two or more** listed requests about the same thing (the same feature, page, release task or kind of deliverable), with a `name` that says what they share (a short label, about 60 chars and never over 80). A group of one is not a group: its request is left ungrouped. Never name one like a listed sub focus: put those requests in `groups` with its `subFocusId`.
+   - `ungrouped`: every other listed request.
+
+   Read the titles and summaries, not only their first words: similar wording alone is not evidence, and neither is sharing a repo. When unsure, leave a request ungrouped. Never invent a `subFocusId`, never rename a sub focus, and never place a request that is not listed. Record the area, then go on to the next one:
+
+```bash
+$CLI record-sub-focus --area <focusAreaId> - <<'JSON'
+{"groups": [{"subFocusId": "sf_…", "anchors": ["<anchor>"]}],
+ "newGroups": [{"name": "Announcement images", "anchors": ["<anchor>", "<anchor>"]}],
+ "ungrouped": ["<anchor>"]}
+JSON
+```
+
+`record-sub-focus` validates and saves through the claude-mem worker. It refuses a request or a sub focus id that was not listed, a request placed twice and a new group named like a listed sub focus, so fix and retry if it rejects. My Work opens an area on its sub focus cards when two or more of its sub focuses hold two or more requests each, with "More in <area>" for the rest.
+
+Finish by telling the user how many requests were reviewed, how many were named, how many were placed in focus areas and which areas were proposed, which areas were grouped into sub focuses and which new sub focuses were proposed, the shipping velocity in two sentences, and the five strongest preferences.

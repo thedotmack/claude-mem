@@ -1,7 +1,15 @@
 export const LEDGER_DIR: string;
 export const GOALS_STALE_MS: number;
 export const AGENT_WRITTEN_PROMPTS_FILE: string;
-export interface RefreshNeeds { due: number; ungrouped: number; goalsStale: boolean; unplaced: number; otherChanged: boolean; needed: boolean }
+export interface RefreshNeeds {
+  due: number; ungrouped: number; goalsStale: boolean; unplaced: number; otherChanged: boolean;
+  /** Kept areas whose set of placed requests changed since this computer last grouped them into sub focuses. */
+  subFocusDue: number;
+  /** Kept areas whose last sub focus pass failed on the requests they hold now. Not part of `needed`: no scheduled run asks
+   * them again until their requests change; the owner's Refresh does. */
+  subFocusFailed: number;
+  needed: boolean;
+}
 export interface LedgerDatabase { prepare(sql: string): { all(...params: unknown[]): any[]; get(...params: unknown[]): any } }
 export interface SavedGoal {
   /** The item's work-state task. */
@@ -32,9 +40,9 @@ export function openSuggestions(ledger: Record<string, any> | null | undefined):
 export function groupingInput(ledger: Record<string, any>, database: LedgerDatabase, options: { sinceEpoch: number; limit?: number; skip?: Set<string> | null }): GroupingInput;
 export function runCli(argv: string[], options?: {
   dir?: string; database?: LedgerDatabase | null; now?: number; print?: (value: any) => void;
-  /** The worker's sync device id ('' when cloud sync never started); required by focus-input, record-focus and refresh-needs. */
+  /** The worker's sync device id ('' when cloud sync never started); required by focus-input, record-focus, sub-focus-input, record-sub-focus and refresh-needs. */
   localDeviceId?: string;
-  /** record-focus: writes the checked answer through the worker; throws a TypeError when refused before writing. */
+  /** record-focus and record-sub-focus: write the checked answer through the worker; throw a TypeError when refused before writing. */
   saveFocus?: ((body: import('./my-focus.mjs').RouterFocusBody) => { placed: number; focusAreaIds: string[] } | Promise<{ placed: number; focusAreaIds: string[] }>) | null;
   /** `judge`: the Jev judge for the `judge` command (undefined: from the install's settings; null: code links only). That command answers with a promise. */
   judge?: import('./request-judge.mjs').RequestJudge | null;
@@ -67,6 +75,28 @@ export function focusBasis(ledger: Record<string, any>, groupId: string): string
 export function focusInput(ledger: Record<string, any>, focus: ReturnType<typeof import('./my-focus.mjs').buildFocusAreas>, localDeviceId: string, database: LedgerDatabase, options?: { limit?: number }): FocusInput;
 export function otherInput(ledger: Record<string, any>, focus: ReturnType<typeof import('./my-focus.mjs').buildFocusAreas>, localDeviceId: string, database: LedgerDatabase): OtherInput;
 export function validateFocusAnswer(answer: unknown, input: FocusInput | OtherInput, ledger: Record<string, any>, options?: { other?: boolean }): import('./my-focus.mjs').RouterFocusBody;
+/** A request as the sub focus step reads it. */
+export interface SubFocusRequestRecord { anchor: string; title: string; summary: string | null }
+/** sub-focus-input --area: one kept area, its live sub focuses with their members, and the requests to decide now. */
+export interface SubFocusInput {
+  area: { focusAreaId: string; name: string; goal: string | null };
+  subFocuses: Array<{ subFocusId: string; name: string; members: SubFocusRequestRecord[] }>;
+  /** New to the area, left ungrouped last time, or the router's members of a sub focus left with too few requests. */
+  requests: SubFocusRequestRecord[];
+  /** The anchors of `requests` the router left ungrouped last time: leaving one ungrouped again writes nothing. */
+  alreadyUngrouped: string[];
+  passHash: string;
+}
+/** One kept area as sub-focus-input lists it, with how many placed requests it holds. */
+export interface SubFocusAreaEntry { focusAreaId: string; name: string; requests: number }
+/** sub-focus-input with no area: the kept areas to group now (`due`), and those whose last pass failed on the requests they
+ * hold now (`failed`), which only the owner's Refresh asks again. */
+export interface SubFocusAreaListing { due: SubFocusAreaEntry[]; failed: SubFocusAreaEntry[] }
+export function subFocusInput(ledger: Record<string, any>, focus: ReturnType<typeof import('./my-focus.mjs').buildFocusAreas>, focusAreaId: string): SubFocusInput;
+/** coerce: the refresh's one retry drops what would be refused (naming each new group it dropped in droppedNewGroups) and
+ * leaves a left-out request ungrouped. recordPass false: an earlier part of a large area, which does not record the pass. */
+export function validateSubFocusAnswer(answer: unknown, input: SubFocusInput, options?: { coerce?: boolean; recordPass?: boolean; droppedNewGroups?: Set<string> }): import('./my-focus.mjs').RouterFocusBody & { subFocus: import('./my-focus.mjs').RouterSubFocusBody };
+export function subFocusAnswerCounts(body: import('./my-focus.mjs').RouterFocusBody): { grouped: number; ungrouped: number; newSubFocuses: number };
 export interface GroupingInput {
   root: string | null;
   conversations: Array<{ conversationKey: string; project: string; startedAt: string | null; openingAsk: string | null; workLists: string[] }>;

@@ -23,7 +23,8 @@ import { parseBoundedNumber } from '../../shared/bounded-setting.js';
 import { DEFAULT_API_AGENT_LIMITS, type ApiAgentLimits } from '../../shared/api-agent-limits.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../utils/logger.js';
-import { FOCUS_BATCH, readGoals, readLedger, runCli, storyInput as buildStoryInput, TITLE_BATCH, validateFocusAnswer, validateGroupingAnswer, validateStory, trimStoryPreferences, validateTitleAnswer, type FocusInput, type FocusRequestRecord, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
+import { FOCUS_BATCH, readGoals, readLedger, runCli, storyInput as buildStoryInput, subFocusAnswerCounts, TITLE_BATCH, validateFocusAnswer, validateGroupingAnswer, validateStory, validateSubFocusAnswer, trimStoryPreferences, validateTitleAnswer, type FocusInput, type FocusRequestRecord, type LedgerDatabase, type RefreshNeeds, type SubFocusAreaListing, type SubFocusInput } from './request-groups.mjs';
+import { OWNER_REFRESH_REASON } from './auto-refresh-worker.mjs';
 import { FOCUS_AUTO_PLACE_THRESHOLD, judgeFocusBatch, placesAlone, type FocusJudge, type FocusJudgement } from './focus-judge.mjs';
 import { isWithdrawnArea, OTHER_FOCUS_AREA_ID, ownerGoalsAreaRows, ownerGoalsSaveKey, PROPOSAL_KINDS, readFocusAreas, routerFocusRows, type FocusArea, type RouterFocusBody } from './my-focus.mjs';
 import { NAV_LABELS } from './nav-words.mjs';
@@ -220,6 +221,14 @@ export const FOCUS_ANSWER_SCHEMA: AnswerSchema = strictObject({
     evidence: { type: 'string' },
   }) },
   ignored: { type: 'array', items: strictObject({ anchor: { type: 'string' }, reason: { type: 'string' } }) },
+});
+
+/** The answer `record-sub-focus` takes (validateSubFocusAnswer): each listed request by its anchor, in a listed sub focus by
+ * its id, in a new sub focus of two or more, or ungrouped. */
+export const SUB_FOCUS_ANSWER_SCHEMA: AnswerSchema = strictObject({
+  groups: { type: 'array', items: strictObject({ subFocusId: { type: 'string' }, anchors: stringArray }) },
+  newGroups: { type: 'array', items: strictObject({ name: { type: 'string' }, anchors: stringArray }) },
+  ungrouped: stringArray,
 });
 
 /** When each step ran, for refresh.json's run record (not shown in My Work). */
@@ -533,6 +542,14 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & {
     const step = <T>(name: Step, question: string, save: (answer: any, retry: boolean) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => {
       const rule = languageRule();
       return timed(name, () => askAndSave(name, rule ? `${question}\n\n${rule}` : question, save, answerSchema));
+    };
+    /** Write a part's input file, then measure its question exactly as step() will ask it: with the run's language line, and
+     * with the input files the question names supplied inline. The story and sub focus steps size their parts with it. */
+    const measuredQuestionBytes = (path: string, contents: string, question: string) => {
+      writeFileSync(path, contents, { mode: 0o600 });
+      inlineEvidence.set(path, contents);
+      const rule = languageRule();
+      return Buffer.byteLength(expandedQuestion(rule ? `${question}\n\n${rule}` : question), 'utf8');
     };
     /** A failed answer kept for diagnosis, named by step and agent. Returns its path. Review batches run
      * concurrently, so a name already taken in the same millisecond gets a numeric suffix instead of
@@ -998,6 +1015,107 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & {
           ...(droppedProposals ? [`${droppedProposals} refused focus area proposals dropped after retry`] : [])].join(', '));
       } catch (error) { focusError = error; }
 
+      // Sub focuses (section 6), after the requests are placed: each kept area with enough placed requests is grouped, one
+      // area per question, and asked again only when its set of placed requests changed since this computer's last pass
+      // (sub-focus-input). Its own step: it reads sub-focus-input fresh, so a failed placement above never keeps the areas
+      // waiting, and both failures are reported. An area whose requests the owner placed records its pass with no question.
+      // A large area is asked in parts sized to the complete-question budget the story's parts use
+      // (OWNER_GOALS_QUESTION_BYTES), each saved before the next is read, so a later part sees the sub focuses an earlier one
+      // made; only the last part records the pass, on the requests the first read listed, so a request that joins the area
+      // during the run leaves the area due. Every due area is asked before a failure is reported, so one area's refused
+      // answer never keeps the others waiting.
+      // A failed area (refused twice, the model call failed, or its answer could not be saved) is recorded as failed on
+      // the requests it looked at, apart from an answered pass. No scheduled refresh asks it again until that set changes:
+      // the unchanged question would buy the same paid call again, and a quota reset, a login or a timer does not make it
+      // new (docs/architecture/observer-lifecycle.md). The owner's Refresh asks it again. Earlier parts' groups stand.
+      let subFocusError: unknown = null;
+      try {
+        const saveSubFocus = async (body: RouterFocusBody) => {
+          if (!options.saveFocus) throw Object.assign(new Error('The sub focus step has no way to save: the worker did not pass its my-focus write.'), { retryable: false });
+          // Like record-focus: the worker's refusal (a TypeError, before its first write) is re-asked; any other failure is not.
+          try { return await options.saveFocus(body); }
+          catch (error) { throw error instanceof TypeError ? error : Object.assign(error instanceof Error ? error : new Error(String(error)), { retryable: false }); }
+        };
+        const subFocusQuestion = (input: SubFocusInput, path: string) => [
+          requestProgress, '---', readOnly,
+          // Inline with every anchor named, like the focus step.
+          `Do only section 6 (group one focus area's requests into sub focuses) for this area, the \`sub-focus-input --area ${input.area.focusAreaId}\` output (also saved in ${path}):\n\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
+          `Decide each of these ${input.requests.length} requests exactly once, by its "anchor", in "groups", "newGroups" or "ungrouped": ${input.requests.map(request => request.anchor).join(', ')}. Reply with only the JSON that \`record-sub-focus\` takes ({"groups": [...], "newGroups": [...], "ungrouped": [...]}).`,
+        ].join('\n\n');
+        /** Write the part's input file and measure the question exactly as step() will ask it. */
+        const subFocusQuestionBytes = (input: SubFocusInput, path: string) => measuredQuestionBytes(path, JSON.stringify(input, null, 2), subFocusQuestion(input, path));
+        /** How many of the requests still to ask one question can hold under the budget, with the area's current sub focuses. */
+        const partSize = (current: SubFocusInput, rest: SubFocusInput['requests'], path: string) => {
+          const fits = (count: number) => subFocusQuestionBytes({ ...current, requests: rest.slice(0, count) }, path) <= OWNER_GOALS_QUESTION_BYTES;
+          if (fits(rest.length)) return rest.length;
+          let low = 0, high = rest.length - 1;
+          while (low < high) { const mid = Math.ceil((low + high) / 2); if (fits(mid)) low = mid; else high = mid - 1; }
+          if (!low) throw batchFailure('One request and the sub focus question around it exceed the input budget, so this area cannot be grouped in parts. Nothing was recorded for it; no request was skipped.');
+          return low;
+        };
+        const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+        /** New groups the retry dropped (their name or some of their requests refused), reported like the focus step's. */
+        let droppedNewGroups = 0;
+        const groupArea = async (focusAreaId: string) => {
+          const read = (): SubFocusInput => cli(['sub-focus-input', '--area', focusAreaId]);
+          let current = read();
+          // The requests this pass looks at: the first read's. A part re-reads the sub focuses an earlier part made, never
+          // the set the pass is recorded on.
+          const { passHash } = current;
+          try {
+            const totals = { asked: false, grouped: 0, newSubFocuses: 0 };
+            if (!current.requests.length) { await saveSubFocus(validateSubFocusAnswer({ groups: [], newGroups: [], ungrouped: [] }, current)); return totals; }
+            const path = writeInput('sub-focus-input', '');
+            let rest = current.requests;
+            while (rest.length) {
+              const count = partSize(current, rest, path);
+              const input: SubFocusInput = { ...current, requests: rest.slice(0, count), passHash };
+              rest = rest.slice(count);
+              const last = !rest.length;
+              subFocusQuestionBytes(input, path);
+              questionBudget = { bytes: OWNER_GOALS_QUESTION_BYTES, refusal: 'This sub focus question exceeds the input budget, including its refused answer. Nothing was recorded for this part; no request was skipped.' };
+              try {
+                const body = await step('focus', subFocusQuestion(input, path), async (answer, retry) => {
+                  const dropped = new Set<string>();
+                  const checked = validateSubFocusAnswer(answer, input, { coerce: retry, recordPass: last, droppedNewGroups: dropped });
+                  await saveSubFocus(checked);
+                  droppedNewGroups += dropped.size;
+                  return checked;
+                }, SUB_FOCUS_ANSWER_SCHEMA);
+                const counts = subFocusAnswerCounts(body);
+                totals.asked = true; totals.grouped += counts.grouped; totals.newSubFocuses += counts.newSubFocuses;
+              } finally { questionBudget = null; }
+              if (rest.length) current = read();
+            }
+            return totals;
+          } catch (failure) {
+            // Recorded whatever failed, quota and login refusals included: none of them is answered, and none may come back
+            // on its own. If the record cannot be written either, the area stays due and both failures are reported.
+            try { await saveSubFocus({ placements: [], proposals: [], subFocus: { focusAreaId, newSubFocuses: [], placements: [], passHash: null, failedPassHash: passHash } }); }
+            catch (recordError) { throw new AggregateError([failure, recordError], `${errorText(failure)} · The failed sub focus pass for ${focusAreaId} could not be recorded, so it stays due: ${errorText(recordError)}`); }
+            throw failure;
+          }
+        };
+        const subFocusAreas: SubFocusAreaListing = cli(['sub-focus-input']);
+        const askFailedAgain = reason === OWNER_REFRESH_REASON;
+        const areaFailures: unknown[] = [];
+        let areasAsked = 0, inSubFocuses = 0, newSubFocuses = 0;
+        for (const { focusAreaId } of [...subFocusAreas.due, ...(askFailedAgain ? subFocusAreas.failed : [])]) {
+          try {
+            const counts = await groupArea(focusAreaId);
+            if (counts.asked) areasAsked++;
+            inSubFocuses += counts.grouped; newSubFocuses += counts.newSubFocuses;
+          } catch (error) { areaFailures.push(error); }
+        }
+        if (areasAsked || droppedNewGroups) done.push([
+          ...(areasAsked ? [`${areasAsked} focus areas sorted into sub focuses (${inSubFocuses} requests grouped, ${newSubFocuses} sub focuses suggested)`] : []),
+          ...(droppedNewGroups ? [`${droppedNewGroups} refused new sub focuses dropped after retry`] : []),
+        ].join(', '));
+        if (!askFailedAgain && subFocusAreas.failed.length) done.push(`${subFocusAreas.failed.length} focus areas not sorted into sub focuses again: the last pass failed on the same requests (Refresh asks again)`);
+        if (areaFailures.length > 1) throw new AggregateError(areaFailures, areaFailures.map(errorText).join(' · '));
+        if (areaFailures.length) throw areaFailures[0];
+      } catch (error) { subFocusError = error; }
+
       // Only reviews whose facts (state, percent, dates, milestones, preferences, outcome) moved since the last story; none means the story still holds.
       // A story written in parts takes several calls, so a review can move while it is being written. The story is
       // recorded as of this read, so a review that moves after it still counts as news for the next refresh.
@@ -1025,14 +1143,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & {
           ? { ...storyInput, reviews }
           : buildStoryInput(storyInput.groups, reviews, { ...previous, writtenAt: new Date(storyReadAt).toISOString() });
         /** Write the part's input file and measure the question exactly as step() will ask it. */
-        const storyQuestionBytes = (input: any) => {
-          const contents = JSON.stringify(input, null, 2);
-          writeFileSync(batchPath, contents, { mode: 0o600 });
-          inlineEvidence.set(batchPath, contents);
-          const question = storyQuestion(input);
-          const rule = languageRule();
-          return Buffer.byteLength(expandedQuestion(rule ? `${question}\n\n${rule}` : question), 'utf8');
-        };
+        const storyQuestionBytes = (input: any) => measuredQuestionBytes(batchPath, JSON.stringify(input, null, 2), storyQuestion(input));
         const packStoryBatch = (remaining: any[], previous: { narrative: string; preferences: any[] } | null) => {
           const available = Math.min(OWNER_GOALS_BATCH_BYTES, OWNER_GOALS_QUESTION_BYTES - storyQuestionBytes(storyInputFor([], previous)));
           const batch: any[] = [];
@@ -1076,8 +1187,8 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & {
         }
         done.push(`${storyInput.update ? 'story updated' : 'story written'}${parts > 1 ? ` in ${parts} parts` : ''}${storyPreferencesTrimmed ? ` (${storyPreferencesTrimmed} story preferences trimmed after retry)` : ''}`);
       }
-      // Held so focus and the story still ran. When both failed, the run's error names both.
-      const heldFailures = [namingError, focusError].filter(error => error != null);
+      // Held so focus, sub focuses and the story still ran. When more than one failed, the run's error names each.
+      const heldFailures = [namingError, focusError, subFocusError].filter(error => error != null);
       if (heldFailures.length > 1) throw new AggregateError(heldFailures, heldFailures.map(error => error instanceof Error ? error.message : String(error)).join(' · '));
       if (heldFailures.length) throw heldFailures[0];
       return done.length ? `${done.join(', ')}.` : 'Nothing was due.';

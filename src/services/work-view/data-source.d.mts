@@ -8,6 +8,10 @@ export interface WorkViewRequest extends Record<string, unknown> {
   sharedReview?: import('./shared-reviews.mjs').SharedReviewState;
   /** The conversation its my-focus placement is keyed by (my-focus.mjs placeRequests). */
   anchorConversationKey?: string | null;
+  /** Its live focus area ('other' for Other); absent while it is not sorted yet (my-focus.mjs placeRequests). */
+  focusAreaId?: string;
+  /** Its sub focus in that area; absent while it has none (my-focus.mjs placeRequests). */
+  subFocusId?: string;
 }
 export interface WorkViewSnapshot extends Record<string, unknown> {
   revision: number | string;

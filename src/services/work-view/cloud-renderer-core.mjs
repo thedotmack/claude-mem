@@ -214,7 +214,7 @@ export function renderCloudWorkView({ now, revision, documents = [], sessions = 
       const { path, bucketPath, sourcePath, fileUrl, ...product } = p;
       return product;
     });
-    requests.push({ id: request.id, anchorConversationKey: request.anchorConversationKey, focusAreaId: request.focusAreaId,
+    requests.push({ id: request.id, anchorConversationKey: request.anchorConversationKey, focusAreaId: request.focusAreaId, subFocusId: request.subFocusId,
       contentFingerprint: request.contentFingerprint, reviewDescriptor: descriptor, readyForCheck: isReportedReadyForCheck(request, now),
       sharedReview: { hash: review.hash, recordHash: review.recordHash, conflict: review.conflict,
         revision: shared.records.get(sharedRecordKey('review', descriptor.requestId))?.revision ?? '0' },

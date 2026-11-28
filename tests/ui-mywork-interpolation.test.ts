@@ -6,6 +6,7 @@ import ts from 'typescript-compiler-api';
 import { buildSync } from 'esbuild';
 import { interpolate } from '../src/ui/i18n/locale.ts';
 import { myworkZh } from '../src/ui/i18n/mywork-zh.ts';
+import { myworkKo } from '../src/ui/i18n/mywork-ko.ts';
 import { OTHER_FOCUS_AREA_ID, type FocusArea, type FocusChange, type Request } from '../src/ui/my-work/src/data.ts';
 import { RULE_TIERS, type OwnerRule, type RuleScope } from '../src/ui/my-work/src/data-rules.ts';
 import { renderRulesFile, type SavedRule } from '../src/services/work-view/my-rules.mjs';
@@ -79,6 +80,47 @@ test('saved focus records switch languages repeatedly without changing text or U
     { action: 'restore-suggestion', focusAreaId: 'source' }, { action: 'keep', focusAreaId: 'source' },
   ]);
   assert.deepEqual(describeFocusChange(changes[7], areas, requests).undo, [{ action: 'reorder', focusAreaIds: ['source', 'target'] }]);
+});
+
+test('sub focus changes reuse the rename, merge and move words, and undo a rename or a move', () => {
+  const t = (s: string) => myworkZh[s] ?? s;
+  const areas = [{ ...area('viewer', 'Viewer'), subFocuses: [{ id: 'sf_layout', name: 'Layout', decidedBy: 'system' as const }, { id: 'sf_speed', name: 'Speed', decidedBy: 'system' as const }] }];
+  const requests = [{ id: 'request', title: 'Ship it', focusAreaId: 'viewer', subFocusId: 'sf_layout' }] as Request[];
+  const renamed = describeFocusChange({ action: 'rename-sub-focus', subFocusId: 'sf_layout', name: ' Layout and navigation ' }, areas, requests);
+  assert.equal(renamed.text, 'Renamed “Layout” to “Layout and navigation”');
+  assert.deepEqual(renamed.undo, [{ action: 'rename-sub-focus', subFocusId: 'sf_layout', name: 'Layout' }]);
+  const merged = describeFocusChange({ action: 'merge-sub-focus', subFocusId: 'sf_layout', intoSubFocusId: 'sf_speed' }, areas, requests);
+  assert.equal(merged.text, 'Merged “Layout” into “Speed”');
+  assert.equal(merged.undo, null);
+  const moved = describeFocusChange({ action: 'move-to-sub-focus', requestId: 'request', subFocusId: 'sf_speed' }, areas, requests);
+  assert.equal(renderFocusChange(moved, t), '已将“Ship it”移至 Speed');
+  assert.deepEqual(moved.undo, [{ action: 'move-to-sub-focus', requestId: 'request', subFocusId: 'sf_layout' }]);
+  // Out of every sub focus: the request stays in its area, which the note names.
+  assert.equal(describeFocusChange({ action: 'move-to-sub-focus', requestId: 'request', subFocusId: null }, areas, requests).text, 'Moved “Ship it” to Viewer');
+  assert.equal(renderFocusChange(describeFocusChange({ action: 'rename-sub-focus', subFocusId: 'missing', name: 'New' }, areas, requests), t), `已将“${t('the sub focus')}”重命名为“New”`);
+  assert.notEqual(t('the sub focus'), 'the sub focus');
+});
+
+test('moving a request that sat in no sub focus offers no Undo, so the owner never locks it ungrouped', () => {
+  const areas = [{ ...area('viewer', 'Viewer'), subFocuses: [{ id: 'sf_layout', name: 'Layout', decidedBy: 'system' as const }] }];
+  // Not grouped yet, or left ungrouped by a refresh: the request has no subFocusId.
+  const requests = [{ id: 'request', title: 'Ship it', focusAreaId: 'viewer' }] as Request[];
+  const moved = describeFocusChange({ action: 'move-to-sub-focus', requestId: 'request', subFocusId: 'sf_layout' }, areas, requests);
+  assert.equal(moved.text, 'Moved “Ship it” to Layout');
+  assert.equal(moved.undo, null);
+});
+
+test('in Korean, the rename, merge and move notes do not call a sub focus an area', () => {
+  const t = (s: string) => myworkKo[s] ?? s;
+  const areas = [{ ...area('viewer', 'Viewer'), subFocuses: [{ id: 'sf_layout', name: 'Layout', decidedBy: 'system' as const }, { id: 'sf_speed', name: 'Speed', decidedBy: 'system' as const }] }];
+  const requests = [{ id: 'request', title: 'Ship it', focusAreaId: 'viewer', subFocusId: 'sf_layout' }] as Request[];
+  const notes = [
+    describeFocusChange({ action: 'rename-sub-focus', subFocusId: 'sf_layout', name: 'Layout and navigation' }, areas, requests),
+    describeFocusChange({ action: 'merge-sub-focus', subFocusId: 'sf_layout', intoSubFocusId: 'sf_speed' }, areas, requests),
+    describeFocusChange({ action: 'move-to-sub-focus', requestId: 'request', subFocusId: 'sf_speed' }, areas, requests),
+  ].map((note) => renderFocusChange(note, t));
+  assert.deepEqual(notes, ['이름을 바꿨습니다: “Layout” → “Layout and navigation”', '병합했습니다: “Layout” → “Speed”', '“Ship it” 항목을 Speed(으)로 옮겼습니다']);
+  for (const note of notes) assert.ok(!note.includes('영역'), note);
 });
 
 test('focus fallback labels translate but legacy records remain verbatim', () => {

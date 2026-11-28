@@ -4,11 +4,23 @@ Focus areas organize work around what a person is trying to achieve. The same re
 
 ## Information and actions
 
-The hierarchy is **Focus Area → Request → Detail**. Each area has a one-sentence goal; each request has one area or Other. Repositories describe where work happened, rather than defining its top-level grouping. Owner ordering and explicit keep, rename, move and dismiss decisions take precedence over later suggestions.
+The hierarchy is **Focus Area → Sub focus → Request → Detail**. Each area has a one-sentence goal; each request has one area or Other. Repositories describe where work happened, rather than defining its top-level grouping. Owner ordering and explicit keep, rename, move and dismiss decisions take precedence over later suggestions.
 
 Reveal areas as their saved records arrive. Missing extraction results remain loading until the run ends; a finished empty result stays empty. Membership comes from recorded area IDs, never a title guess. Show real next actions and source evidence, and retain the existing request view when an area opens.
 
 Artwork makes areas recognizable. It should not obscure plain request cards, where the important questions remain: what is this, does it need me, and where is the result? One dominant action follows the current need. Recorded completion, an accessible output and verified delivery are distinct facts.
+
+## Sub focuses
+
+A sub focus is a named group of related requests inside one focus area: the subject the owner would look for when an area holds more than they can scan. A request sits in at most one sub focus of its area. The goal and the priority stay on the area. Other has no sub focuses.
+
+- A sub focus holds at least two requests. A group of one is not a group, so the check that saves a model's answer leaves that request ungrouped. When a sub focus drops below two (the owner moves a request out, or one leaves the area), the next pass over the area decides its remaining request again.
+- A request the model cannot place with others stays ungrouped. The area page lists it under "More in <area>".
+- An area shows sub focus cards only when it has at least two sub focuses that each hold at least two requests. A sub focus with fewer is not shown as a card, and its request is listed under "More in <area>". Otherwise the area opens straight to its list of requests. A screen counts a sub focus's requests the way it counts an area's: the served requests whose `subFocusId` names it.
+- So an area is only asked about sub focuses once it holds at least four placed requests: fewer cannot make two groups of two. The question is asked again only when the set of requests placed in the area changes, never for a new review. A pass that fails (its answer refused twice, the model call failing, quota or login refusals included) is recorded as failed on that set, never as answered: no scheduled refresh asks the same question again until the set changes, and the owner's Refresh asks it again.
+- The model proposes the groups and their names, the check refuses an unknown request or sub focus, a request placed twice and a new group named like an existing sub focus, and the owner corrects: renaming or merging a sub focus, or moving a request into another sub focus of its area or out of every one. A later pass never overrides the owner's edit.
+- Sub focuses and their placements are rows in the my-focus list, beside areas and placements, so they sync the same way. Ids are random, never made from the name, so a rename keeps the id. A sub focus has no status: one with no requests is not shown, and a link to it opens its area.
+- A placement holds only while the request is in the area it was made in, or in the area that one was merged into. Moving a request to another area leaves it ungrouped there until the next pass. Merging an area takes its sub focuses, with the owner's names and placements, into the area it was merged into, and undoing the merge gives them back.
 
 ## Imagery and live behavior
 

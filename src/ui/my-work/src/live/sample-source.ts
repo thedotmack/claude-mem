@@ -4,7 +4,8 @@ import { SAMPLE_CURRENT_PERIOD, SAMPLE_FOCUS_AREAS, SAMPLE_OTHER_ASKS, SAMPLE_PA
 import { SAMPLE_OWNER_RULES, SAMPLE_RULE_SCOPES, SAMPLE_RULES_LEARNING, type OwnerRule, type RuleChange, type RuleScope } from '../data-rules.ts'
 import { getConnectionStatus } from './connection-status.ts'
 import { answerFocusShareCallsInPage, type FocusShare, type FocusShareAnswerInPage, type FocusShareComment } from './focus-shares.ts'
-import { byFocusPriority } from './to-focus-model.ts'
+import { byFocusPriority, resolveFocusAreaId } from './to-focus-model.ts'
+import { WORK_VIEW_FOCUS_ACTIONS } from '../../../../shared/work-view-focus-actions.ts'
 import { TIME_NOT_RECORDED } from './to-work-model.ts'
 import { navWordIn } from '../../../../services/work-view/nav-words.mjs'
 import { doneAtAfterChange } from '../../../../services/work-view/focus-done-date.mjs'
@@ -59,7 +60,9 @@ const MAX_AREA_GOAL_CHARS = 300
  * The same change the worker saves, applied to the sample areas (WorkViewRoutes `saveFocus`), with the worker's
  * refusals word for word. A body the worker's schema would refuse answers its "ValidationError".
  */
-function applySampleFocusChange({ action, focusAreaId, name, goal, intoFocusAreaId, focusAreaIds, requestId }: FocusChange) {
+function applySampleFocusChange({ action, focusAreaId, subFocusId, intoSubFocusId, name, goal, intoFocusAreaId, focusAreaIds, requestId }: FocusChange) {
+  // Before any lookup, so an action the worker does not know is never answered as a missing area.
+  if (!WORK_VIEW_FOCUS_ACTIONS.includes(action)) throw new Error(`Unknown focus change: ${String(action)}`)
   const trimmedName = name?.trim(), trimmedGoal = goal?.trim()
   if (trimmedName !== undefined && (!trimmedName || trimmedName.length > MAX_AREA_NAME_CHARS)) throw new Error('ValidationError')
   if (trimmedGoal !== undefined && (!trimmedGoal || trimmedGoal.length > MAX_AREA_GOAL_CHARS)) throw new Error('ValidationError')
@@ -92,6 +95,37 @@ function applySampleFocusChange({ action, focusAreaId, name, goal, intoFocusArea
       if (!stillInFocus(byId.get(focusAreaId))) throw new Error('Move it to an area that is still in your focus.')
     }
     SAMPLE_REQUESTS[index] = { ...SAMPLE_REQUESTS[index], focusAreaId }
+    return
+  }
+  if (action === 'rename-sub-focus' || action === 'merge-sub-focus') {
+    // A live sub focus of a live area, as the worker looks it up.
+    const owning = sampleFocusAreas.find((entry) => stillInFocus(entry) && entry.subFocuses?.some((subFocus) => subFocus.id === subFocusId))
+    const subFocus = owning?.subFocuses?.find((entry) => entry.id === subFocusId)
+    if (!owning?.subFocuses || !subFocus) throw new Error('That sub focus is not in your focus areas.')
+    if (action === 'rename-sub-focus') {
+      if (!trimmedName) throw new Error('Write the new name before saving it.')
+      replace(owning.id, { subFocuses: owning.subFocuses.map((entry) => entry.id === subFocus.id ? { ...entry, name: trimmedName, decidedBy: 'owner' } : entry) })
+      return
+    }
+    if (!intoSubFocusId) throw new Error('Choose the sub focus to merge it into.')
+    if (intoSubFocusId === subFocus.id) throw new Error('A sub focus cannot be merged into itself.')
+    if (!owning.subFocuses.some((entry) => entry.id === intoSubFocusId)) throw new Error('Merge it into a sub focus of the same focus area.')
+    // A merged sub focus is no longer one of the area's, and its requests show the one it was merged into.
+    replace(owning.id, { subFocuses: owning.subFocuses.filter((entry) => entry.id !== subFocus.id) })
+    SAMPLE_REQUESTS.forEach((request, index) => { if (request.subFocusId === subFocus.id) SAMPLE_REQUESTS[index] = { ...request, subFocusId: intoSubFocusId } })
+    return
+  }
+  if (action === 'move-to-sub-focus') {
+    if (!requestId || subFocusId === undefined) throw new Error('Choose the request and the sub focus to move it to.')
+    const index = SAMPLE_REQUESTS.findIndex((request) => request.id === requestId)
+    if (index < 0) throw new Error('That request is not in your work.')
+    // The request's own area, merges followed; Other and a request not sorted yet have no sub focuses.
+    const placedIn = resolveFocusAreaId(SAMPLE_REQUESTS[index].focusAreaId, sampleFocusAreas)
+    const placedArea = placedIn && placedIn !== OTHER_FOCUS_AREA_ID ? byId.get(placedIn) : undefined
+    if (!placedArea) throw new Error('Put this request in a focus area before choosing its sub focus.')
+    if (subFocusId !== null && !placedArea.subFocuses?.some((entry) => entry.id === subFocusId)) throw new Error('Move it to a sub focus of the area it is in.')
+    const { subFocusId: _before, ...request } = SAMPLE_REQUESTS[index]
+    SAMPLE_REQUESTS[index] = subFocusId === null ? request : { ...request, subFocusId }
     return
   }
   const area = focusAreaId ? byId.get(focusAreaId) : undefined

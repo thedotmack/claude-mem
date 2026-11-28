@@ -23,7 +23,7 @@ import { contentFingerprint, priorContentFingerprint, LocalReviewStore } from '.
 import { MY_RULES_LIST, renderRulesFile, ruleRowFields, type SavedRule } from '../../../work-view/my-rules.mjs';
 import { claudeCodeImportLine, hasImportLine, homeRelativePath, RULES_AND_TOOLS_FILENAME } from '../../../../shared/claude-code-rules-import.js';
 import { ensureRulesAndToolsFile } from '../../../context/RulesAndToolsFile.js';
-import { focusAreaRowFields, MY_FOCUS_LIST, navWordIn, OTHER_FOCUS_AREA_ID, ownerGoalsAreaRows, placementRowFields, PROPOSAL_KINDS, readFocus, routerFocusRows, seedFocusRows, seedUndoRows, type FocusArea, type RouterFocusBody } from '../../../work-view/my-focus.mjs';
+import { focusAreaRowFields, MY_FOCUS_LIST, navWordIn, OTHER_FOCUS_AREA_ID, ownerGoalsAreaRows, placementRowFields, PROPOSAL_KINDS, readFocus, routerFocusRows, seedFocusRows, seedUndoRows, SUB_FOCUS_MIN_REQUESTS, subFocusPlacementRowFields, subFocusRowFields, type FocusArea, type RouterFocusBody } from '../../../work-view/my-focus.mjs';
 import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from '../../../work-view/work-state-limits.mjs';
 import { AGENT_LIFECYCLE_LIST, agentStopFields } from '../../../work-view/agent-lifecycle.mjs';
 import { getProjectContext } from '../../../../utils/project-name.js';
@@ -31,7 +31,7 @@ import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work
 import { resolveOpenRouterConfig } from '../../OpenRouterProvider.js';
 import { resolveOpenAICompatConfig } from '../../OpenAICompatProvider.js';
 import { resolveOpenAICompatReasoning } from '../../reasoning-budget.js';
-import { AutoRefreshWorker, refreshIntervalMs } from '../../../work-view/auto-refresh-worker.mjs';
+import { AutoRefreshWorker, OWNER_REFRESH_REASON, refreshIntervalMs } from '../../../work-view/auto-refresh-worker.mjs';
 import { buildRefreshTask } from '../../../work-view/refresh-task.js';
 import { HostedIntent } from '../../../work-view/hosted-intent.js';
 import { FocusShareError, FocusShares } from '../../../work-view/focus-share.js';
@@ -65,6 +65,7 @@ import {
 } from '../../../../shared/conversation-continuation.js';
 import type { ConversationContinuationRunner } from '../../../work-view/conversation-continuation-runner.js';
 import { WORK_VIEW_USAGE_VIEWS } from '../../../../shared/work-view-pages.js';
+import { WORK_VIEW_FOCUS_ACTIONS } from '../../../../shared/work-view-focus-actions.js';
 
 /** True while a process with this pid exists (signal 0 checks without signalling). */
 function processIsAlive(pid: number): boolean {
@@ -137,9 +138,14 @@ const ruleBody = z.object({
 // 80 and 300 characters leave room for the evidence inside one 2000-character work-state row.
 // A request id is a JSON key, bounded like reviewBody's.
 const focusAreaIdField = z.string().min(1).max(80);
+// A sub focus id is a generated token like an area id, so it takes the area id's bound.
+const subFocusIdField = focusAreaIdField;
 const focusBody = z.object({
-  action: z.enum(['keep', 'rename', 'edit-goal', 'merge', 'dismiss', 'done', 'reorder', 'move-request', 'restore-suggestion']),
+  action: z.enum(WORK_VIEW_FOCUS_ACTIONS),
   focusAreaId: focusAreaIdField.optional(),
+  /** rename-sub-focus and merge-sub-focus: the sub focus changed. move-to-sub-focus: the one to move into; null for none. */
+  subFocusId: subFocusIdField.nullable().optional(),
+  intoSubFocusId: subFocusIdField.optional(),
   name: z.string().trim().min(1).max(80).optional(),
   goal: z.string().trim().min(1).max(300).optional(),
   intoFocusAreaId: focusAreaIdField.optional(),
@@ -182,6 +188,16 @@ const routerFocusBody = z.object({
     requests: z.array(z.object({ anchorConversationKey: anchorField, basis: basisField }).strict()).min(1),
   }).strict()),
   otherPassHash: basisField.nullable().optional(),
+  // One sub focus answer for one kept area (request-groups.mjs validateSubFocusAnswer). A name is bounded like an area's;
+  // a new sub focus holds SUB_FOCUS_MIN_REQUESTS or more, since a group of one is not a group. The pass hash is 16 hex, and so
+  // is a failed pass's (the refresh's record of an area whose pass failed on that set of requests).
+  subFocus: z.object({
+    focusAreaId: focusAreaIdField,
+    newSubFocuses: z.array(z.object({ name: z.string().trim().min(1).max(80), anchorConversationKeys: z.array(anchorField).min(SUB_FOCUS_MIN_REQUESTS) }).strict()),
+    placements: z.array(z.object({ anchorConversationKey: anchorField, subFocusId: subFocusIdField.nullable() }).strict()),
+    passHash: basisField.nullable(),
+    failedPassHash: basisField.nullable().optional(),
+  }).strict().nullable().optional(),
 }).strict();
 
 // The one-time seed (scripts/seed-focus-areas.mjs): suggested `source: seed` areas and router placements, or the undo of
@@ -1487,10 +1503,10 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   /** The owner's focus decisions, saved as my-focus rows. Owner rows are never overridden by a refresh. */
   private saveFocus = async (req: Request, res: Response): Promise<void> => {
-    const { action, focusAreaId, name, goal, intoFocusAreaId, focusAreaIds, requestId, expectedVersion } = req.body as z.infer<typeof focusBody>;
+    const { action, focusAreaId, subFocusId, intoSubFocusId, name, goal, intoFocusAreaId, focusAreaIds, requestId, expectedVersion } = req.body as z.infer<typeof focusBody>;
     if (!this.appendWorkStateEntry) { res.status(503).json({ error: 'Saving focus areas is unavailable on this worker.' }); return; }
     // Moving a request looks the request up, and a request can be minutes old: that check reads fresh.
-    const snapshot = await (action === 'move-request' ? this.snapshot() : this.ownerStateSnapshot());
+    const snapshot = await (action === 'move-request' || action === 'move-to-sub-focus' ? this.snapshot() : this.ownerStateSnapshot());
     if (!snapshot.source.connected) { res.status(503).json({ error: 'Local work is unavailable. Reconnect before changing focus areas.' }); return; }
     const areas = (snapshot.focusAreas ?? []) as FocusArea[];
     // ownerEdit serializes this fresh read, version check and every row below with other owner writes.
@@ -1524,6 +1540,36 @@ export class WorkViewRoutes extends BaseRouteHandler {
         if (target.status === 'dismissed' || target.mergedInto) { res.status(409).json({ error: 'Move it to an area that is still in your focus.', snapshot }); return; }
       }
       rows.push(placementRowFields({ anchorConversationKey: request.anchorConversationKey, focusAreaId, placedBy: 'owner', evidence: 'Moved by you in My Work.' }));
+    } else if (action === 'rename-sub-focus' || action === 'merge-sub-focus') {
+      // A live sub focus of a live area: a merged one forwards to its target, and an area that is gone shows none.
+      const area = areas.find(entry => entry.status !== 'dismissed' && !entry.mergedInto && entry.subFocuses.some(subFocus => subFocus.subFocusId === subFocusId));
+      const subFocus = area?.subFocuses.find(entry => entry.subFocusId === subFocusId);
+      if (!area || !subFocus) { this.notFound(res, 'That sub focus is not in your focus areas.'); return; }
+      const ownSubFocusRow = (change: { name?: string; mergedInto?: string | null }) => subFocusRowFields({
+        subFocusId: subFocus.subFocusId, focusAreaId: area.focusAreaId, name: subFocus.name, mergedInto: null, ...change, decidedBy: 'owner',
+      });
+      if (action === 'rename-sub-focus') {
+        if (!name) { this.badRequest(res, 'Write the new name before saving it.'); return; }
+        rows.push(ownSubFocusRow({ name }));
+      } else {
+        if (!intoSubFocusId) { this.badRequest(res, 'Choose the sub focus to merge it into.'); return; }
+        if (intoSubFocusId === subFocus.subFocusId) { this.badRequest(res, 'A sub focus cannot be merged into itself.'); return; }
+        // Only into a live sub focus of the same area: a request's sub focus never takes it out of its area.
+        if (!area.subFocuses.some(entry => entry.subFocusId === intoSubFocusId)) { res.status(409).json({ error: 'Merge it into a sub focus of the same focus area.', snapshot }); return; }
+        rows.push(ownSubFocusRow({ mergedInto: intoSubFocusId }));
+      }
+    } else if (action === 'move-to-sub-focus') {
+      if (!requestId || subFocusId === undefined) { this.badRequest(res, 'Choose the request and the sub focus to move it to.'); return; }
+      const request = snapshot.humanRequests.find(item => item.id === requestId);
+      if (!request) { this.notFound(res, 'That request is not in your work.'); return; }
+      if (!request.anchorConversationKey) { res.status(409).json({ error: 'This request has no conversation to file it under.', snapshot }); return; }
+      // The request's own area as served (merges followed); Other and a request not sorted yet have no sub focuses.
+      const area = request.focusAreaId ? areaById.get(request.focusAreaId) : undefined;
+      if (!area) { res.status(409).json({ error: 'Put this request in a focus area before choosing its sub focus.', snapshot }); return; }
+      if (subFocusId !== null && !area.subFocuses.some(entry => entry.subFocusId === subFocusId)) {
+        res.status(409).json({ error: 'Move it to a sub focus of the area it is in.', snapshot }); return;
+      }
+      rows.push(subFocusPlacementRowFields({ anchorConversationKey: request.anchorConversationKey, subFocusId, focusAreaId: area.focusAreaId, placedBy: 'owner' }));
     } else {
       const area = focusAreaId ? areaById.get(focusAreaId) : undefined;
       if (!area) { this.notFound(res, 'That focus area is not in your focus areas.'); return; }
@@ -1791,7 +1837,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   /** Starts an on-demand refresh and answers before the run ends, which can take many minutes. */
   private startManualRefresh = async (_req: Request, res: Response): Promise<void> => {
     if (!this.autoRefresh) { res.status(503).json({ error: REFRESH_START_REFUSAL.unavailable }); return; }
-    const started = this.autoRefresh.runNow({ reason: 'manual' });
+    const started = this.autoRefresh.runNow({ reason: OWNER_REFRESH_REASON });
     // runNow decides before its first await: busy now means a run started, and any other answer is already settled.
     if (this.autoRefresh.busy) {
       void started.catch(error => logger.warn('HTTP', 'Manual work-view refresh failed', { error: error instanceof Error ? error.message : String(error) }));

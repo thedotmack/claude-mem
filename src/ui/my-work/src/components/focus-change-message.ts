@@ -21,6 +21,15 @@ function backTo(area: FocusArea): FocusChange[] | null {
 }
 const STATUS_ACTION = { kept: 'keep', done: 'done', dismissed: 'dismiss' } as const
 
+/** A sub focus with the area it is in, from the areas as they were before a change; null when none has that id. */
+function subFocusIn(areas: FocusArea[], subFocusId: string | null | undefined) {
+  for (const area of areas) {
+    const subFocus = area.subFocuses?.find((entry) => entry.id === subFocusId)
+    if (subFocus) return { area, subFocus }
+  }
+  return null
+}
+
 /** What one change says in the saved note, and how to undo it, read from the areas as they were before it. */
 export function describeFocusChange(change: FocusChange, areas: FocusArea[], requests: Request[]): MessageRecord {
   const area = areas.find((entry) => entry.id === change.focusAreaId)
@@ -50,5 +59,30 @@ export function describeFocusChange(change: FocusChange, areas: FocusArea[], req
       return record({ message: uiMessage('Moved “{title}” to {area}', { title: request?.title ?? uiMessage('the request'), area: toArea }), undo: request && from ? [{ action: 'move-request', requestId: request.id, focusAreaId: from }] : null })
     }
     case 'restore-suggestion': return record({ message: uiMessage('Put “{name}” back in Suggested', { name }), undo: null })
+    case 'rename-sub-focus': {
+      const subFocus = subFocusIn(areas, change.subFocusId)?.subFocus
+      return record({
+        message: uiMessage('Renamed “{name}” to “{newName}”', { name: subFocus?.name || uiMessage('the sub focus'), newName: change.name?.trim() ?? '' }),
+        undo: subFocus ? [{ action: 'rename-sub-focus', subFocusId: subFocus.id, name: subFocus.name }] : null,
+      })
+    }
+    case 'merge-sub-focus': {
+      const found = subFocusIn(areas, change.subFocusId)
+      const into = found?.area.subFocuses?.find((entry) => entry.id === change.intoSubFocusId)?.name || uiMessage('the sub focus')
+      // The worker has no change that takes a merge back, so the note offers no Undo.
+      return record({ message: uiMessage('Merged “{name}” into “{into}”', { name: found?.subFocus.name || uiMessage('the sub focus'), into }), undo: null })
+    }
+    case 'move-to-sub-focus': {
+      const request = requests.find((entry) => entry.id === change.requestId)
+      const area = areas.find((entry) => entry.id === request?.focusAreaId)
+      // Into none of the area's sub focuses: the request stays in its area, which is where the note says it went.
+      const to = change.subFocusId === null ? area?.name : area?.subFocuses?.find((entry) => entry.id === change.subFocusId)?.name
+      // Undo only when it sat in a sub focus before: a request not grouped yet, or ungrouped by a refresh, has no owner
+      // decision to go back to, and an owner "none" would keep every later refresh from grouping it.
+      return record({
+        message: uiMessage('Moved “{title}” to {area}', { title: request?.title ?? uiMessage('the request'), area: to || uiMessage('the sub focus') }),
+        undo: request && area && request.subFocusId ? [{ action: 'move-to-sub-focus', requestId: request.id, subFocusId: request.subFocusId }] : null,
+      })
+    }
   }
 }

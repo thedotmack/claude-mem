@@ -479,13 +479,13 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
   }).sort((a, b) => String(b.presence.lastActivityAt ?? '').localeCompare(String(a.presence.lastActivityAt ?? '')));
   const recentActivity = activity.sort((a, b) => b.atEpoch - a.atEpoch).slice(0, activityLimit);
   const requestProjection = buildHumanRequests({ agents, recentActivity }, records, { titleCache, ledger, onProductFile, localFiles, getProjectRoot });
-  const { focusAreas, focusAreaIdByAnchor } = buildFocusAreas(state);
+  const { focusAreas, focusAreaIdByAnchor, subFocusIdByAnchor } = buildFocusAreas(state);
   return {
     version: 1, generatedAt: stamp(now), currentProject: state.currentProject, currentProjectScope: state.currentProjectScope,
     agents, recentActivity, goals: buildOwnerGoals(state), goalHistory: buildOwnerGoalHistory(state),
     ...buildRules(state, ledger),
     ...requestProjection,
-    focusAreas, humanRequests: placeRequests(requestProjection.humanRequests, focusAreaIdByAnchor, ledger),
+    focusAreas, humanRequests: placeRequests(requestProjection.humanRequests, focusAreaIdByAnchor, ledger, subFocusIdByAnchor),
     coverage: { workRows: candidates.length, workLimit, linkedWork, ownerWork, unattributedWork, observations: observations.length, observationLimit: 300, summaries: summaries.length, livePresenceAvailable: false, summaryMethod: 'bounded-recorded-text', fullHistoryUrl: '/viewer' },
   };
 }

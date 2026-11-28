@@ -1,7 +1,7 @@
 // Types for GET /api/work-view on the local worker (claude-mem 15.0.1), written from a real response
 // (.scratch/work-view-sample.json). Only the keys the mapper reads are typed; the rest are left out on purpose.
 // A status the worker declares a type for is taken from that declaration, never retyped here.
-import type { FocusAreaStatus } from '../../../../services/work-view/my-focus.mjs'
+import type { FocusAreaStatus, SubFocusDecidedBy } from '../../../../services/work-view/my-focus.mjs'
 import type { SavedRule } from '../../../../services/work-view/my-rules.mjs'
 import type { ProgressState } from '../../../../services/work-view/progress-states.mjs'
 
@@ -171,6 +171,8 @@ export interface WorkViewHumanRequest {
   anchorConversationKey?: string | null
   /** A focus area id, 'other', or absent while it is not sorted yet. Older workers leave it out. */
   focusAreaId?: string
+  /** Its sub focus in that area (one of the area's subFocuses); absent while it has none. Older workers leave it out. */
+  subFocusId?: string
   /** The judge thinks this conversation is part of another request; absent when there is nothing to ask. Older workers leave it out. */
   suggestion?: WorkViewRequestSuggestion
 }
@@ -271,6 +273,14 @@ export interface WorkViewRule {
   savedAt: string | null
 }
 
+/** One live sub focus of an area: a named group of related requests inside it (my-focus.mjs). */
+export interface WorkViewSubFocus {
+  subFocusId: string
+  name: string
+  /** 'system': a refresh grouped it; 'owner': the owner renamed or merged it, and a refresh no longer changes it. */
+  decidedBy: SubFocusDecidedBy
+}
+
 /** One focus area from the my-focus list. Merged and dismissed areas are included; the viewer decides what to show. */
 export interface WorkViewFocusArea {
   focusAreaId: string
@@ -292,6 +302,9 @@ export interface WorkViewFocusArea {
   savedAt: string | null
   /** When the row that marked it done was written (ISO); null unless done (my-focus.mjs). Older workers leave it out. */
   doneAt?: string | null
+  /** Its live sub focuses, in the order they were first written. One that holds no request now is listed too; a screen
+   * shows only those a request's subFocusId names. Older workers leave it out. */
+  subFocuses?: WorkViewSubFocus[]
 }
 
 export interface WorkViewRuleScope { id: string; tier: 'everywhere' | 'project' | 'situation'; name: string }

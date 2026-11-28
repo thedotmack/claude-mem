@@ -244,6 +244,7 @@ export const myworkPtBr: Record<string, string> = {
   'Moved “{title}” to {area}': '“{title}” movido para {area}',
   'the request': 'o pedido',
   'the area': 'a área',
+  'the sub focus': 'a subárea',
   'Put “{name}” back in Suggested': '“{name}” voltou para Sugestões',
   'Wireframe: kept on this page only, not actually written.': 'Protótipo: a alteração aparece só nesta página e não é gravada.',
   'Saved in your cloud viewer; it syncs to your computers. A refresh never overrides it.': 'Salvo no visualizador na nuvem para sincronização com seus computadores. A atualização preserva essa escolha.',

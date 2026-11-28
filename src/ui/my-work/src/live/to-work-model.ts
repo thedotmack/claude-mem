@@ -413,6 +413,8 @@ function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: numb
     ...(nextRepeatsPrompt ? { nextRepeatsPrompt } : {}),
     stageNote: copy?.stage?.trim() || undefined,
     ...(focusAreaId ? { focusAreaId } : {}),
+    // The worker serves it only while it holds in the area the request is in (my-focus.mjs subFocusPlacementFor).
+    ...(focusAreaId && raw.subFocusId ? { subFocusId: raw.subFocusId } : {}),
     canMoveFocus: !!raw.anchorConversationKey,
     askedBy: raw.requestedBy ?? SOLO_REQUESTER,
     agentId,

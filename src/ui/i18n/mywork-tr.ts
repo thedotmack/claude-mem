@@ -244,6 +244,7 @@ export const myworkTr: Record<string, string> = {
   'Moved “{title}” to {area}': '“{title}”, {area} alanına taşındı',
   'the request': 'istek',
   'the area': 'alan',
+  'the sub focus': 'alt odak',
   'Put “{name}” back in Suggested': '“{name}” tekrar Önerilenler listesine alındı',
   'Wireframe: kept on this page only, not actually written.': 'Tasarım taslağı: değişiklik yalnızca bu sayfada tutulur ve kaydedilmez.',
   'Saved in your cloud viewer; it syncs to your computers. A refresh never overrides it.': 'Bulut görüntüleyicinize kaydedildi ve bilgisayarlarınızla eşitlenir. Yenileme bu değişikliğin üzerine yazmaz.',

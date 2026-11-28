@@ -3,9 +3,14 @@
 // project, so they sync like any other work state (the same pattern as my-rules).
 //   "Focus area: <focusAreaId>"           one area; every row saves the whole area.
 //   "Placement: <anchorConversationKey>"  which area one request sits in.
+//   "Sub focus: <subFocusId>"             one sub focus: a named group of related requests inside one area.
+//   "Sub focus placement: <anchorConversationKey>"
+//                                         which sub focus of its area one request sits in, or none (ungrouped).
 // A placement is keyed by the request's anchor conversation key (the input groupIdFor
-// hashes), never by the local g_ id. Area ids are never derived from names, so a
-// rename keeps the id. Rows are append-only and replay in write order.
+// hashes), never by the local g_ id. Area and sub focus ids are never derived from names,
+// so a rename keeps the id. Rows are append-only and replay in write order. A reader that
+// does not know a row's task prefix skips it, so the sub focus rows leave older readers'
+// areas and placements as they were.
 import { createHash, randomBytes } from 'node:crypto';
 import { MAX_WORK_STATE_FIELDS_JSON_CHARS } from './work-state-limits.mjs';
 import { reduceWorkState } from './work-state-reduce.mjs';
@@ -27,10 +32,19 @@ export const PROPOSAL_KINDS = Object.freeze(Object.keys(PROPOSAL_SOURCES));
 // handing a decided area back to the system ("restore-suggestion"), after which system rows apply again.
 const FOCUS_AREA_DECIDED_BY = ['owner', 'system', 'owner-restore'];
 const PLACEMENT_PLACED_BY = ['router', 'owner'];
+const SUB_FOCUS_TASK_PREFIX = 'Sub focus: ';
+const SUB_FOCUS_PLACEMENT_TASK_PREFIX = 'Sub focus placement: ';
+// Who wrote a sub focus row: the owner (from My Work) or the system (a refresh). Once the owner has written one, system
+// rows for it are ignored, as for areas. Placements are written by PLACEMENT_PLACED_BY, the same two as area placements.
+const SUB_FOCUS_DECIDED_BY = ['owner', 'system'];
+/** The fewest requests a sub focus the router writes holds: a group of one is not a group (docs/design/focus-areas.md). */
+export const SUB_FOCUS_MIN_REQUESTS = 2;
 
 export const isMyFocusList = (name) => name === MY_FOCUS_LIST;
 const focusAreaTaskName = (focusAreaId) => `${FOCUS_AREA_TASK_PREFIX}${focusAreaId}`;
 const placementTaskName = (anchorConversationKey) => `${PLACEMENT_TASK_PREFIX}${anchorConversationKey}`;
+const subFocusTaskName = (subFocusId) => `${SUB_FOCUS_TASK_PREFIX}${subFocusId}`;
+const subFocusPlacementTaskName = (anchorConversationKey) => `${SUB_FOCUS_PLACEMENT_TASK_PREFIX}${anchorConversationKey}`;
 
 const text = (value) => typeof value === 'string' ? value.trim() : '';
 const rank = (value) => typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -70,6 +84,39 @@ export function placementRowFields(placement) {
     confidence: rank(placement.confidence), basis: text(placement.basis) || null, evidence: text(placement.evidence) || null,
   }, 'placement');
 }
+
+/** The fields one sub focus row saves: the whole sub focus, so the row reads on its own on every device. A sub focus sits
+ * in one real area, never in Other. */
+export function subFocusRowFields(subFocus) {
+  const subFocusId = text(subFocus.subFocusId);
+  if (!subFocusId) throw new Error('A sub focus needs an id.');
+  const focusAreaId = text(subFocus.focusAreaId);
+  if (!focusAreaId || focusAreaId === OTHER_FOCUS_AREA_ID) throw new Error(`A sub focus needs the focus area it is in, never "${OTHER_FOCUS_AREA_ID}".`);
+  if (!text(subFocus.name)) throw new Error('A sub focus needs a name.');
+  if (!SUB_FOCUS_DECIDED_BY.includes(subFocus.decidedBy)) throw new Error(`Unknown sub focus writer: ${subFocus.decidedBy}`);
+  return fitsOneWrite({
+    task: subFocusTaskName(subFocusId), sub_focus_id: subFocusId, focus_area_id: focusAreaId,
+    name: text(subFocus.name), decided_by: subFocus.decidedBy, merged_into: text(subFocus.mergedInto) || null,
+  }, 'sub focus');
+}
+
+/** The fields one sub focus placement row saves: the sub focus a request sits in (null: none, ungrouped), and the area that
+ * decision was made in, so it stops holding once the request moves to another area. */
+export function subFocusPlacementRowFields(placement) {
+  const anchor = text(placement.anchorConversationKey);
+  if (!anchor) throw new Error('A sub focus placement needs the request\'s anchor conversation key.');
+  const focusAreaId = text(placement.focusAreaId);
+  if (!focusAreaId || focusAreaId === OTHER_FOCUS_AREA_ID) throw new Error(`A sub focus placement needs the focus area it was made in, never "${OTHER_FOCUS_AREA_ID}".`);
+  if (placement.subFocusId !== null && !text(placement.subFocusId)) throw new Error('A sub focus placement needs a sub focus id, or null for none.');
+  if (!PLACEMENT_PLACED_BY.includes(placement.placedBy)) throw new Error(`Unknown sub focus placement writer: ${placement.placedBy}`);
+  return fitsOneWrite({
+    task: subFocusPlacementTaskName(anchor), anchor_conversation_key: anchor,
+    sub_focus_id: placement.subFocusId === null ? null : text(placement.subFocusId), focus_area_id: focusAreaId, placed_by: placement.placedBy,
+  }, 'sub focus placement');
+}
+
+/** A new sub focus id: random like an area's, never derived from the name, so a rename keeps it. */
+export const newSubFocusId = () => `sf_${randomBytes(6).toString('hex')}`;
 
 /** A retry key is a nonce plus a commitment to the focus route's normalized payload. Fixed tuple
  * order makes the commitment independent of JSON object property order. Keep the complete key for a
@@ -173,6 +220,12 @@ function applyPatch(target, fields) {
  * - An owner placement beats any router placement, whatever the order, while it still
  *   lands in a live area; once its area is dismissed, the router's placement shows.
  * - A placement into a merged area forwards to the area it was merged into.
+ * - Sub focuses follow the same rules inside an area: the owner's rows win over a
+ *   refresh's, a merged sub focus forwards to the one it was merged into, and an owner
+ *   sub focus placement beats the router's. A sub focus placement holds only while the
+ *   request is still in the area it was made in and its sub focus belongs to that area;
+ *   otherwise it is ignored and the request has no sub focus there yet. A merged area's
+ *   sub focuses and placements go with its requests into the area it was merged into.
  * A row this build cannot read (unknown status, source or writer, no name, the id
  * "other") throws: My Focus never guesses what a row meant.
  */
@@ -186,14 +239,25 @@ export function buildFocusAreas(state, { localDeviceId = null } = {}) {
   if (typeof state.entryCount === 'number' && state.events.length !== state.entryCount) {
     throw new Error('My Focus needs every work-state row; the events were cut.');
   }
-  const areas = new Map(), placements = new Map();
+  const areas = new Map(), placements = new Map(), subFocusRows = new Map(), subFocusPlacements = new Map();
   let otherPassHash = null;
+  /** Each area's last sub focus pass on this computer: which of its requests that pass looked at (hash). */
+  const subFocusPassHashes = new Map();
+  /** Each area's last failed sub focus pass on this computer: which of its requests it failed on (hash). An answered pass
+   * clears it. Kept apart from the answered pass: a failure grouped nothing. */
+  const subFocusFailedHashes = new Map();
   // state.events is newest first.
   for (const event of [...state.events].reverse()) {
     if (!isMyFocusList(event.listName)) continue;
     if (event.task === null) {
-      // The list's own row: which Other requests this computer's last proposal pass already looked at.
-      if (localDeviceId !== null && event.sourceOrder?.[1] === localDeviceId && Object.hasOwn(event.fields, 'other_pass_hash')) otherPassHash = text(event.fields.other_pass_hash) || null;
+      // The list's own rows: which Other requests this computer's last proposal pass already looked at, and which
+      // requests of one area its last sub focus pass looked at. Like the Other pass, only this computer's own record.
+      if (localDeviceId !== null && event.sourceOrder?.[1] === localDeviceId) {
+        if (Object.hasOwn(event.fields, 'other_pass_hash')) otherPassHash = text(event.fields.other_pass_hash) || null;
+        const passArea = text(event.fields.sub_focus_area_id);
+        if (passArea && Object.hasOwn(event.fields, 'sub_focus_pass_hash')) subFocusPassHashes.set(passArea, text(event.fields.sub_focus_pass_hash) || null);
+        if (passArea && Object.hasOwn(event.fields, 'sub_focus_failed_hash')) subFocusFailedHashes.set(passArea, text(event.fields.sub_focus_failed_hash) || null);
+      }
       continue;
     }
     if (event.task.startsWith(FOCUS_AREA_TASK_PREFIX)) {
@@ -222,8 +286,50 @@ export function buildFocusAreas(state, { localDeviceId = null } = {}) {
       // The device that wrote the latest row: a router basis is only comparable on the device that computed it.
       placement[placedBy].device = event.sourceOrder?.[1] ?? null;
       placements.set(anchor, placement);
+    } else if (event.task.startsWith(SUB_FOCUS_TASK_PREFIX)) {
+      const subFocusId = text(event.fields.sub_focus_id) || event.task.slice(SUB_FOCUS_TASK_PREFIX.length);
+      const decidedBy = event.fields.decided_by;
+      if (!SUB_FOCUS_DECIDED_BY.includes(decidedBy)) throw new Error(`Sub focus ${subFocusId} has an unknown writer: ${decidedBy}`);
+      const subFocus = subFocusRows.get(subFocusId) ?? { fields: {}, ownerDecided: false };
+      if (subFocus.ownerDecided && decidedBy === 'system') continue;
+      // A sub focus stays in the area its first row names: no change moves one to another area. An owner edit made
+      // while its area is merged names the area it is listed under (the merge target), and taking that would strand it
+      // there, away from its requests, once the merge is undone.
+      const focusAreaId = subFocus.fields.focus_area_id;
+      applyPatch(subFocus.fields, event.fields);
+      if (focusAreaId) subFocus.fields.focus_area_id = focusAreaId;
+      if (decidedBy === 'owner') subFocus.ownerDecided = true;
+      subFocusRows.set(subFocusId, subFocus);
+    } else if (event.task.startsWith(SUB_FOCUS_PLACEMENT_TASK_PREFIX)) {
+      const anchor = text(event.fields.anchor_conversation_key) || event.task.slice(SUB_FOCUS_PLACEMENT_TASK_PREFIX.length);
+      const placedBy = event.fields.placed_by;
+      if (!PLACEMENT_PLACED_BY.includes(placedBy)) throw new Error(`A sub focus placement has an unknown writer: ${placedBy}`);
+      // Kept apart like area placements: the router's shows when the owner's no longer holds.
+      const placement = subFocusPlacements.get(anchor) ?? { owner: null, router: null };
+      placement[placedBy] ??= {};
+      applyPatch(placement[placedBy], event.fields);
+      subFocusPlacements.set(anchor, placement);
     }
   }
+
+  // Every sub focus, in the order it was first written; merged ones included, so a merge can be followed.
+  const subFocuses = [...subFocusRows].map(([subFocusId, { fields }]) => {
+    if (!text(fields.name)) throw new Error(`Sub focus ${subFocusId} has no name.`);
+    const focusAreaId = text(fields.focus_area_id);
+    if (!focusAreaId || focusAreaId === OTHER_FOCUS_AREA_ID) throw new Error(`Sub focus ${subFocusId} names no focus area it is in.`);
+    return { subFocusId, focusAreaId, name: text(fields.name), decidedBy: fields.decided_by, mergedInto: text(fields.merged_into) || null };
+  });
+  const subFocusById = new Map(subFocuses.map((subFocus) => [subFocus.subFocusId, subFocus]));
+  /** The live sub focus an id lands in, following merges; null in a merge loop or when the target is not received yet. */
+  const resolveSubFocus = (subFocusId) => {
+    const seen = new Set();
+    let subFocus = subFocusById.get(subFocusId);
+    while (subFocus?.mergedInto && !seen.has(subFocus.subFocusId)) {
+      seen.add(subFocus.subFocusId);
+      subFocus = subFocusById.get(subFocus.mergedInto);
+    }
+    return subFocus && !subFocus.mergedInto ? subFocus : null;
+  };
 
   const focusAreas = [...areas].map(([focusAreaId, { fields, savedAt, doneAt }]) => {
     if (!text(fields.name)) throw new Error(`Focus area ${focusAreaId} has no name.`);
@@ -233,7 +339,7 @@ export function buildFocusAreas(state, { localDeviceId = null } = {}) {
       focusAreaId, name: text(fields.name), goal: text(fields.goal) || null, about: text(fields.about) || null, status: fields.status,
       priorityRank: rank(fields.priority_rank), ownerRank: rank(fields.owner_rank), source: fields.source,
       mergedInto: text(fields.merged_into) || null, evidence: text(fields.evidence) || null,
-      decidedBy: fields.decided_by, savedAt, doneAt,
+      decidedBy: fields.decided_by, savedAt, doneAt, subFocuses: [],
     };
   })
     // The owner's order wins; areas they have not ordered follow by suggested priority.
@@ -254,6 +360,14 @@ export function buildFocusAreas(state, { localDeviceId = null } = {}) {
     // has not received yet. A dismissed area holds no requests, and an unknown area is not received yet.
     return area && !area.mergedInto && area.status !== 'dismissed' ? area.focusAreaId : null;
   };
+  // Each area's live sub focuses (not merged away), as the area serves them: its own, and those of every area merged into
+  // it, whose requests it now holds, so a merge keeps the owner's sub focus names and placements. Each is listed under one
+  // area at most: the one its own area resolves to (none while that area is dismissed or in a merge loop). One with no
+  // requests now is listed too: the router's next pass may fill it, and a screen shows only the sub focuses that hold
+  // requests.
+  for (const { subFocusId, focusAreaId, name, decidedBy, mergedInto } of subFocuses) {
+    if (!mergedInto) byId.get(resolve(focusAreaId))?.subFocuses.push({ subFocusId, name, decidedBy });
+  }
   const focusAreaIdByAnchor = new Map();
   /** Each anchor's latest owner and router placement: the area it names, the basis it was decided on and its device. */
   const placementsByAnchor = new Map();
@@ -263,7 +377,28 @@ export function buildFocusAreas(state, { localDeviceId = null } = {}) {
     if (focusAreaId) focusAreaIdByAnchor.set(anchor, focusAreaId);
     placementsByAnchor.set(anchor, { owner: side(owner), router: side(router) });
   }
-  return { focusAreas, focusAreaIdByAnchor, placementsByAnchor, resolveFocusAreaId: resolve, otherPassHash };
+  /** The sub focus decision that holds for a request in an area: the owner's, while it was made in that area (or in an
+   * area merged into it) and names none or a live sub focus listed under that area; else the router's on the same terms.
+   * subFocusId null is the decision "none" (ungrouped). Null when no decision holds there (the request is not grouped yet). */
+  const subFocusPlacementFor = (anchor, focusAreaId) => {
+    const placement = subFocusPlacements.get(anchor);
+    if (!placement || !focusAreaId || focusAreaId === OTHER_FOCUS_AREA_ID) return null;
+    for (const placedBy of ['owner', 'router']) {
+      const fields = placement[placedBy];
+      if (!fields || resolve(text(fields.focus_area_id)) !== focusAreaId) continue;
+      if (!text(fields.sub_focus_id)) return { placedBy, subFocusId: null };
+      const subFocus = resolveSubFocus(text(fields.sub_focus_id));
+      if (subFocus && resolve(subFocus.focusAreaId) === focusAreaId) return { placedBy, subFocusId: subFocus.subFocusId };
+    }
+    return null;
+  };
+  /** Each placed request's live sub focus in the area it is in now; absent when it has none there. */
+  const subFocusIdByAnchor = new Map();
+  for (const anchor of subFocusPlacements.keys()) {
+    const subFocusId = subFocusPlacementFor(anchor, focusAreaIdByAnchor.get(anchor))?.subFocusId;
+    if (subFocusId) subFocusIdByAnchor.set(anchor, subFocusId);
+  }
+  return { focusAreas, focusAreaIdByAnchor, placementsByAnchor, resolveFocusAreaId: resolve, otherPassHash, subFocusIdByAnchor, subFocusPlacementFor, subFocusPassHashes, subFocusFailedHashes };
 }
 
 /**
@@ -295,10 +430,14 @@ export const isPlaceableArea = (area) => (area.status === 'kept' || area.status 
  * - A proposal's `sameAs` is the model's judgment of which saved area it already is (like ownerGoalsAreaRows' matches):
  *   a placeable area takes the proposal's requests and no area is added; a dismissed area is refused, since the owner
  *   said no to it and it is never proposed again; any other id is refused.
+ * - A sub focus answer (`subFocus`, one kept area) writes its new sub focuses as the system under random ids, router sub
+ *   focus placements into them, into the area's live sub focuses or into none (ungrouped), and the pass record of the
+ *   requests it looked at. A new sub focus of one request, an id that is not a live sub focus of that area, or a request
+ *   placed twice is refused: the answer was made on sub focuses that changed.
  * Every row is built (and size-checked) before the caller writes the first one, so a refusal writes nothing.
- * Returns the rows, the new areas' ids in order, and how many requests were placed.
+ * Returns the rows, the new areas' ids in order, and how many requests were placed in areas.
  */
-export function routerFocusRows({ placements, proposals, otherPassHash = null }, savedAreas, newId = newFocusAreaId) {
+export function routerFocusRows({ placements, proposals, otherPassHash = null, subFocus = null }, savedAreas, newId = newFocusAreaId, newSubId = newSubFocusId) {
   const placeable = new Set(savedAreas.filter(isPlaceableArea).map((area) => area.focusAreaId));
   const byId = new Map(savedAreas.map((area) => [area.focusAreaId, area]));
   const anchors = new Set();
@@ -342,7 +481,42 @@ export function routerFocusRows({ placements, proposals, otherPassHash = null },
     }
   }
   if (otherPassHash != null) rows.push({ other_pass_hash: otherPassHash });
+  if (subFocus) routerSubFocusRows(subFocus, byId, newSubId, rows);
   return { rows, focusAreaIds, placed: anchors.size };
+}
+
+/** routerFocusRows' sub focus part: appends its rows. `failedPassHash` records a pass that failed on that set of requests
+ * (refresh-task.ts): a scheduled refresh does not ask the area again until the set changes. An answered pass (`passHash`)
+ * clears it. */
+function routerSubFocusRows({ focusAreaId, newSubFocuses, placements, passHash = null, failedPassHash = null }, areasById, newSubId, rows) {
+  const area = areasById.get(focusAreaId);
+  if (!area || area.status !== 'kept' || area.mergedInto) throw new TypeError(`subFocus names ${focusAreaId}, which is not a kept focus area.`);
+  if (passHash != null && failedPassHash != null) throw new TypeError('subFocus records a pass as answered or as failed, not both.');
+  const live = new Set((area.subFocuses ?? []).map((subFocus) => subFocus.subFocusId));
+  const placed = new Set();
+  const place = (anchorConversationKey, subFocusId, label) => {
+    if (placed.has(anchorConversationKey)) throw new TypeError(`${label} places ${anchorConversationKey} a second time; a request sits in one sub focus.`);
+    placed.add(anchorConversationKey);
+    rows.push(subFocusPlacementRowFields({ anchorConversationKey, subFocusId, focusAreaId, placedBy: 'router' }));
+  };
+  const subFocusIds = [];
+  for (const [index, group] of newSubFocuses.entries()) {
+    const label = `subFocus.newSubFocuses[${index}]`;
+    // The design's rule (docs/design/focus-areas.md): a group of one is not a group.
+    if (group.anchorConversationKeys.length < SUB_FOCUS_MIN_REQUESTS) throw new TypeError(`${label} holds ${group.anchorConversationKeys.length} request; a sub focus groups ${SUB_FOCUS_MIN_REQUESTS} or more.`);
+    const subFocusId = newSubId(index);
+    if (live.has(subFocusId) || subFocusIds.includes(subFocusId)) throw new Error(`Sub focus id ${subFocusId} is already used.`);
+    rows.push(subFocusRowFields({ subFocusId, focusAreaId, name: group.name, decidedBy: 'system', mergedInto: null }));
+    subFocusIds.push(subFocusId);
+    for (const anchor of group.anchorConversationKeys) place(anchor, subFocusId, label);
+  }
+  for (const [index, placement] of placements.entries()) {
+    const label = `subFocus.placements[${index}]`;
+    if (placement.subFocusId !== null && !live.has(placement.subFocusId)) throw new TypeError(`${label} names ${placement.subFocusId}, which is not a sub focus of ${focusAreaId}.`);
+    place(placement.anchorConversationKey, placement.subFocusId, label);
+  }
+  if (passHash != null) rows.push({ sub_focus_area_id: focusAreaId, sub_focus_pass_hash: passHash, sub_focus_failed_hash: null });
+  if (failedPassHash != null) rows.push({ sub_focus_area_id: focusAreaId, sub_focus_failed_hash: failedPassHash });
 }
 
 /** An area the owner said no to: never proposed again. An area the system withdrew (a seed undo) is not one: the
@@ -481,11 +655,13 @@ export function anchorConversationKeyFor(request, ledger) {
   return typeof anchor === 'string' && anchor ? anchor : null;
 }
 
-/** Each request with its anchor and its area: an area id, "other", or absent while it is not sorted yet. */
-export function placeRequests(humanRequests, focusAreaIdByAnchor, ledger) {
+/** Each request with its anchor, its area (an area id, "other", or absent while it is not sorted yet) and its sub focus
+ * in that area (absent while it has none: ungrouped, or not grouped yet). subFocusIdByAnchor is buildFocusAreas'. */
+export function placeRequests(humanRequests, focusAreaIdByAnchor, ledger, subFocusIdByAnchor = new Map()) {
   return humanRequests.map((request) => {
     const anchorConversationKey = anchorConversationKeyFor(request, ledger);
     const focusAreaId = anchorConversationKey ? focusAreaIdByAnchor.get(anchorConversationKey) : undefined;
-    return { ...request, anchorConversationKey, ...(focusAreaId ? { focusAreaId } : {}) };
+    const subFocusId = focusAreaId ? subFocusIdByAnchor.get(anchorConversationKey) : undefined;
+    return { ...request, anchorConversationKey, ...(focusAreaId ? { focusAreaId } : {}), ...(subFocusId ? { subFocusId } : {}) };
   });
 }

@@ -21,6 +21,12 @@
 //   bun request-groups.mjs focus-input --other       focus areas + the requests in Other, to propose areas from
 //   bun request-groups.mjs record-focus [--limit 20 | --other] <file|->
 //                                                   place requests and propose areas (saved through the worker)
+//   bun request-groups.mjs sub-focus-input           kept areas whose sub focuses are due, and those whose last pass
+//                                                   failed on the same requests (asked again only by the owner's Refresh)
+//   bun request-groups.mjs sub-focus-input --area <focusAreaId>
+//                                                   one area's sub focuses, members and requests to group
+//   bun request-groups.mjs record-sub-focus --area <focusAreaId> <file|->
+//                                                   group that area's requests into sub focuses (saved through the worker)
 //   bun request-groups.mjs refresh-needs [--days 14]  what the automatic refresh would do now
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
@@ -30,7 +36,7 @@ import { join } from 'node:path';
 import { conversationKey, copiesOpeningAsk, FOCUS_ASK_CHARS, isConversationKey, isHumanActionRequest, originalFor, placeholderTitleFromAsk, requestText } from './request-projection.mjs';
 import { GOAL_KINDS, goalKindOf, OWNER_GOALS_LIST } from './owner-goals.mjs';
 import { NO_PROJECT, projectRoot, upgradedGroupRoot, withDerivedProjects } from './session-project.mjs';
-import { isOwnerDismissedArea, isPlaceableArea, OTHER_FOCUS_AREA_ID, PROPOSAL_KINDS, readFocus } from './my-focus.mjs';
+import { isOwnerDismissedArea, isPlaceableArea, OTHER_FOCUS_AREA_ID, PROPOSAL_KINDS, readFocus, SUB_FOCUS_MIN_REQUESTS } from './my-focus.mjs';
 import { beforeSharedFileWrite } from './shared-file-hooks.mjs';
 import { isClosedWorkStateStatus } from './work-state-status.mjs';
 import { PROGRESS_STATES } from './progress-states.mjs';
@@ -920,6 +926,163 @@ export function validateFocusAnswer(answer, input, ledger, { other = false } = {
   };
 }
 
+/** An area is grouped into sub focuses only once it holds enough placed requests for two of them: a sub focus holds
+ * SUB_FOCUS_MIN_REQUESTS or more, and an area shows sub focus cards only with two (docs/design/focus-areas.md), so fewer
+ * than two groups' worth cannot make cards and is never asked about. */
+const SUB_FOCUS_AREA_MIN_REQUESTS = 2 * SUB_FOCUS_MIN_REQUESTS;
+
+/** The ledger requests placed in each kept area (not merged): the areas the sub focus step groups. */
+function requestsByKeptArea(ledger, focus) {
+  const kept = new Map(focus.focusAreas.filter((area) => area.status === 'kept' && !area.mergedInto).map((area) => [area.focusAreaId, { area, groupIds: [] }]));
+  for (const [groupId, group] of Object.entries(ledger.groups.groups)) kept.get(focus.focusAreaIdByAnchor.get(group.anchor))?.groupIds.push(groupId);
+  return [...kept.values()];
+}
+
+/** Which requests an area's sub focus pass looked at: the anchors of the requests placed in it, so the area is asked again
+ * only when that set changes (a request placed in it or moved out), never for a new review or a regrouping by the owner. */
+const subFocusPassHash = (ledger, groupIds) => createHash('sha256').update(JSON.stringify(groupIds.map((groupId) => ledger.groups.groups[groupId].anchor).sort())).digest('hex').slice(0, 16);
+
+/** Kept areas with SUB_FOCUS_AREA_MIN_REQUESTS or more placed requests that this computer's last answered pass over the
+ * area did not look at. `due`: no pass failed on this set either, so any refresh asks the area. `failed`: this computer's
+ * last pass failed on exactly this set (refused twice, the model call failed, or its answer could not be saved). The same
+ * question would buy the same paid call again, and a quota reset, a login or a timer does not make it new
+ * (docs/architecture/observer-lifecycle.md), so no scheduled refresh asks it; it is due again once its set changes, and the
+ * owner's Refresh (OWNER_REFRESH_REASON) asks it. */
+function subFocusAreas(ledger, focus) {
+  const due = [], failed = [];
+  for (const entry of requestsByKeptArea(ledger, focus)) {
+    if (entry.groupIds.length < SUB_FOCUS_AREA_MIN_REQUESTS) continue;
+    const hash = subFocusPassHash(ledger, entry.groupIds);
+    if (hash === focus.subFocusPassHashes.get(entry.area.focusAreaId)) continue;
+    (hash === focus.subFocusFailedHashes.get(entry.area.focusAreaId) ? failed : due).push(entry);
+  }
+  return { due, failed };
+}
+
+/**
+ * sub-focus-input --area: one kept area's sub focus question. `subFocuses` are its live sub focuses with their members;
+ * `requests` are the ones to decide now: not grouped in this area yet, left ungrouped by the router last time, or placed by
+ * the router in a sub focus that holds fewer than SUB_FOCUS_MIN_REQUESTS requests now (the owner moved one out, or one
+ * left the area), which is no group any more, so the pass groups them anew or leaves them ungrouped. A request the owner
+ * placed (in a sub focus or in none) is the owner's and never listed to decide. `alreadyUngrouped` names the listed
+ * requests the router left ungrouped last time: leaving one ungrouped again writes nothing. `passHash` names the requests
+ * the pass looks at; the answer's last part records it.
+ */
+export function subFocusInput(ledger, focus, focusAreaId) {
+  const entry = requestsByKeptArea(ledger, focus).find(({ area }) => area.focusAreaId === focusAreaId);
+  if (!entry) throw new TypeError(`${focusAreaId} is not a kept focus area.`);
+  const { area, groupIds } = entry;
+  const anchorOf = (groupId) => ledger.groups.groups[groupId].anchor;
+  const record = (groupId) => ({ anchor: anchorOf(groupId), title: ledger.groups.groups[groupId].title, summary: ledger.progress[groupId]?.summary ?? null });
+  const decisions = groupIds.map((groupId) => ({ groupId, decided: focus.subFocusPlacementFor(anchorOf(groupId), focusAreaId) }));
+  const held = new Map();
+  for (const { decided } of decisions) if (decided?.subFocusId) held.set(decided.subFocusId, (held.get(decided.subFocusId) ?? 0) + 1);
+  const members = new Map(area.subFocuses.map((subFocus) => [subFocus.subFocusId, []]));
+  const requests = [], alreadyUngrouped = [];
+  for (const { groupId, decided } of decisions) {
+    if (decided?.placedBy === 'owner') { if (decided.subFocusId) members.get(decided.subFocusId).push(record(groupId)); }
+    else if (decided?.subFocusId && held.get(decided.subFocusId) >= SUB_FOCUS_MIN_REQUESTS) members.get(decided.subFocusId).push(record(groupId));
+    else {
+      requests.push(record(groupId));
+      if (decided && !decided.subFocusId) alreadyUngrouped.push(anchorOf(groupId));
+    }
+  }
+  return {
+    area: { focusAreaId, name: area.name, goal: area.goal },
+    subFocuses: area.subFocuses.map((subFocus) => ({ subFocusId: subFocus.subFocusId, name: subFocus.name, members: members.get(subFocus.subFocusId) })),
+    requests,
+    alreadyUngrouped,
+    passHash: subFocusPassHash(ledger, groupIds),
+  };
+}
+
+/** Two sub focus names that differ only in case or spacing name one sub focus. */
+const subFocusNameKey = (name) => name.toLowerCase().replace(/\s+/g, '');
+
+/**
+ * A sub focus answer checked against the area input it answers: every listed request decided exactly once, by its anchor,
+ * in a listed sub focus by its exact id (`groups`), in a new sub focus (`newGroups`), or in none (`ungrouped`). An unknown
+ * request or sub focus id, a request listed twice, and a new group named like a listed sub focus (ignoring case and
+ * spaces) are refused. A listed sub focus left with fewer than SUB_FOCUS_MIN_REQUESTS requests, counting its members and
+ * every entry that joins it, is not a group, and neither is a new group of one: their listed requests are left ungrouped.
+ * A listed request the router left ungrouped last time (`alreadyUngrouped`) and left ungrouped again writes no placement:
+ * the decision stands, and repeating it would add a synced row on every pass.
+ * coerce (the refresh's one retry): an entry this check refuses is dropped instead, a new group named like a listed sub
+ * focus joins that sub focus, and a listed request the answer left out is left ungrouped, so a model that keeps leaving the
+ * same request out cannot fail every later refresh (#6432). Each new group the retry dropped, because its name or some of
+ * its requests were refused, is named in `droppedNewGroups`, so the refresh reports it.
+ * recordPass false (an earlier part of a large area): the pass is recorded only with the last part.
+ * Returns the body POST /api/work-view/focus/router takes.
+ */
+export function validateSubFocusAnswer(answer, input, { coerce = false, recordPass = true, droppedNewGroups = new Set() } = {}) {
+  for (const key of ['groups', 'newGroups', 'ungrouped']) if (!Array.isArray(answer?.[key])) throw new TypeError(`The answer needs a ${key} array (empty when it has none).`);
+  const listed = new Set(input.requests.map((request) => request.anchor));
+  const membersOf = new Map(input.subFocuses.map((subFocus) => [subFocus.subFocusId, subFocus.members.length]));
+  const listedByName = new Map(input.subFocuses.map((subFocus) => [subFocusNameKey(subFocus.name), subFocus.subFocusId]));
+  const refuse = (message) => { if (!coerce) throw new TypeError(message); };
+  const decided = new Set();
+  /** The anchors one entry places: listed, and not placed by an earlier entry. */
+  const take = (anchors, label) => (Array.isArray(anchors) ? anchors : []).filter((anchor, index) => {
+    if (!listed.has(anchor)) { refuse(`${label}[${index}] names ${JSON.stringify(anchor)}, which was not asked about.`); return false; }
+    if (decided.has(anchor)) { refuse(`${label}[${index}] places ${anchor} a second time; a request sits in one sub focus.`); return false; }
+    decided.add(anchor);
+    return true;
+  });
+  /** The listed requests each listed sub focus takes, decided once every entry is read. */
+  const joining = new Map();
+  const join = (subFocusId, anchors) => joining.set(subFocusId, [...(joining.get(subFocusId) ?? []), ...anchors]);
+  const ungrouped = [], newSubFocuses = [];
+  for (const [index, group] of answer.groups.entries()) {
+    const label = `groups[${index}]`;
+    if (!membersOf.has(group?.subFocusId)) {
+      refuse(`${label} names ${JSON.stringify(group?.subFocusId)}, which is not a listed sub focus. Use an exact subFocusId from "subFocuses", or put the requests in "newGroups".`);
+      continue;
+    }
+    join(group.subFocusId, take(group.anchors, `${label}.anchors`));
+  }
+  for (const [index, group] of answer.newGroups.entries()) {
+    const label = `newGroups[${index}]`;
+    let name;
+    try { name = boundedText(group?.name, AREA_NAME_MAX, `${label}.name`); }
+    catch (error) { if (!coerce) throw error; droppedNewGroups.add(label); continue; }
+    const same = listedByName.get(subFocusNameKey(name));
+    if (same) refuse(`${label} is named "${name}", like the listed sub focus ${same}. Put its requests in "groups" with "subFocusId": "${same}" instead of making a second one.`);
+    const asked = Array.isArray(group.anchors) ? group.anchors.length : 0;
+    const anchors = take(group.anchors, `${label}.anchors`);
+    if (same) { join(same, anchors); continue; }
+    // A group of one is not a group: its request stays ungrouped.
+    if (anchors.length < SUB_FOCUS_MIN_REQUESTS) {
+      if (anchors.length < asked) droppedNewGroups.add(label);
+      ungrouped.push(...anchors);
+    } else newSubFocuses.push({ name, anchorConversationKeys: anchors });
+  }
+  const placements = [];
+  for (const [subFocusId, anchors] of joining) {
+    if (membersOf.get(subFocusId) + anchors.length < SUB_FOCUS_MIN_REQUESTS) ungrouped.push(...anchors);
+    else placements.push(...anchors.map((anchor) => ({ anchorConversationKey: anchor, subFocusId })));
+  }
+  ungrouped.push(...take(answer.ungrouped, 'ungrouped'));
+  const missing = [...listed].filter((anchor) => !decided.has(anchor));
+  if (missing.length && !coerce) throw new TypeError(`Decide every request asked about, in a sub focus or in "ungrouped"; missing ${missing.join(', ')}.`);
+  ungrouped.push(...missing);
+  const unchanged = new Set(input.alreadyUngrouped);
+  return {
+    placements: [], proposals: [],
+    subFocus: {
+      focusAreaId: input.area.focusAreaId, newSubFocuses,
+      placements: [...placements, ...ungrouped.filter((anchor) => !unchanged.has(anchor)).map((anchor) => ({ anchorConversationKey: anchor, subFocusId: null }))],
+      passHash: recordPass ? input.passHash : null,
+    },
+  };
+}
+
+/** What a saved sub focus answer did, as record-sub-focus prints it and the refresh counts it. */
+export function subFocusAnswerCounts(body) {
+  const placements = body.subFocus?.placements ?? [], newSubFocuses = body.subFocus?.newSubFocuses ?? [];
+  const inNew = newSubFocuses.reduce((total, group) => total + group.anchorConversationKeys.length, 0);
+  return { grouped: inNew + placements.filter((placement) => placement.subFocusId !== null).length, ungrouped: placements.filter((placement) => placement.subFocusId === null).length, newSubFocuses: newSubFocuses.length };
+}
+
 /** Whether a request still shows a title copied from its opening ask, whoever copied it. */
 export function hasPlaceholderTitle(group) {
   return copiesOpeningAsk(group.title, group.anchorAsk?.text ?? null);
@@ -981,7 +1144,12 @@ export function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), day
   const queued = focusDue(ledger, focus, localDeviceId, requests);
   const otherHash = otherPassHash(ledger, routerOther(ledger, focus, new Set(queued)), requests);
   const otherChanged = otherHash !== null && otherHash !== focus.otherPassHash;
-  return { due: due.length, ungrouped, goalsStale, unplaced: queued.length, otherChanged, needed: Boolean(due.length || ungrouped || goalsStale || queued.length || otherChanged) };
+  // Kept areas whose set of placed requests changed since this computer last grouped them into sub focuses. An area whose
+  // last pass failed on its current set is counted apart and never makes a scheduled run needed.
+  const subFocus = subFocusAreas(ledger, focus);
+  const subFocusDue = subFocus.due.length;
+  return { due: due.length, ungrouped, goalsStale, unplaced: queued.length, otherChanged, subFocusDue, subFocusFailed: subFocus.failed.length,
+    needed: Boolean(due.length || ungrouped || goalsStale || queued.length || otherChanged || subFocusDue) };
 }
 
 function readInput(source) {
@@ -1154,10 +1322,11 @@ export function applyDecisions(stored, decisions, { database, now = Date.now(), 
 }
 
 /**
- * localDeviceId: the worker's sync device id ("" when cloud sync never started), required by focus-input, record-focus
- * and refresh-needs so my-focus rows replay in the worker's order.
- * saveFocus(body): writes a checked record-focus answer through the worker and resolves {placed, focusAreaIds};
- * it throws a TypeError when the worker refused the answer before writing anything. record-focus returns a promise.
+ * localDeviceId: the worker's sync device id ("" when cloud sync never started), required by focus-input, record-focus,
+ * sub-focus-input, record-sub-focus and refresh-needs so my-focus rows replay in the worker's order.
+ * saveFocus(body): writes a checked record-focus or record-sub-focus answer through the worker and resolves
+ * {placed, focusAreaIds}; it throws a TypeError when the worker refused the answer before writing anything. record-focus
+ * and record-sub-focus return a promise.
  * judge: the Jev judge for the `judge` command: undefined reads it from the install's settings
  * (request-judge.mjs configuredJudge), null routes with code links only. That command returns a promise.
  */
@@ -1288,6 +1457,22 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     const body = validateFocusAnswer(readInput(file), input, ledger, { other });
     return Promise.resolve(saveFocus(body)).then((saved) => print({ placed: saved.placed, proposed: saved.focusAreaIds.length, focusAreaIds: saved.focusAreaIds }));
   }
+  if (command === 'sub-focus-input' || command === 'record-sub-focus') {
+    const ledger = readLedger(dir), focus = readFocus(db(), { localDeviceId: requireDeviceId(localDeviceId) });
+    const focusAreaId = textOption(args, 'area');
+    if (command === 'sub-focus-input') {
+      if (focusAreaId) return print(subFocusInput(ledger, focus, focusAreaId));
+      const listed = ({ area, groupIds }) => ({ focusAreaId: area.focusAreaId, name: area.name, requests: groupIds.length });
+      const { due, failed } = subFocusAreas(ledger, focus);
+      return print({ due: due.map(listed), failed: failed.map(listed) });
+    }
+    // Saved through the worker, like record-focus: sub focus rows are my-focus rows, which sync.
+    if (!saveFocus) throw new Error('record-sub-focus saves through the claude-mem worker, and none was given.');
+    if (!focusAreaId) throw new TypeError('record-sub-focus needs --area <focusAreaId>, the area sub-focus-input --area asked about.');
+    const file = args.filter((arg, index) => !arg.startsWith('--') && args[index - 1] !== '--area').at(-1) ?? '-';
+    const body = validateSubFocusAnswer(readInput(file), subFocusInput(ledger, focus, focusAreaId));
+    return Promise.resolve(saveFocus(body)).then(() => print(subFocusAnswerCounts(body)));
+  }
   if (command === 'refresh-needs') return print(refreshNeeds({ dir, database: db(), now, days: option(args, 'days', 14), localDeviceId }));
-  throw new TypeError('Usage: request-groups.mjs candidates|grouping-input|judge|apply|pending|show|record-progress|title-input|record-titles|story-input|record-story|focus-input|record-focus|refresh-needs (see file header).');
+  throw new TypeError('Usage: request-groups.mjs candidates|grouping-input|judge|apply|pending|show|record-progress|title-input|record-titles|story-input|record-story|focus-input|record-focus|sub-focus-input|record-sub-focus|refresh-needs (see file header).');
 }

@@ -26,6 +26,9 @@ export interface RefreshStatus {
   failures?: number;
 }
 
+/** The reason of a run the owner started with My Work's Refresh. */
+export const OWNER_REFRESH_REASON: 'manual';
+
 /** Milliseconds between scheduled checks for a CLAUDE_MEM_WORK_VIEW_REFRESH_INTERVAL_MIN value; invalid input gives ten minutes. */
 export function refreshIntervalMs(minutes: string | number | null | undefined): number;
 

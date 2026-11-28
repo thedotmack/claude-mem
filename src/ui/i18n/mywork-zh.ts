@@ -253,6 +253,7 @@ export const myworkZh: Record<string, string> = {
   'Moved “{title}” to {area}': '已将“{title}”移至 {area}',
   'the request': '该请求',
   'the area': '该区域',
+  'the sub focus': '该子焦点',
   'Put “{name}” back in Suggested': '已将“{name}”放回建议',
   'Wireframe: kept on this page only, not actually written.': '线框原型：仅保留在当前页面，未实际写入。',
   'Saved in your cloud viewer; it syncs to your computers. A refresh never overrides it.': '已保存在您的云端查看器中；将同步到您的各台电脑。刷新绝不会覆盖它。',

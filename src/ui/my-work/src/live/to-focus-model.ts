@@ -1,5 +1,5 @@
-// My Focus from the snapshot: the my-focus areas (focusAreas), each request's placement (humanRequests[].focusAreaId),
-// and the owner-goals words behind each area and ask. Pure, so `node --test` can load it; nothing is re-ranked by
+// My Focus from the snapshot: the my-focus areas (focusAreas) with their sub focuses, each request's placement
+// (humanRequests[].focusAreaId and subFocusId), and the owner-goals words behind each area and ask. Pure, so `node --test` can load it; nothing is re-ranked by
 // guesswork: the owner's order wins, then the suggested priority, the same order the worker sorts by (my-focus.mjs).
 import { OTHER_FOCUS_AREA_ID, type FocusArea, type FocusAsk, type FocusChange, type Quote } from '../data.ts'
 import type { WorkViewFocusArea } from './work-view-api-types.ts'
@@ -115,6 +115,7 @@ export function toFocusModel(raw: readonly WorkViewFocusArea[] | undefined, mine
     id: area.focusAreaId, name: area.name, goal: area.goal, about: area.about ?? null, status: area.status,
     ownerRank: area.ownerRank, priorityRank: area.priorityRank, source: area.source,
     mergedInto: area.mergedInto, evidence: area.evidence, doneAt: area.doneAt ?? null,
+    subFocuses: (area.subFocuses ?? []).map((subFocus) => ({ id: subFocus.subFocusId, name: subFocus.name, decidedBy: subFocus.decidedBy })),
     timesAsked: null, latestAt: null, quotes: [], asks: [],
   })).sort(byFocusPriority)
   const resolveArea = createFocusAreaResolver(areas)

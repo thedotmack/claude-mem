@@ -4,7 +4,13 @@ export type FocusAreaStatus = 'suggested' | 'kept' | 'dismissed' | 'done';
 export type FocusAreaSource = 'owner-goals' | 'clustering' | 'promotion' | 'seed' | 'owner';
 /** 'owner-restore': the owner handed a decided area back to the system. */
 export type FocusAreaDecidedBy = 'owner' | 'system' | 'owner-restore';
+/** Who wrote a sub focus: the owner, or the system (a refresh). Once the owner has, the system's rows are ignored. */
+export type SubFocusDecidedBy = 'owner' | 'system';
+/** Who wrote a placement, of a request in an area or in a sub focus: the router (a refresh, a seed) or the owner. The owner's wins. */
+export type PlacementPlacedBy = 'router' | 'owner';
 export function isMyFocusList(name: unknown): boolean;
+/** One live sub focus of an area: a named group of related requests inside it (docs/design/focus-areas.md). */
+export interface SubFocus { subFocusId: string; name: string; decidedBy: SubFocusDecidedBy }
 export interface FocusArea {
   focusAreaId: string; name: string; goal: string | null;
   /** What belongs in the area, beyond its goal sentence; null when it was never written. */
@@ -13,12 +19,22 @@ export interface FocusArea {
   mergedInto: string | null; evidence: string | null; decidedBy: FocusAreaDecidedBy; savedAt: string | null;
   /** When the row that marked it done was written (ISO); null unless it is done. A later rename or goal edit keeps it. */
   doneAt: string | null;
+  /** Its live sub focuses in the order they were first written, those of areas merged into it included, and one that holds
+   * no request now included. */
+  subFocuses: SubFocus[];
 }
-export function focusAreaRowFields(area: Omit<FocusArea, 'savedAt' | 'doneAt' | 'about'> & { about?: string | null }): Record<string, string | number | null>;
+export function focusAreaRowFields(area: Omit<FocusArea, 'savedAt' | 'doneAt' | 'about' | 'subFocuses'> & { about?: string | null }): Record<string, string | number | null>;
 export function placementRowFields(placement: {
-  anchorConversationKey: string; focusAreaId: string; placedBy: 'router' | 'owner'; confidence?: number | null; basis?: string | null; evidence?: string | null;
+  anchorConversationKey: string; focusAreaId: string; placedBy: PlacementPlacedBy; confidence?: number | null; basis?: string | null; evidence?: string | null;
+}): Record<string, string | number | null>;
+export function subFocusRowFields(subFocus: { subFocusId: string; focusAreaId: string; name: string; decidedBy: SubFocusDecidedBy; mergedInto: string | null }): Record<string, string | number | null>;
+/** subFocusId null: the request sits in no sub focus of the area (ungrouped). */
+export function subFocusPlacementRowFields(placement: {
+  anchorConversationKey: string; subFocusId: string | null; focusAreaId: string; placedBy: PlacementPlacedBy;
 }): Record<string, string | number | null>;
 export function newFocusAreaId(): string;
+export function newSubFocusId(): string;
+export const SUB_FOCUS_MIN_REQUESTS: 2;
 export interface MinedFocusArea { name: string; goal: string; rank: number; matches: string | null; evidence: string }
 export function ownerGoalsSaveKey(areas: MinedFocusArea[], nonce?: string): string;
 export function ownerGoalsAreaRows(minedAreas: MinedFocusArea[], savedAreas: FocusArea[], newId?: (index: number) => string, retry?: { key: string; scope: string }): {
@@ -32,6 +48,15 @@ export function buildFocusAreas(state: unknown, options?: { localDeviceId?: stri
   resolveFocusAreaId: (focusAreaId: string) => string | null;
   /** Which router-placed Other requests the last proposal pass looked at (hash), or null before the first pass. */
   otherPassHash: string | null;
+  /** Each placed request's live sub focus in the area it is in now; absent when it has none there. */
+  subFocusIdByAnchor: Map<string, string>;
+  /** The sub focus decision that holds for a request in an area (subFocusId null: ungrouped), or null when none does. A
+   * decision made in an area merged into this one holds here. */
+  subFocusPlacementFor: (anchorConversationKey: string, focusAreaId: string | null | undefined) => { placedBy: PlacementPlacedBy; subFocusId: string | null } | null;
+  /** Each area's last sub focus pass on this computer: which of its requests that pass looked at (hash). */
+  subFocusPassHashes: Map<string, string | null>;
+  /** Each area's last failed sub focus pass on this computer: which of its requests it failed on (hash); an answered pass clears it. */
+  subFocusFailedHashes: Map<string, string | null>;
 };
 export const PROPOSAL_SOURCES: Readonly<{ new: 'clustering'; promote: 'promotion' }>;
 export const PROPOSAL_KINDS: ReadonlyArray<'new' | 'promote'>;
@@ -52,14 +77,27 @@ export interface RouterFocusBody {
   }>;
   /** Set after a pass over Other: the Other requests that pass looked at. */
   otherPassHash?: string | null;
+  /** One sub focus answer for one kept area (request-groups.mjs validateSubFocusAnswer). */
+  subFocus?: RouterSubFocusBody | null;
 }
-export function routerFocusRows(body: RouterFocusBody, savedAreas: FocusArea[], newId?: (index: number) => string): {
+export interface RouterSubFocusBody {
+  focusAreaId: string;
+  /** New sub focuses, each of SUB_FOCUS_MIN_REQUESTS or more requests. */
+  newSubFocuses: Array<{ name: string; anchorConversationKeys: string[] }>;
+  /** Requests placed in one of the area's live sub focuses, or in none (subFocusId null: ungrouped). */
+  placements: Array<{ anchorConversationKey: string; subFocusId: string | null }>;
+  /** Set on the last part of an area's pass: the requests that pass looked at. */
+  passHash: string | null;
+  /** Set instead when the area's pass failed: the requests it failed on. No scheduled refresh asks the area again until they change. */
+  failedPassHash?: string | null;
+}
+export function routerFocusRows(body: RouterFocusBody, savedAreas: FocusArea[], newId?: (index: number) => string, newSubId?: (index: number) => string): {
   rows: Array<Record<string, string | number | null>>; focusAreaIds: string[]; placed: number;
 };
 export function anchorConversationKeyFor(request: { groupId?: string | null; conversationKey?: string | null }, ledger: unknown): string | null;
 export function placeRequests<T extends { groupId?: string | null; conversationKey?: string | null }>(
-  humanRequests: T[], focusAreaIdByAnchor: Map<string, string>, ledger: unknown,
-): Array<T & { anchorConversationKey: string | null; focusAreaId?: string }>;
+  humanRequests: T[], focusAreaIdByAnchor: Map<string, string>, ledger: unknown, subFocusIdByAnchor?: Map<string, string>,
+): Array<T & { anchorConversationKey: string | null; focusAreaId?: string; subFocusId?: string }>;
 export function isOwnerDismissedArea(area: Pick<FocusArea, 'status' | 'decidedBy'>): boolean;
 export function isWithdrawnArea(area: Pick<FocusArea, 'status' | 'decidedBy'>): boolean;
 export const SEED_EVIDENCE_PREFIX: 'Seed: ';
@@ -77,7 +115,7 @@ export interface SeedFocusBody {
 export function seedFocusRows(seed: SeedFocusBody, focus: FocusState, newId?: (index: number) => string): {
   rows: Array<Record<string, string | number | null>>; focusAreaIds: Record<string, string>; created: string[];
   placed: Array<{ anchorConversationKey: string; focusAreaId: string; basis: string }>;
-  skipped: Array<{ anchorConversationKey: string; placedBy: 'owner' | 'router'; focusAreaId: string }>;
+  skipped: Array<{ anchorConversationKey: string; placedBy: PlacementPlacedBy; focusAreaId: string }>;
 };
 /** What one seed wrote, from its note (POST /api/work-view/focus/seed, action undo). */
 export interface SeedUndoBody { focusAreaIds: string[]; placements: Array<{ anchorConversationKey: string; focusAreaId: string; basis: string }> }

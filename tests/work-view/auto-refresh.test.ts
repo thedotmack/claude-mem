@@ -5,8 +5,10 @@ import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AutoRefreshWorker, refreshIntervalMs } from '../../src/services/work-view/auto-refresh-worker.mjs';
-import { buildRefreshTask, decidedTextLanguage, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, resolveRefreshAgents, resolveStepModels, reviewConcurrency, STEP_MODEL_SETTINGS, STEP_MODELS, TITLE_ANSWER_SCHEMA } from '../../src/services/work-view/refresh-task.js';
+import { AutoRefreshWorker, OWNER_REFRESH_REASON, refreshIntervalMs } from '../../src/services/work-view/auto-refresh-worker.mjs';
+import { ApiProviderError } from '../../src/services/agent-runner/api-agent.js';
+import { buildRefreshTask, decidedTextLanguage, FOCUS_ANSWER_SCHEMA, GROUPING_ANSWER_SCHEMA, resolveRefreshAgents, resolveStepModels, reviewConcurrency, STEP_MODEL_SETTINGS, STEP_MODELS, SUB_FOCUS_ANSWER_SCHEMA, TITLE_ANSWER_SCHEMA } from '../../src/services/work-view/refresh-task.js';
+import { focusAreaRowFields, placementRowFields } from '../../src/services/work-view/my-focus.mjs';
 import { logger } from '../../src/utils/logger.js';
 import { cutOutputText, MAX_STREAM_CHARS } from '../../src/services/agent-runner/detect.js';
 import { groupIdFor, readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
@@ -854,6 +856,342 @@ describe('focus step', () => {
       const again = buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 0, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: writer.save });
       expect(await again.run(async prompt => { throw new Error(`Unexpected prompt: ${prompt.slice(-100)}`); }, 'codex')).toBe('Nothing was due.');
       expect(() => buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: false, unplaced: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database) } as any)).toThrow(/sync device id/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('sub focus step', () => {
+  /** Requests a.. (one conversation each, a from the fixture), every one moved by the owner into a kept area. */
+  function areas(database: Database, dir: string, byArea: Record<string, string[]>) {
+    const insert = database.prepare('INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch) VALUES (?, ?, ?, ?)');
+    const sessions = Object.values(byArea).flat().filter(session => session !== 'a');
+    const firstId = (database.prepare('SELECT MAX(id) AS id FROM sdk_sessions').get() as { id: number }).id + 1;
+    sessions.forEach((session, index) => {
+      database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(firstId + index, 'claude', session, `m${firstId + index}`, 'repo/tree', `Build feature ${session}`, NOW - 2 * DAY);
+      database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(firstId + index, 1, `Build feature ${session}`, NOW - 2 * DAY);
+    });
+    const decisions = join(dir, 'decisions.json');
+    writeFileSync(decisions, JSON.stringify({ groups: ['a', ...sessions].map(session => ({ title: `Request ${session}`, conversations: [key(session)] })) }));
+    runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
+    Object.entries(byArea).forEach(([focusAreaId, members], rank) => {
+      insert.run('home', 'my-focus', JSON.stringify(focusAreaRowFields({ focusAreaId, name: focusAreaId.slice(3), goal: `Ship ${focusAreaId.slice(3)}.`, status: 'kept', priorityRank: rank + 1, ownerRank: rank + 1, source: 'owner', mergedInto: null, evidence: null, decidedBy: 'owner' })), 4);
+      for (const session of members) insert.run('home', 'my-focus', JSON.stringify(placementRowFields({ anchorConversationKey: key(session), focusAreaId, placedBy: 'owner', evidence: 'Moved by you in My Work.' })), 5);
+    });
+  }
+  const runCliOutput = (database: Database, dir: string, argv: string[]) => {
+    let output: any;
+    runCli(argv, { dir, database, now: NOW, print: value => { output = value; }, localDeviceId: '' });
+    return output;
+  };
+  const subFocusInputFrom = (prompt: string) => JSON.parse(/```json\n([\s\S]*?)\n```/.exec(prompt.slice(prompt.indexOf('Do only section 6')))![1]);
+  const isSubFocusPass = (prompt: string) => prompt.includes('Do only section 6');
+  const refresh = (database: Database, dir: string, writer = focusWriter(database)) => buildRefreshTask({ localDeviceId: () => '', needs: { due: 0, ungrouped: 0, goalsStale: false, unplaced: 0, otherChanged: false, subFocusDue: 1, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, saveFocus: writer.save });
+  const otherwise = (prompt: string) => {
+    if (prompt.includes('Do only section 2')) return reviewAll(prompt);
+    if (prompt.includes('Do only section 5')) return JSON.stringify({ narrative: 'Started.', preferences: [] });
+    throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
+  };
+
+  it('groups each kept area of 4 or more once, on the light model; an area of 3 is never asked, and an unchanged area is not asked again', async () => {
+    const dir = scratchDir('auto-refresh-sub-focus');
+    try {
+      const database = fixtureDatabase();
+      areas(database, dir, { fa_cards: ['a', 'b', 'c', 'd'], fa_docs: ['e', 'f', 'g'] });
+      const writer = focusWriter(database);
+      const asked: Array<{ prompt: string; models: unknown; schema: unknown }> = [];
+      let answers = 0;
+      const ask = async (prompt: string, models: unknown, schema?: unknown) => {
+        if (!isSubFocusPass(prompt)) return otherwise(prompt);
+        asked.push({ prompt, models, schema });
+        const input = subFocusInputFrom(prompt);
+        expect(JSON.parse(readFileSync(/also saved in (.+?\.json)/.exec(prompt)![1], 'utf8'))).toEqual(input);
+        expect(input).toMatchObject({ area: { focusAreaId: 'fa_cards', name: 'cards', goal: 'Ship cards.' }, subFocuses: [] });
+        expect(input.requests.map((request: any) => request.anchor)).toEqual([key('a'), key('b'), key('c'), key('d')]);
+        expect(prompt).toContain(`Decide each of these 4 requests exactly once, by its "anchor", in "groups", "newGroups" or "ungrouped": ${[key('a'), key('b'), key('c'), key('d')].join(', ')}.`);
+        // Both answers leave d out: refused once with the reason, then saved with d ungrouped (#6432).
+        if (answers++ === 1) expect(prompt).toMatch(/Your previous answer was refused: Decide every request asked about/);
+        return JSON.stringify({ groups: [], newGroups: [{ name: 'Card layout', anchors: [key('a'), key('b')] }], ungrouped: [key('c')] });
+      };
+      expect(await refresh(database, dir, writer).run(ask, 'codex')).toBe('7 requests reviewed, 1 focus areas sorted into sub focuses (2 requests grouped, 1 sub focuses suggested), story written.');
+      expect(asked).toHaveLength(2);
+      for (const step of asked) { expect(step.models).toBe(STEP_MODELS.focus); expect(step.schema).toBe(SUB_FOCUS_ANSWER_SCHEMA); }
+      expect(writer.bodies).toHaveLength(1);
+      const saved = readFocus(database, { localDeviceId: '' });
+      const cards = saved.focusAreas.find(area => area.focusAreaId === 'fa_cards')!;
+      expect(cards.subFocuses.map(subFocus => [subFocus.name, subFocus.decidedBy])).toEqual([['Card layout', 'system']]);
+      expect([key('a'), key('b'), key('c'), key('d')].map(anchor => saved.subFocusIdByAnchor.get(anchor))).toEqual([cards.subFocuses[0].subFocusId, cards.subFocuses[0].subFocusId, undefined, undefined]);
+      expect(saved.subFocusPlacementFor(key('d'), 'fa_cards')).toEqual({ placedBy: 'router', subFocusId: null });
+      expect(saved.focusAreas.find(area => area.focusAreaId === 'fa_docs')!.subFocuses).toEqual([]);
+      // Nothing changed: no area is asked about again.
+      expect(await refresh(database, dir, writer).run(async prompt => otherwise(prompt), 'codex')).toBe('Nothing was due.');
+      // A request joins Cards: the area is asked again, keeping its sub focus and deciding only what is not grouped.
+      areas(database, dir, { fa_cards: ['h'] });
+      asked.length = 0;
+      const again = async (prompt: string, models: unknown, schema?: unknown) => {
+        if (!isSubFocusPass(prompt)) return otherwise(prompt);
+        asked.push({ prompt, models, schema });
+        const input = subFocusInputFrom(prompt);
+        expect(input.subFocuses).toEqual([{ subFocusId: cards.subFocuses[0].subFocusId, name: 'Card layout', members: [key('a'), key('b')].map((anchor, index) => ({ anchor, title: `Request ${'ab'[index]}`, summary: 'Started.' })) }]);
+        expect(input.requests.map((request: any) => request.anchor)).toEqual([key('c'), key('d'), key('h')]);
+        return JSON.stringify({ groups: [{ subFocusId: cards.subFocuses[0].subFocusId, anchors: [key('h')] }], newGroups: [], ungrouped: [key('c'), key('d')] });
+      };
+      expect(await refresh(database, dir, writer).run(again, 'codex')).toContain('1 focus areas sorted into sub focuses (1 requests grouped, 0 sub focuses suggested)');
+      expect(asked).toHaveLength(1);
+      expect(readFocus(database, { localDeviceId: '' }).subFocusIdByAnchor.get(key('h'))).toBe(cards.subFocuses[0].subFocusId);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  /** The worker's scheduler around the real refresh: each check reads what is due (refreshNeeds) and runs the refresh with
+   * the job's needs and reason, as defaultAutoRefresh does. */
+  const scheduler = (database: Database, dir: string, ask: (prompt: string) => Promise<string>, clock: { now: number }, writer = focusWriter(database)) => new AutoRefreshWorker({
+    localDeviceId: () => '', dir, openDatabase: handle(database), now: () => clock.now,
+    runJob: async ({ needs, reason }) => {
+      const task = buildRefreshTask({ localDeviceId: () => '', needs, reason, dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => clock.now, saveFocus: writer.save });
+      try { return { state: 'ok', agent: 'codex', result: await task.run(ask, 'codex'), error: null }; }
+      catch (error) { return { state: 'failed', agent: 'codex', result: null, error: (error as Error).message }; }
+    },
+  });
+  const HOUR = DAY / 24;
+  const ungroupAll = (prompt: string) => JSON.stringify({ groups: [], newGroups: [], ungrouped: subFocusInputFrom(prompt).requests.map((request: any) => request.anchor) });
+
+  it('a failed sub focus answer does not fail the reviews already saved or another area, and the next scheduled refresh does not ask that area again until its requests change', async () => {
+    const dir = scratchDir('auto-refresh-sub-focus-fail');
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW).toISOString());
+      areas(database, dir, { fa_cards: ['a', 'b', 'c', 'd'], fa_docs: ['e', 'f', 'g', 'h'] });
+      const writer = focusWriter(database);
+      const areasAsked: string[] = [];
+      let cardsFails = true;
+      const ask = async (prompt: string) => {
+        if (!isSubFocusPass(prompt)) return otherwise(prompt);
+        const input = subFocusInputFrom(prompt);
+        areasAsked.push(input.area.focusAreaId);
+        // Cards is answered with no JSON at all, on the first ask and the retry.
+        if (input.area.focusAreaId === 'fa_cards') return cardsFails ? 'I could not decide.' : ungroupAll(prompt);
+        return JSON.stringify({ groups: [], newGroups: [{ name: 'Guides', anchors: [key('e'), key('f')] }], ungrouped: [key('g'), key('h')] });
+      };
+      const error = await refresh(database, dir, writer).run(ask, 'codex').then(() => null, failure => failure as Error);
+      expect(error?.message).toMatch(/^focus \(raw answer: .+failed-answers.+-focus-codex\.txt\): The answer held no JSON object/);
+      expect((error as { answerRefused?: boolean }).answerRefused).toBe(true);
+      expect(areasAsked).toEqual(['fa_cards', 'fa_cards', 'fa_docs']);
+      // The reviews were saved and the story written before the failure was reported.
+      expect(Object.keys(readLedger(dir).progress)).toHaveLength(8);
+      expect(readLedger(dir).story.narrative).toBe('Started.');
+      const saved = readFocus(database, { localDeviceId: '' });
+      expect(saved.focusAreas.find(area => area.focusAreaId === 'fa_docs')!.subFocuses.map(subFocus => subFocus.name)).toEqual(['Guides']);
+      // Cards is recorded as failed on the requests it was asked about, never as answered.
+      expect([...saved.subFocusPassHashes.keys()]).toEqual(['fa_docs']);
+      expect([...saved.subFocusFailedHashes]).toEqual([['fa_cards', expect.stringMatching(/^[0-9a-f]{16}$/)], ['fa_docs', null]]);
+      expect(writer.bodies.filter(body => body.subFocus?.failedPassHash).map(body => body.subFocus)).toEqual([{ focusAreaId: 'fa_cards', newSubFocuses: [], placements: [], passHash: null, failedPassHash: saved.subFocusFailedHashes.get('fa_cards') }]);
+      // Later scheduled checks, with the same requests in Cards: nothing is due, so no run starts and Cards is not asked.
+      const clock = { now: NOW + HOUR };
+      const worker = scheduler(database, dir, ask, clock, writer);
+      areasAsked.length = 0;
+      for (let check = 0; check < 3; check++, clock.now += HOUR) expect(await worker.check()).toBe('idle');
+      expect(worker.status()!.needs).toMatchObject({ subFocusDue: 0, subFocusFailed: 1, needed: false });
+      expect(areasAsked).toEqual([]);
+      // A request joins Cards: a new set, so the next scheduled check asks Cards again, with every request it holds.
+      areas(database, dir, { fa_cards: ['i'] });
+      cardsFails = false;
+      expect(await worker.check()).toBe('ok');
+      expect(areasAsked).toEqual(['fa_cards']);
+      expect(worker.status()!.result).toContain('1 focus areas sorted into sub focuses (0 requests grouped, 0 sub focuses suggested)');
+      const after = readFocus(database, { localDeviceId: '' });
+      expect(after.subFocusPassHashes.has('fa_cards')).toBe(true);
+      expect(after.subFocusFailedHashes.get('fa_cards')).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a quota refusal is recorded as failed, never as answered: no scheduled check asks the unchanged area after the quota resets, and the owner\'s Refresh does', async () => {
+    const dir = scratchDir('auto-refresh-sub-focus-quota');
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW).toISOString());
+      areas(database, dir, { fa_cards: ['a', 'b', 'c', 'd'] });
+      const areasAsked: string[] = [];
+      let quotaLeft = false;
+      const ask = async (prompt: string) => {
+        if (!isSubFocusPass(prompt)) return otherwise(prompt);
+        areasAsked.push(subFocusInputFrom(prompt).area.focusAreaId);
+        if (!quotaLeft) throw new ApiProviderError('The selected API provider ran out of quota (HTTP 429).', 429);
+        return JSON.stringify({ groups: [], newGroups: [{ name: 'Card layout', anchors: [key('a'), key('b')] }], ungrouped: [key('c'), key('d')] });
+      };
+      const clock = { now: NOW };
+      const worker = scheduler(database, dir, ask, clock);
+      expect(await worker.check()).toBe('failed');
+      expect(worker.status()).toMatchObject({ reason: 'scheduled', failures: 1, error: expect.stringContaining('ran out of quota (HTTP 429)') });
+      // A refused call is never asked twice in the step (only a refused answer is), and nothing is grouped or answered.
+      expect(areasAsked).toEqual(['fa_cards']);
+      const saved = readFocus(database, { localDeviceId: '' });
+      expect(saved.focusAreas.find(area => area.focusAreaId === 'fa_cards')!.subFocuses).toEqual([]);
+      expect(saved.subFocusPassHashes.has('fa_cards')).toBe(false);
+      expect(saved.subFocusFailedHashes.get('fa_cards')).toMatch(/^[0-9a-f]{16}$/);
+      // The quota resets inside its 5-hour window and the checks go on past the back-off: none asks the unchanged area.
+      quotaLeft = true;
+      for (let check = 0; check < 4; check++) { clock.now += 2 * HOUR; expect(await worker.check()).toBe('idle'); }
+      // The setup scan is not the owner's Refresh, so it starts nothing for that area either.
+      expect(await worker.runNow({ reason: 'setup-scan' })).toBe('idle');
+      expect(areasAsked).toEqual(['fa_cards']);
+      // The owner presses Refresh: the area is asked again, and its answered pass clears the failure.
+      expect(await worker.runNow({ reason: OWNER_REFRESH_REASON })).toBe('ok');
+      expect(areasAsked).toEqual(['fa_cards', 'fa_cards']);
+      const answered = readFocus(database, { localDeviceId: '' });
+      expect(answered.focusAreas.find(area => area.focusAreaId === 'fa_cards')!.subFocuses.map(subFocus => subFocus.name)).toEqual(['Card layout']);
+      expect(answered.subFocusFailedHashes.get('fa_cards')).toBeNull();
+      clock.now += HOUR;
+      expect(await worker.check()).toBe('idle');
+      expect(areasAsked).toHaveLength(2);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  /** Reviews recorded before the run, with a summary far over the review bound for `long` (written into the progress file,
+   * as only a test can), so one area's question must be asked in parts; and a story written after them, so none is news. */
+  function reviewedBeforeTheRun(database: Database, dir: string, sessions: string[], long: string[]) {
+    const print = (value: any) => { shown = value; };
+    let shown: any;
+    for (const session of sessions) {
+      const groupId = groupIdFor(key(session));
+      runCli(['show', groupId], { dir, database, now: NOW, print });
+      const file = join(dir, `review-${session}.json`);
+      writeFileSync(file, JSON.stringify({ groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: shown.reviewBasis }));
+      runCli(['record-progress', file], { dir, database, now: NOW, print: () => {} });
+      if (!long.includes(session)) continue;
+      const path = join(dir, 'progress', `${groupId}.json`);
+      writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), summary: 'L'.repeat(200_000) }));
+    }
+    writeFileSync(join(dir, 'story.json'), JSON.stringify({ narrative: 'Started.', preferences: [], writtenAt: new Date(NOW + 1).toISOString() }));
+  }
+
+  it('a large area is asked in parts: only the last records the pass, a later part sees an earlier part\'s sub focus, and the pass is recorded on the first read\'s requests', async () => {
+    const dir = scratchDir('auto-refresh-sub-focus-parts');
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW).toISOString());
+      areas(database, dir, { fa_cards: ['a', 'b', 'c', 'd', 'e'], fa_docs: ['f'] });
+      // c and d are each about 200 KB in the question (inline and as its saved file): three requests fit the budget, four do not.
+      reviewedBeforeTheRun(database, dir, ['a', 'b', 'c', 'd', 'e', 'f'], ['c', 'd']);
+      const writer = focusWriter(database);
+      const firstRead = runCliOutput(database, dir, ['sub-focus-input', '--area', 'fa_cards']);
+      const parts: any[] = [];
+      const ask = async (prompt: string) => {
+        if (!isSubFocusPass(prompt)) return otherwise(prompt);
+        const input = subFocusInputFrom(prompt);
+        parts.push(input);
+        if (parts.length === 1) {
+          // The owner moves f into Cards while the run is under way: a new set, never asked about in this run.
+          database.prepare('INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch) VALUES (?, ?, ?, ?)').run('home', 'my-focus',
+            JSON.stringify(placementRowFields({ anchorConversationKey: key('f'), focusAreaId: 'fa_cards', placedBy: 'owner', evidence: 'Moved by you in My Work.' })), 6);
+          return JSON.stringify({ groups: [], newGroups: [{ name: 'Card layout', anchors: [key('a'), key('b')] }], ungrouped: [key('c')] });
+        }
+        return JSON.stringify({ groups: [{ subFocusId: input.subFocuses[0].subFocusId, anchors: [key('e')] }], newGroups: [], ungrouped: [key('d')] });
+      };
+      expect(await refresh(database, dir, writer).run(ask, 'codex')).toBe('1 focus areas sorted into sub focuses (3 requests grouped, 1 sub focuses suggested).');
+      expect(parts.map(input => input.requests.map((request: any) => request.anchor))).toEqual([[key('a'), key('b'), key('c')], [key('d'), key('e')]]);
+      // The second part lists the sub focus the first part made, with its members.
+      const cardLayout = readFocus(database, { localDeviceId: '' }).focusAreas.find(area => area.focusAreaId === 'fa_cards')!.subFocuses[0];
+      expect(parts[1].subFocuses).toEqual([{ subFocusId: cardLayout.subFocusId, name: 'Card layout', members: [key('a'), key('b')].map((anchor, index) => ({ anchor, title: `Request ${'ab'[index]}`, summary: 'Started.' })) }]);
+      // Only the last part records the pass, and on the requests the first read listed, not the set f joined.
+      expect(writer.bodies.map(body => body.subFocus!.passHash)).toEqual([null, firstRead.passHash]);
+      expect(parts[1].passHash).toBe(firstRead.passHash);
+      expect(runCliOutput(database, dir, ['sub-focus-input', '--area', 'fa_cards']).passHash).not.toBe(firstRead.passHash);
+      // So Cards is due again, and the next pass asks about f.
+      expect(runCliOutput(database, dir, ['sub-focus-input']).due).toEqual([{ focusAreaId: 'fa_cards', name: 'cards', requests: 6 }]);
+      const saved = readFocus(database, { localDeviceId: '' });
+      expect([key('a'), key('b'), key('e')].map(anchor => saved.subFocusIdByAnchor.get(anchor))).toEqual([cardLayout.subFocusId, cardLayout.subFocusId, cardLayout.subFocusId]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('when a later part fails, the area is recorded as failed on the first read\'s requests, and the earlier part\'s groups stand', async () => {
+    const dir = scratchDir('auto-refresh-sub-focus-parts-fail');
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW).toISOString());
+      areas(database, dir, { fa_cards: ['a', 'b', 'c', 'd', 'e'] });
+      reviewedBeforeTheRun(database, dir, ['a', 'b', 'c', 'd', 'e'], ['c', 'd']);
+      const writer = focusWriter(database);
+      const { passHash } = runCliOutput(database, dir, ['sub-focus-input', '--area', 'fa_cards']);
+      let asked = 0;
+      const ask = async (prompt: string) => {
+        if (!isSubFocusPass(prompt)) return otherwise(prompt);
+        if (++asked === 1) return JSON.stringify({ groups: [], newGroups: [{ name: 'Card layout', anchors: [key('a'), key('b')] }], ungrouped: [key('c')] });
+        return 'I could not decide.';
+      };
+      const error = await refresh(database, dir, writer).run(ask, 'codex').then(() => null, failure => failure as Error);
+      expect(error?.message).toMatch(/^focus \(raw answer: .+\): The answer held no JSON object/);
+      // The first part, then the second and its retry.
+      expect(asked).toBe(3);
+      expect(writer.bodies.map(body => [body.subFocus!.passHash, body.subFocus!.failedPassHash ?? null])).toEqual([[null, null], [null, passHash]]);
+      const saved = readFocus(database, { localDeviceId: '' });
+      expect(saved.focusAreas[0].subFocuses.map(subFocus => subFocus.name)).toEqual(['Card layout']);
+      expect([key('a'), key('b')].map(anchor => saved.subFocusIdByAnchor.get(anchor))).toEqual([saved.focusAreas[0].subFocuses[0].subFocusId, saved.focusAreas[0].subFocuses[0].subFocusId]);
+      expect(saved.subFocusPassHashes.has('fa_cards')).toBe(false);
+      expect(saved.subFocusFailedHashes.get('fa_cards')).toBe(passHash);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a failed area placement does not skip the sub focus step, and the run names both failures', async () => {
+    const dir = scratchDir('auto-refresh-sub-focus-own-step');
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW).toISOString());
+      areas(database, dir, { fa_cards: ['a', 'b', 'c', 'd'], fa_docs: ['e', 'f', 'g', 'h'] });
+      // i is a request not placed in any area yet, so the focus step must place it.
+      database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(20, 'claude', 'i', 'm20', 'repo/tree', 'Build feature i', NOW - 2 * DAY);
+      database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(20, 1, 'Build feature i', NOW - 2 * DAY);
+      writeFileSync(join(dir, 'decisions-i.json'), JSON.stringify({ groups: [{ title: 'Request i', conversations: [key('i')] }] }));
+      runCli(['apply', join(dir, 'decisions-i.json')], { dir, database, now: NOW, print: () => {} });
+      const writer = focusWriter(database);
+      const areasAsked: string[] = [];
+      const ask = async (prompt: string) => {
+        // Every placing answer names an area that does not exist: refused twice, so the area placement fails.
+        if (prompt.includes('Do only section 4')) return JSON.stringify({ placements: [{ anchor: key('i'), focusAreaId: 'fa_made_up', evidence: 'x' }], proposals: [] });
+        if (!isSubFocusPass(prompt)) return otherwise(prompt);
+        const input = subFocusInputFrom(prompt);
+        areasAsked.push(input.area.focusAreaId);
+        if (input.area.focusAreaId === 'fa_docs') return 'I could not decide.';
+        return JSON.stringify({ groups: [], newGroups: [{ name: 'Card layout', anchors: [key('a'), key('b')] }], ungrouped: [key('c'), key('d')] });
+      };
+      const error = await refresh(database, dir, writer).run(ask, 'codex').then(() => null, failure => failure as Error);
+      expect(error).toBeInstanceOf(AggregateError);
+      expect(error!.message).toMatch(/placements\[0\] names "fa_made_up", which is not a listed focus area.* · focus \(raw answer: .+\): The answer held no JSON object/);
+      expect(areasAsked).toEqual(['fa_cards', 'fa_docs', 'fa_docs']);
+      const saved = readFocus(database, { localDeviceId: '' });
+      expect(saved.focusAreaIdByAnchor.has(key('i'))).toBe(false);
+      expect(saved.focusAreas.find(area => area.focusAreaId === 'fa_cards')!.subFocuses.map(subFocus => subFocus.name)).toEqual(['Card layout']);
+      expect(saved.subFocusPassHashes.has('fa_cards')).toBe(true);
+      expect(saved.subFocusFailedHashes.get('fa_docs')).toMatch(/^[0-9a-f]{16}$/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('reports each new sub focus the retry dropped in the result line, as the focus step reports its drops', async () => {
+    const dir = scratchDir('auto-refresh-sub-focus-dropped');
+    try {
+      const database = fixtureDatabase();
+      areas(database, dir, { fa_cards: ['a', 'b', 'c', 'd'] });
+      const writer = focusWriter(database);
+      // Both answers name a new group over the 80-character cap; the retry drops it and keeps the rest.
+      const ask = async (prompt: string) => isSubFocusPass(prompt)
+        ? JSON.stringify({ groups: [], newGroups: [{ name: 'x'.repeat(81), anchors: [key('a'), key('b')] }, { name: 'Card copy', anchors: [key('c'), key('d')] }], ungrouped: [] })
+        : otherwise(prompt);
+      expect(await refresh(database, dir, writer).run(ask, 'codex')).toBe('4 requests reviewed, 1 focus areas sorted into sub focuses (2 requests grouped, 1 sub focuses suggested), 1 refused new sub focuses dropped after retry, story written.');
+      const saved = readFocus(database, { localDeviceId: '' });
+      expect(saved.focusAreas[0].subFocuses.map(subFocus => subFocus.name)).toEqual(['Card copy']);
+      expect(saved.subFocusPlacementFor(key('a'), 'fa_cards')).toEqual({ placedBy: 'router', subFocusId: null });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('an area whose requests the owner placed records its pass with no question', async () => {
+    const dir = scratchDir('auto-refresh-sub-focus-owner');
+    try {
+      const database = fixtureDatabase();
+      areas(database, dir, { fa_cards: ['a', 'b', 'c', 'd'] });
+      const insert = database.prepare('INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch) VALUES (?, ?, ?, ?)');
+      for (const session of ['a', 'b', 'c', 'd']) insert.run('home', 'my-focus', JSON.stringify({ task: `Sub focus placement: ${key(session)}`, anchor_conversation_key: key(session), sub_focus_id: null, focus_area_id: 'fa_cards', placed_by: 'owner' }), 6);
+      const writer = focusWriter(database);
+      expect(await refresh(database, dir, writer).run(async prompt => otherwise(prompt), 'codex')).toBe('4 requests reviewed, story written.');
+      expect(writer.bodies.map(body => body.subFocus)).toEqual([{ focusAreaId: 'fa_cards', newSubFocuses: [], placements: [], passHash: expect.stringMatching(/^[0-9a-f]{16}$/) }]);
+      expect(readFocus(database, { localDeviceId: '' }).subFocusPassHashes.has('fa_cards')).toBe(true);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
