@@ -9,15 +9,16 @@ import type { Section, ViewState } from '../store/store-types.ts'
  * refresh banner before it (a focus area's page draws it in its own header); Machine and sync shows the review itself.
  * `crumb`: the page it was reached from, over its title; `groupedCrumb`: the same while the page is grouped (`?by=`:
  * Requests by agent is reached from Requests' list, Codex's by-agent page). `headingFocusTarget`: the h1 is the view's
- * heading, where focus goes when what had it leaves the page (components/app-shell.tsx ShellFrame).
+ * heading, where focus goes when what had it leaves the page (components/app-shell.tsx ShellFrame); a focus area's page
+ * (`work` with an area) has its own in its header instead.
  */
 export interface PageFrame { compact?: true; reviewLine?: true; crumb?: Section; groupedCrumb?: Section; headingFocusTarget?: true }
 
 export const PAGE_FRAME: Record<Section, PageFrame> = {
-  work: { reviewLine: true },
-  focus: { reviewLine: true },
+  work: { reviewLine: true, headingFocusTarget: true },
+  focus: { reviewLine: true, headingFocusTarget: true },
   requests: { compact: true, reviewLine: true, groupedCrumb: 'requests', headingFocusTarget: true },
-  'build-story': { reviewLine: true },
+  'build-story': { reviewLine: true, headingFocusTarget: true },
   suggested: { reviewLine: true },
   'past-focus': { reviewLine: true },
   rules: { reviewLine: true },

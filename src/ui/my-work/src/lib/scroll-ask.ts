@@ -1,8 +1,13 @@
 // Runs one scroll ask from the store (view.scrollAsk) once its page has drawn: App.tsx calls it after each move.
 import type { ScrollTarget } from '@/store'
 
-/** What a person does that ends the hold on a position: from then on the page is theirs to scroll. */
-const PERSON_INPUT = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const
+/**
+ * What a person does that ends the hold on a position: from then on the page is theirs to scroll. A click counts on its
+ * own: assistive technology activates a control with a click and no press or key before it, and the hold then undid
+ * whatever scrolled the page next (Review Stack's browser test, which presses that way: its swipe landed on the page
+ * the hold had scrolled back, design pass Phase 6 fixes).
+ */
+const PERSON_INPUT = ['wheel', 'touchstart', 'pointerdown', 'keydown', 'click'] as const
 
 /**
  * Scrolls to `target` and returns the stop. A new page goes to its top, Requests and Focus areas to their boards, and

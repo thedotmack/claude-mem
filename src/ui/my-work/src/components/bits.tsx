@@ -224,18 +224,13 @@ export function StateWords({ state }: { state: LiveState }) {
  * ring and no link look, until the next refresh places it (it read "Sorting…", italic at 80%, like a broken label).
  * Color is reserved for state, so neither is coloured. 44px on touch through the Button's own rule: its 24px desktop
  * minimum applies only where that rule does not (a plain min-h utility comes after touch-target-size in the stylesheet
- * and beat its 44px, V3). The unplaced words are the focus model's one definition (NOT_SORTED_YET_LABEL). Where the chip
- * can wrap (a card, the drawer, the List rows' facts line) they wrap in a narrow row instead of being cut (plan rule 5: a
- * cut must say what it hides, and these three words hide nothing), and they keep the placed link's heights through the
- * same touch rule, so the header does not change height when the next refresh places the request.
- *
- * `layout="line"` is a row that keeps one line (the List table's Request cell, whose cells do not wrap): there the
- * unplaced words are cut the way a placed area's name is, down to the cell's floor, its mark, a letter and a whole
- * ellipsis ("○ N…"; pages/requests.tsx ListTableRow sets the floor), the whole words in the row's hover text and, uncut
- * in the page, for screen readers. Built to wrap, they were clipped mid-word with no ellipsis there, "○ Not so" (owner's
- * data at 1366 and 1440, Phase 6 re-verify).
+ * and beat its 44px, V3). The unplaced words are the focus model's one definition (NOT_SORTED_YET_LABEL). They wrap in a
+ * narrow row instead of being cut (plan rule 5: a cut must say what it hides, and these three words hide nothing), and
+ * they keep the placed link's heights through the same touch rule, so the header does not change height when the next
+ * refresh places the request. (The List table, whose cells keep one line, draws only a focus area's own requests since
+ * design pass Phase 6, so it never shows these words.)
  */
-export function FocusAreaChip({ focusAreaId, onOpen, layout = 'wrap' }: { focusAreaId?: string; onOpen?: (focusAreaId: string) => void; layout?: 'wrap' | 'line' }) {
+export function FocusAreaChip({ focusAreaId, onOpen }: { focusAreaId?: string; onOpen?: (focusAreaId: string) => void }) {
   const { t } = useI18n()
   const { focusAreas } = useWorkModel()
   const placed = resolveFocusAreaId(focusAreaId, focusAreas)
@@ -251,7 +246,7 @@ export function FocusAreaChip({ focusAreaId, onOpen, layout = 'wrap' }: { focusA
       ) : (
         <span data-focus-area="not-sorted" className="inline-flex min-w-0 items-center gap-1.5 self-start text-xs text-muted-foreground touch-target-size md:not-pointer-coarse:min-h-6">
           <CircleDashedIcon aria-hidden="true" className="size-3.5 shrink-0" />
-          <span className={cn('min-w-0', layout === 'line' ? 'truncate' : 'break-words')}>{t(NOT_SORTED_YET_LABEL)}</span>
+          <span className="min-w-0 break-words">{t(NOT_SORTED_YET_LABEL)}</span>
         </span>
       )}
     </Req>
@@ -534,7 +529,7 @@ export function WorkReadFailureAlert({ title, description, cause }: { title: str
 /**
  * The work model could not be read from the worker's records (sourceHealth): plain words, the worker's own message
  * folded under Details in monospace, and Try again (G17; it printed the raw message as the description). The home page
- * and Requests show it first (pages/my-work.tsx, pages/requests.tsx).
+ * and Requests show it first (pages/my-work.tsx, pages/requests.tsx), and so do Focus areas and a focus area's page.
  */
 export function SourceReadAlert({ error }: { error: string | null }) {
   const { t } = useI18n()

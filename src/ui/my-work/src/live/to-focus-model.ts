@@ -31,7 +31,7 @@ export const byFocusPriority = (a: FocusArea, b: FocusArea) =>
 /**
  * A suggested area asks the owner to keep or dismiss it, so its header (components/focus-header.tsx) holds the screen's
  * one solid orange button, Keep (G1: one primary per screen). The one rule: the header draws Keep and Dismiss by it,
- * and a focus page's summary (pages/my-work.tsx) asks it before giving Reply the orange.
+ * and a focus page's summary (pages/focus-area.tsx) asks it before giving Reply the orange.
  */
 export const asksToKeepOrDismiss = (area: Pick<FocusArea, 'status'>) => area.status === 'suggested'
 

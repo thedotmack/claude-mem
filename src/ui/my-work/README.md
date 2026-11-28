@@ -18,7 +18,9 @@ npm run coverage   # checks every UI requirement is on screen, writes COVERAGE.m
 
 | Screen | File | AI Elements used |
 | --- | --- | --- |
-| My Work: one-line summary, Cards, List, By agent, Team, then today's story | `src/pages/my-work.tsx` | — |
+| My Work (home): what waits on you, the lead request, the others beside it, the first three focus areas | `src/pages/my-work.tsx`, lead choice in `src/live/home-lead.ts` | — |
+| A focus area's page: its header, main card, Cards, List, By agent, Team, then the build story's recap | `src/pages/focus-area.tsx` | — |
+| Focus areas: the focus area board (until design pass Phase 7), with the last focus change and its Undo | `src/pages/focus-areas.tsx` | — |
 | Requests: status tabs, one line per request, By agent, Team | `src/pages/requests.tsx` | — |
 | Request card, including the terminal-to-human transform | `src/components/request-card.tsx` | Terminal, Shimmer |
 | Request page: next move first, layers collapsed | `src/components/request-detail.tsx` | Chain of Thought, Task, Queue |

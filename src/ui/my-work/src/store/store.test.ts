@@ -654,7 +654,8 @@ describe('where the person is', () => {
       return { section: view.section, focusChoice: view.focusChoice, request: view.openRequest?.id ?? null, scrollAsk: view.scrollAsk?.target ?? null }
     }
     assert.deepEqual(at('http://localhost/#all-requests'), { section: 'requests', focusChoice: null, request: null, scrollAsk: null })
-    assert.deepEqual(at('http://localhost/#focus-areas'), { section: 'focus', focusChoice: null, request: null, scrollAsk: { to: 'element', elementId: 'focus-areas' } })
+    // Focus areas is a page of its own (design pass Phase 6): it opens at its top, as every page does.
+    assert.deepEqual(at('http://localhost/#focus-areas'), { section: 'focus', focusChoice: null, request: null, scrollAsk: null })
     assert.deepEqual(at('http://localhost/?view=suggested'), { section: 'suggested', focusChoice: null, request: null, scrollAsk: null })
     assert.deepEqual(at('http://localhost/?view=past-focus'), { section: 'past-focus', focusChoice: null, request: null, scrollAsk: null })
     assert.deepEqual(at('http://localhost/?focus=fa-sync&request=r1'), { section: 'work', focusChoice: 'fa-sync', request: 'r1', scrollAsk: null })
@@ -677,14 +678,14 @@ describe('where the person is', () => {
     assert.deepEqual(['/?view=find', '/?view=workspace', '/?view=machine'].map((path) => marked(`http://localhost${path}`)), [null, null, null])
   })
 
-  it('a move scrolls its page once it has drawn: a new page from its top, Focus areas at its board', () => {
+  it('a move scrolls its page once it has drawn: every page from its top, Focus areas included', () => {
     const { store } = testStore({ href: 'http://localhost/?view=rules' })
     assert.equal(store.getState().view.scrollAsk, null, 'an address opened on a page asks for nothing')
     const asked = () => store.getState().view.scrollAsk
     store.getState().goToPage('requests')
     assert.deepEqual(asked(), { sequence: 1, target: { to: 'top' } }, 'Requests is a page of its own (design pass Phase 5)')
     store.getState().goToPage('focus')
-    assert.deepEqual(asked(), { sequence: 2, target: { to: 'element', elementId: 'focus-areas' } })
+    assert.deepEqual(asked(), { sequence: 2, target: { to: 'top' } }, 'Focus areas is a page of its own (design pass Phase 6)')
     store.getState().goToFocus('fa-sync')
     assert.deepEqual(asked(), { sequence: 3, target: { to: 'top' } })
     store.getState().goToPage('review-stack')
@@ -711,10 +712,10 @@ describe('where the person is', () => {
     assert.equal(store.getState().view.scrollAsk, before)
   })
 
-  it('a reload opens where the person left that entry scrolled, before the page\'s own board', () => {
+  it('a reload opens where the person left that entry scrolled, else at the page\'s top', () => {
     assert.deepEqual(testStore({ href: 'http://localhost/?view=requests', scrolledTo: 2400 }).store.getState().view.scrollAsk, { sequence: 1, target: { to: 'position', y: 2400 } })
     assert.deepEqual(testStore({ href: 'http://localhost/?view=rules', scrolledTo: 0 }).store.getState().view.scrollAsk, { sequence: 1, target: { to: 'position', y: 0 } })
-    assert.deepEqual(testStore({ href: 'http://localhost/?view=focus' }).store.getState().view.scrollAsk?.target, { to: 'element', elementId: 'focus-areas' }, 'a first visit opens at the board')
+    assert.equal(testStore({ href: 'http://localhost/?view=focus' }).store.getState().view.scrollAsk, null, 'Focus areas opens at its top, as the browser opens it')
     assert.equal(testStore({ href: 'http://localhost/?view=requests' }).store.getState().view.scrollAsk, null, 'Requests opens at its top')
   })
 

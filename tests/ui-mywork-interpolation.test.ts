@@ -279,7 +279,8 @@ for (const language of ['en', 'zh-CN']) {
     assert.equal(pageMessage(new URL('request-detail.tsx', components), 'Checked {checkedAt}.', { request: checked }, language),
       language === 'en' ? 'Checked $& {checked}.' : '已于 $& {checked} 检查。');
     const rule = { when: '$& {then}', then: '$$ {when}' };
-    assert.equal(pageMessage(new URL('my-work.tsx', pages), 'When {when}: {then}', { rule }, language),
+    // The build story sheet's learned rules (it moved out of the home page in design pass Phase 6).
+    assert.equal(pageMessage(new URL('build-story-sheet.tsx', components), 'When {when}: {then}', { rule }, language),
       language === 'en' ? `When ${rule.when}: ${rule.then}` : `当 ${rule.when} 时：${rule.then}`);
     assert.equal(pageMessage(new URL('suggested-areas.tsx', pages), 'Why it’s suggested: {reason}', {
       area: { quotes: [], evidence: '$& {reason}' }, SOURCE_TEXT: {},

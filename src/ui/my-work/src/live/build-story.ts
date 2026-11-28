@@ -1,4 +1,4 @@
-// The build story as My Work's recap and sheet draw it (pages/my-work.tsx TodayPanel, StorySheet): its chapters with
+// The build story as My Work's recap and sheet draw it (pages/focus-area.tsx TodayPanel, components/build-story-sheet.tsx StorySheet): its chapters with
 // their headings, the date at the front of a heading, and the three numbers both lead with. Pure, with .ts imports, so
 // `node --test` loads it and the worker's mapper can share the types.
 import { needsYou, type Request } from '../data.ts'

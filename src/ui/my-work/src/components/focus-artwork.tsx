@@ -9,8 +9,11 @@ import momentum from '@/assets/focus/momentum.webp'
 import wellbeing from '@/assets/focus/wellbeing.webp'
 import { useI18n } from '@/lib/i18n'
 
-/** Bundled concept illustrations. A render/refresh never makes a paid image-generation request. */
-function artworkFor(area: FocusArea) {
+/**
+ * An area's bundled concept illustration (the home page's cards draw it in a band of their own). A render or refresh
+ * never makes a paid image-generation request.
+ */
+export function focusArtworkFor(area: FocusArea) {
   const bySubject = (subject: string) => {
     if (/wellbeing|wellness|routine|health/.test(subject)) return wellbeing
     if (/metric|analytic|dashboard|cost|billing|pricing|budget/.test(subject)) return metrics
@@ -27,7 +30,7 @@ function artworkFor(area: FocusArea) {
 export function FocusArtwork({ area, priority = false }: { area: FocusArea; priority?: boolean }) {
   const { t } = useI18n()
   return <figure className="focus-artwork">
-    <img src={artworkFor(area)} alt="" width={1000} height={667} loading={priority ? 'eager' : 'lazy'} decoding="async" onError={(event) => { event.currentTarget.hidden = true }} />
+    <img src={focusArtworkFor(area)} alt="" width={1000} height={667} loading={priority ? 'eager' : 'lazy'} decoding="async" onError={(event) => { event.currentTarget.hidden = true }} />
     <figcaption>{t('Concept illustration')}</figcaption>
   </figure>
 }

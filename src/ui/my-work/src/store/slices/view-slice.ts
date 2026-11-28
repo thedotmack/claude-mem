@@ -80,15 +80,8 @@ export function requestsPlace(shown: RoutePlace, { by = null, status, area, clos
 /** Addresses from before the bar: the two places on the home page that had their own address are pages now. */
 const OLD_HOME_ANCHOR_PAGES: Record<string, Section> = { '#focus-areas': 'focus', '#all-requests': 'requests' }
 
-/**
- * Where a move to a page scrolls. Focus areas opens the home page at its focus area board until the design pass gives it
- * a page of its own (Phase 7); every other page from its top.
- */
-const PAGE_BOARD_ELEMENT: Partial<Record<Section, string>> = { focus: 'focus-areas' }
-const pageScroll = (section: Section): ScrollTarget => {
-  const elementId = PAGE_BOARD_ELEMENT[section]
-  return elementId ? { to: 'element', elementId } : { to: 'top' }
-}
+/** Where a move to a page scrolls: every page opens from its top (Focus areas is a page of its own since Phase 6). */
+const PAGE_TOP: ScrollTarget = { to: 'top' }
 
 /**
  * `?setup=1` is the installer handoff; `?view=` a page other than My Work; `?focus=` an area; `?request=` the open
@@ -175,10 +168,9 @@ export const createViewSlice = (environment: StoreEnvironment): SliceCreator<Vie
   let scrollAsks = 0
   const scrollAsk = (target: ScrollTarget) => ({ sequence: ++scrollAsks, target })
   // Where the page opens, once it has drawn (ask 1): where the person left this history entry scrolled, when they come
-  // back to it by a reload or by Back from another site; else Focus areas' board on the home page.
+  // back to it by a reload or by Back from another site; else where the browser opens it, at its top.
   const openedScrolledTo = environment.savedScrollY()
-  const openingScroll: ScrollTarget | null = openedScrolledTo !== null ? { to: 'position', y: openedScrolledTo }
-    : PAGE_BOARD_ELEMENT[route.section] ? pageScroll(route.section) : null
+  const openingScroll: ScrollTarget | null = openedScrolledTo !== null ? { to: 'position', y: openedScrolledTo } : null
 
   /**
    * Shows the next place and records it in the URL. Showing another section is counted with the section it left. A move
@@ -229,7 +221,7 @@ export const createViewSlice = (environment: StoreEnvironment): SliceCreator<Vie
     },
 
     goToPage: (page, options) => navigate({ section: page, ...NO_PAGE_DETAILS },
-      { scroll: options?.elementId ? { to: 'element', elementId: options.elementId } : pageScroll(page) }),
+      { scroll: options?.elementId ? { to: 'element', elementId: options.elementId } : PAGE_TOP }),
     goToFocus: (focusAreaId) => navigate({ section: 'work', ...NO_PAGE_DETAILS, focusChoice: focusAreaId, openRequest: null }, { scroll: { to: 'top' } }),
     // A status tab, an area or the closed choice is a new history entry (Back brings the last one back) and leaves the
     // window where it is: they sit at the list's top. Another page, or the list and By agent changing places, opens

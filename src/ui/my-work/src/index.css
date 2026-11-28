@@ -86,6 +86,39 @@
     --text-row-title--font-weight: 565;
     /* Two panels side by side, the second at least 240px (design.css `.split`): Workspace and Machine and sync (`grid-cols-panels`). */
     --grid-template-columns-panels: minmax(0, 1.35fr) minmax(15rem, 0.65fr);
+    /*
+     * The home page (design pass Phase 6; design.css `.home-grid`, `.leadcard`, `.also h2`, `.feature-body h3`, `.eyedate`,
+     * `.cardend`): the lead card beside its lists, 1.82 to 1 with the lists at least 260px from 1024px and 1.5 to 1 below
+     * (`grid-cols-home`, `grid-cols-home-narrow`); the lead request's name clamp(31px, 3vw, 47px) at 575 and 31px on a
+     * phone, set tighter, at most 19 characters wide, and its sentence 54 (`max-w-lead-title`, `max-w-lead-text`); a list's
+     * heading beside it 21px; a focus area card's name 20px (17px on a phone); the date and a card's count 13px.
+     */
+    --grid-template-columns-home: minmax(0, 1.82fr) minmax(16.25rem, 1fr);
+    --grid-template-columns-home-narrow: minmax(0, 1.5fr) minmax(0, 1fr);
+    --container-lead-title: 19ch;
+    --container-lead-text: 54ch;
+    --text-lead-title: clamp(1.9375rem, 3vw, 2.9375rem);
+    --text-lead-title--line-height: 1.13;
+    --text-lead-title--letter-spacing: -0.055em;
+    --text-lead-title--font-weight: 575;
+    --text-lead-title-phone: 1.9375rem;
+    --text-lead-title-phone--line-height: 1.08;
+    --text-lead-title-phone--letter-spacing: -0.045em;
+    --text-lead-title-phone--font-weight: 575;
+    --text-aside-title: 1.3125rem;
+    --text-aside-title--line-height: 1.13;
+    --text-aside-title--letter-spacing: -0.043em;
+    --text-aside-title--font-weight: 575;
+    --text-card-title: 1.25rem;
+    --text-card-title--line-height: 1.13;
+    --text-card-title--letter-spacing: -0.034em;
+    --text-card-title--font-weight: 575;
+    --text-card-title-phone: 1.0625rem;
+    --text-card-title-phone--line-height: 1.13;
+    --text-card-title-phone--letter-spacing: -0.034em;
+    --text-card-title-phone--font-weight: 575;
+    --text-caption: 0.8125rem;
+    --text-caption--line-height: 1.45;
 }
 
 @theme inline {
@@ -111,6 +144,7 @@
     --color-goal: var(--goal);
     --color-goal-foreground: var(--goal-foreground);
     --color-goal-border: var(--goal-border);
+    --color-goal-heading: var(--goal-heading);
     --color-agent-claude: var(--agent-claude);
     --color-agent-claude-foreground: var(--agent-claude-foreground);
     --color-agent-claude-border: var(--agent-claude-border);
@@ -262,6 +296,8 @@
     --goal: #e5eee3;
     --goal-foreground: #385d46;
     --goal-border: #b7cbb9;
+    /* The home page's lead card is this goal family (Codex's --lead, --leadsub, --leadline); its request's name is Codex's --onlead. */
+    --goal-heading: #173e2c;
     --agent-claude: #f8e8df;
     --agent-claude-foreground: #b44627;
     --agent-claude-border: #ecc9b8;
@@ -353,6 +389,7 @@
     --goal: #263c30;
     --goal-foreground: #c1d6c4;
     --goal-border: #415e49;
+    --goal-heading: #f1f5e9;
     --agent-claude: #382b24;
     --agent-claude-foreground: #f1a183;
     --agent-claude-border: #5c4234;

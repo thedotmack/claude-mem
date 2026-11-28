@@ -9,6 +9,7 @@ import { createCn } from "cn/config"
 export const CUSTOM_FONT_SIZES = [
   "page-title", "page-title-phone", "place", "place-narrow", "brand", "brand-phone",
   "section-title", "section-title-phone", "panel-title", "panel-title-phone", "row-title",
+  "lead-title", "lead-title-phone", "aside-title", "card-title", "card-title-phone", "caption",
 ] as const
 
 /**

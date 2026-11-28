@@ -6,9 +6,9 @@
 // choice and the words are in the address (`?status=`, `?area=`, `?closed=1`, `?q=`; store/slices/view-slice.ts), so
 // Back brings them back. By agent (`?by=agent`) puts the same requests under each agent (live/agent-board.ts), the
 // requests no agent is recorded for in a group of their own and the agents with nothing here folded. With Team view
-// on, the list is the Team board's columns. The List's table, By agent and the Team board also draw the old board on
-// Home and on a focus area's page (pages/my-work.tsx) until the design pass takes it from there (phases 6 and 8); the
-// table has no other use.
+// on, the list is the Team board's columns. The List's table, By agent and the Team board also draw the old board on a
+// focus area's page (pages/focus-area.tsx) until the design pass takes it from there (Phase 8); the table has no other
+// use.
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ArrowDownIcon, ArrowUpDownIcon, ChevronRightIcon, ExternalLinkIcon, InboxIcon, ListIcon, ListFilterIcon, PlusIcon, SearchIcon, TriangleAlertIcon, UsersIcon } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -24,12 +24,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TablePageFooter, TableRow } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { AgentIcon, FocusAreaChip, LocalTime, NeedsYouPill, NextMove, ProgressMeter, RecordedTime, SourceReadAlert, StateMark, StateWords, type Translate } from '@/components/bits'
+import { AgentIcon, FocusAreaChip, LocalTime, NeedsYouPill, NextMove, ProgressMeter, RecordedTime, SourceReadAlert, StateMark, type Translate } from '@/components/bits'
 import { AgentMark } from '@/components/brand'
+import { focusViewHeading } from '@/components/app-shell'
 import { ErrorDetails } from '@/components/error-details'
 import { RunningFor } from '@/components/live-motion'
 import { PANEL_SURFACE_CLASS_NAME, PANEL_TITLE_CLASS_NAME } from '@/components/panel'
-import { GroupLabel, ListStatus, RequestGroups, RequestRow, ShowMoreRows } from '@/components/request-rows'
+import { GroupLabel, ListStatus, RequestGroups, RequestListRow, RequestRow, ShowMoreRows } from '@/components/request-rows'
 import { RequestReadErrors } from '@/components/request-read-errors'
 import { agentOwnRoleWords, deviceName } from '@/lib/agent-words'
 import { interpolate, t, useI18n } from '@/lib/i18n'
@@ -53,7 +54,7 @@ import { TEAMBRAIN_START_URL } from '../../../viewer/constants/promo'
 
 type SortKey = WorkSort
 
-// ---------- The boards' sorts (Requests, and the old board on Home and an area's page) ----------
+// ---------- The boards' sorts (Requests, and the old board on an area's page) ----------
 
 export const SORTS: { value: SortKey; label: string }[] = [
   { value: 'attention', label: 'Needs you first' },
@@ -71,7 +72,7 @@ export function sortRequests(requests: Request[], sort: SortKey) {
         : byAttention(a, b))
 }
 
-// ---------- The List's table (the old board on Home and an area's page) ----------
+// ---------- The List's table (the old board on an area's page) ----------
 
 /**
  * The List table's columns (c-ui-table): fixed widths in rem, the Next step column a share of the table, and the title
@@ -140,7 +141,7 @@ function ListTableRow({ request, onOpen, onOpenFocus }: { request: Request; onOp
             faster than the title (flex-shrink 100 to 1), down to its floor: it took up to 40% of the cell and left the
             title 89-99px at 1366 and 124-158px at 1440, cut on every row (owner's data, 2026-11-17). Its floor, min-w-11
             (2.75rem, 46.75px at the 17px desktop root), is the chip's mark (0.875rem) and gap (0.375rem), and 1.5rem for the
-            name, less the link's 1px edges: 23.5px for an area's name, 25.5px for "Not sorted yet". A cut line keeps its
+            name, less the link's 1px edges: 23.5px for an area's name. A cut line keeps its
             first letter (CSS Overflow 3 clips the first character rather than replace it) and draws the ellipsis after
             it, so the name needs a letter and a whole ellipsis at text-xs (Geist, 12.75px): the ellipsis is 7.28px, and a
             Chinese first letter, the widest of the UI's languages (13.02px; Korean 11.03px, a Latin "W" 12.06px), makes
@@ -148,11 +149,10 @@ function ListTableRow({ request, onOpen, onOpenFocus }: { request: Request; onOp
             1px over; at min-w-8 (2rem, sized for an ellipsis alone) the name had 10.75px and showed one dot of its
             ellipsis, "V.", which did not say that it is cut (plan rule 5; Phase 6 fix 2). So a cut link shows its mark
             and that it is cut, and never runs into the next column. A cut area name stays whole in the link's name for
-            screen readers, in its hover text, and on the page it opens. A request not sorted yet is cut the same way
-            (the chip's one-line layout): its words were built to wrap, which this row does not do. */}
+            screen readers, in its hover text, and on the page it opens. */}
         <div className="flex min-w-0 items-center gap-2">
           <span data-row-title="" className={cn('min-w-0 truncate font-medium', !request.title && 'text-muted-foreground')}>{titleOf(request)}</span>
-          <span data-row-area="" className="flex min-w-11 shrink-[100]" title={focusAreaPlaceWords(request.focusAreaId, focusAreas, t)}><FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} layout="line" /></span>
+          <span data-row-area="" className="flex min-w-11 shrink-[100]" title={focusAreaPlaceWords(request.focusAreaId, focusAreas, t)}><FocusAreaChip focusAreaId={request.focusAreaId} onOpen={onOpenFocus} /></span>
           {fresh && <span className="sr-only">{t('Just updated')}</span>}
         </div>
       </TableCell>
@@ -586,32 +586,6 @@ export function TeamBoard({ requests, grouped, onOpen }: { requests: Request[]; 
 // ---------- Requests' rows ----------
 
 /**
- * One request on Requests (Codex's `.listrow`): its plain name (requestTitle: a request still being named says so,
- * never its prompt), its focus area under it ("Not sorted yet" until a review places it), its state's mark and word at
- * the right, then the arrow. The whole row is a link to the request (`?request=`: a new tab, a copied link), and a
- * plain press opens it over the page. At least 64px tall, so every row is a whole touch target on a phone. No timer, no
- * progress and no agent: By agent names the agent once, over its rows.
- */
-function RequestListRow({ request, href, onOpen }: { request: Request; href: string; onOpen: (request: Request) => void }) {
-  const { t } = useI18n()
-  const { focusAreas } = useWorkModel()
-  const named = !!(request.title ?? request.resolvesTo?.title)
-  return (
-    <Req ids={['R2.1']}>
-      <a href={href} data-request-opener={request.id} data-requests-row={request.state} onClick={placeLinkPress(() => onOpen(request))}
-        className="flex min-h-16 w-full items-center gap-3 rounded-sm px-1 py-4 outline-none transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 md:gap-4">
-        <span className="min-w-0 flex-1">
-          <span data-row-title="" className={cn('block text-row-title [overflow-wrap:anywhere]', !named && 'text-muted-foreground')}>{requestTitle(request, t)}</span>
-          <span data-row-area="" className="mt-1 block text-sm text-muted-foreground">{focusAreaPlaceWords(request.focusAreaId, focusAreas, t)}</span>
-        </span>
-        <StateWords state={request.state} />
-        <ChevronRightIcon aria-hidden="true" className="size-4.5 shrink-0 text-muted-foreground" />
-      </a>
-    </Req>
-  )
-}
-
-/**
  * Things as rows under one hairline each, 50 at a time (live/card-groups.ts LINE_ROWS_PER_PAGE); "Show 50 more" puts
  * focus on the first row it added (lib/paged-rows.ts). Requests' rows, and By agent's groups.
  */
@@ -740,12 +714,6 @@ function FilterAndSort({ areas, area, closedExist, closed }: {
     </Popover>
   )
 }
-
-/**
- * Requests' h1 (App.tsx gives it `data-view-heading`): where focus goes once the last unreadable request is dismissed,
- * and when the list and By agent change places.
- */
-const focusViewHeading = (options?: FocusOptions) => document.querySelector<HTMLElement>('[data-view-heading]')?.focus(options)
 
 /** Whether a request sits under a status tab: All holds every one, a group's tab the states of its group. */
 const underTab = (tab: RequestsTab) => (request: Request) => tab === 'all' || CARD_GROUPS.some((group) => group.id === tab && group.states.includes(request.state))

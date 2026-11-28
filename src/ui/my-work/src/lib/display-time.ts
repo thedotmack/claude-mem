@@ -89,6 +89,17 @@ export function clockDay(iso: string, now: number = Date.now()): { short: string
   return { short: dayWords(date, locale, new Date(now).getFullYear() !== date.getFullYear()), full: fullStamp(date, locale) }
 }
 
+/**
+ * Today in the reader's language, short, with its weekday ("Sat, Nov 28"; French "sam. 28 nov."), and the same day as a
+ * machine reads it ("2026-11-28", for a <time>'s dateTime): the home page's date beside its title.
+ */
+export function todayWords(now: number = Date.now()): { short: string; iso: string } {
+  const date = new Date(now)
+  const short = new Intl.DateTimeFormat(getLocale(), { weekday: 'short', month: 'short', day: 'numeric' }).format(date)
+  const iso = [date.getFullYear(), date.getMonth() + 1, date.getDate()].map((part, index) => String(part).padStart(index === 0 ? 4 : 2, '0')).join('-')
+  return { short, iso }
+}
+
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 /**
  * English time words as fixtures, goal prompt stamps (lib/prompt-time.ts) and older models write them, in one pass: a

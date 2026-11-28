@@ -26,9 +26,9 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work focus area page regres
  * - Other shows every ask nobody has started, each with "Copy as prompt"; both pages fit a 390px phone;
  * - handed over by earlier phases: Past focus's done date (the moment it was marked done), the mapper's placeholders and
  *   a rule's missing time in another language, card heights in one row, the drawer's focus return to a row that moved
- *   group, at most two moving things on home after a live change, the List title's room before its area link (and a
- *   request not sorted yet cut there with an ellipsis), By agent's next step on as many lines as it needs, read errors'
- *   Try again focus, and My Rules' copy with no clipboard.
+ *   group, at most two moving things on an area's board after a live change (and nothing moving on home, which has no
+ *   board since design pass Phase 6), the List title's room before its area link, By agent's next step on as many
+ *   lines as it needs, read errors' Try again focus, and My Rules' copy with no clipboard.
  * Each width-sensitive check runs with no scrollbar and with a classic 15px one (SCROLLBAR_MODES). A check of
  * fixed instants' words pins the page's clock (PINNED_NOW), so it reads the same on any run date.
  * Nothing here reaches a worker: every change is the sample's, kept in the page (plan rule: write only in sample mode).
@@ -421,6 +421,11 @@ it.skipIf(!chromeExecutablePath)('the area menu: a "…" of 44px or more, rows u
     expect(done.items.at(-1)!.name).toBe('Back in focus');
     expect(done.items.some((item) => item.name.startsWith('Move'))).toBe(false);
     await closeMenu();
+    // Focus areas, which the area has left, says why and offers the same Undo (it did when its board was on the home
+    // page; Phase 6 quality review, finding 2).
+    await page!.evaluate(`window.store.getState().goToPage('focus')`);
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'focus' && document.getElementById('focus-areas') && document.querySelector('[data-change-bar="saved"]')`, 'the change on Focus areas');
+    expect(await page!.evaluate(`document.querySelector('[data-change-bar="saved"] p').textContent`)).toBe('Marked “Cloud sync” done.');
     await pressNamed('[data-change-bar="saved"] button', '^Undo$');
     await waitFor(`window.model().focusAreas.find((area) => area.id === 'fa-sync').status === 'kept'`, 'the area back in focus');
     expect(await savedOrder()).toEqual(['fa-viewer', 'fa-sync', 'fa-search', 'fa-behavior']);
@@ -956,9 +961,13 @@ it.skipIf(!chromeExecutablePath)('the drawer of a shipped request that ran under
 }, 60_000);
 
 for (const scrollbar of SCROLLBAR_MODES) {
-  it.skipIf(!chromeExecutablePath)(`request cards in one row are as tall as the row, their footers on one line, at 1440 and 768 on home and the Cards board, with ${scrollbar.label}`, async () => {
+  it.skipIf(!chromeExecutablePath)(`request cards in one row are as tall as the row, their footers on one line, at 1440 and 768 on a focus area's Cards board, with ${scrollbar.label}`, async () => {
     try {
-      await openPage(scrollbar.query);
+      await openPage(`&focus=fa-viewer${scrollbar.query}`);
+      // Three that need you in Viewer (the home page has no cards since design pass Phase 6): the main card leads with
+      // r6, and the board draws r7 and r1 as one row of cards.
+      await page!.evaluate(R1_FINISHES_AND_TWO_ARRIVE);
+      await waitFor(`document.querySelectorAll('[data-board-view] [data-slot="card"] [data-request-opener]').length === 2`, 'two cards on the board');
       const rows = () => page!.evaluate(`(() => {
         const cards = [...document.querySelectorAll('[data-slot="work-shell"] main [data-slot="card"]')].filter((card) => card.querySelector('[data-request-opener]') && window.visible(card));
         const byRow = new Map();
@@ -984,7 +993,7 @@ for (const scrollbar of SCROLLBAR_MODES) {
         }
       }
       console.log(`[focus-area-page] card rows with ${scrollbar.label}: ${JSON.stringify(seen)}`);
-      // Home at 1440 has a row of two at least (the sample's two that need you), so the check above is not empty.
+      // The board at 1440 has a row of two (r7 and r1), so the check above is not empty.
       expect((seen[1440] as unknown[]).length).toBeGreaterThan(0);
       expect(fixtureErrors).toEqual([]);
     } finally {
@@ -995,7 +1004,7 @@ for (const scrollbar of SCROLLBAR_MODES) {
 
 it.skipIf(!chromeExecutablePath)('the drawer opened from a List row gives focus back to that request’s row in its new group when the request finished while it was open', async () => {
   try {
-    await openPage('');
+    await openPage('&focus=fa-viewer');
     await page!.evaluate(`[...document.querySelectorAll('[role=radio]')].find((item) => window.nameOf(item) === 'List').click()`);
     await waitFor(`document.querySelector('[data-list-group="working"] [data-request-opener="r1"]')`, 'r1 in the List’s Working group');
     await page!.evaluate(`document.querySelector('[data-list-group="working"] [data-request-opener="r1"]').focus()`);
@@ -1017,25 +1026,27 @@ it.skipIf(!chromeExecutablePath)('the drawer opened from a List row gives focus 
   }
 }, 60_000);
 
-it.skipIf(!chromeExecutablePath)('on home a live change moves two things at most (rule 8): the changed cards, the one that needs you too, are marked "just updated" still, with no glow or fade', async () => {
+it.skipIf(!chromeExecutablePath)('on a focus area\'s board a live change moves two things at most (rule 8): the changed cards, both needing you, are marked "just updated" still, with no glow or fade', async () => {
   try {
-    await openPage('');
-    await waitFor(`document.querySelector('[data-slot="card"] [data-request-opener="r3"]')`, 'the card that needs you');
-    // From a still page: the resize to 1440 redraws the shell, and its cards' entrances end first.
+    await openPage('&focus=fa-viewer');
+    // Two cards on Viewer's board (the home page has no cards since design pass Phase 6): r7 and r1, which need you.
+    await page!.evaluate(R1_FINISHES_AND_TWO_ARRIVE);
+    await waitFor(`document.querySelector('[data-board-view] [data-slot="card"] [data-request-opener="r7"]') && document.querySelector('[data-board-view] [data-slot="card"] [data-request-opener="r1"]')`, 'the two cards');
+    // From a still page: that change's marks end (the store's FRESHLY_UPDATED_FOR_MS, 4 s) and every entrance ends first.
+    await waitFor(`!document.querySelector('[data-just-updated]')`, 'the first change\'s marks to end', 10_000);
     await settleAnimations();
-    // A live change as the feed sends one: two records changed (a new reading each; their cards' words as they were),
-    // one of them the card that needs you.
-    await page!.evaluate(`window.receive((model) => ({ ...model, requests: model.requests.map((request) => request.id === 'r3' || request.id === 'r1'
+    // A live change as the feed sends one: two records changed (a new reading each; their cards' words as they were).
+    await page!.evaluate(`window.receive((model) => ({ ...model, requests: model.requests.map((request) => request.id === 'r7' || request.id === 'r1'
       ? { ...request, contentFingerprint: request.contentFingerprint + '-changed', progress: { ...request.progress, readings: request.progress.readings + 1 } } : request) }))`);
     const seen: string[][] = await page!.evaluate('window.movingThingsOver(1500)');
     const most = Math.max(...seen.map((things) => things.length));
-    console.log(`[focus-area-page] home after a live change: ${most} moving at most, ${JSON.stringify([...new Set(seen.flat())])}`);
+    console.log(`[focus-area-page] Viewer's board after a live change: ${most} moving at most, ${JSON.stringify([...new Set(seen.flat())])}`);
     expect(most).toBeLessThanOrEqual(2);
-    const marked = await page!.evaluate(`['r3', 'r1'].map((id) => {
+    const marked = await page!.evaluate(`['r7', 'r1'].map((id) => {
       const card = document.querySelector('[data-slot="card"] [data-request-opener="' + id + '"]').closest('[data-slot="card"]');
       return { id, marked: card.hasAttribute('data-just-updated'), animations: card.getAnimations().map((animation) => animation.transitionProperty ?? animation.animationName) };
     })`);
-    expect(marked).toEqual([{ id: 'r3', marked: true, animations: [] }, { id: 'r1', marked: true, animations: [] }]);
+    expect(marked).toEqual([{ id: 'r7', marked: true, animations: [] }, { id: 'r1', marked: true, animations: [] }]);
     expect(fixtureErrors).toEqual([]);
   } finally {
     await closePage();
@@ -1045,10 +1056,10 @@ it.skipIf(!chromeExecutablePath)('on home a live change moves two things at most
 /**
  * A live state change, as the feed sends one, that re-places and adds several cards: r1, working, finishes and waits for
  * your check (its record changed, the model's first change, so the newest), and two requests that need you arrive in its
- * area, Viewer: r6 (your move, the newest start) and r7 (to check, started after r1). On home the board re-places r1
- * and every card after it and adds r6 and r7; on the Viewer area's page the main card leads with r6 and the board, which
- * drew no card before, draws r7 and r1 (Phase 6 re-verify V2: with r1 alone, a card entrance put back never played, r1
- * re-placed in the same keyed grid, and the area's page drew no card at all).
+ * area, Viewer: r6 (your move, the newest start) and r7 (to check, started after r1). On the Viewer area's page the main
+ * card leads with r6 and the board, which drew no card before, draws r7 and r1 (Phase 6 re-verify V2: with r1 alone, a
+ * card entrance put back never played, r1 re-placed in the same keyed grid, and the area's page drew no card at all).
+ * On home (design pass Phase 6) r6 takes the lead card from r5, and r5, r7 and r1 are the rows waiting beside it.
  */
 const R1_FINISHES_AND_TWO_ARRIVE = `window.receive((model) => {
   const like = (id) => model.requests.find((request) => request.id === id);
@@ -1063,7 +1074,8 @@ const R1_FINISHES_AND_TWO_ARRIVE = `window.receive((model) => {
 /**
  * The answer buttons a page draws (components/focus-main-card.tsx ReplyActions): the sample page cannot continue a
  * conversation, so it draws "Open request"; under `reply-card` it can, as the page this computer's worker serves (the
- * owner's own) can, so it draws Reply. Each run below draws one kind; on home the first card's is the orange one.
+ * owner's own) can, so it draws Reply. Each run below draws one kind. Home's lead card always says Open request (it
+ * opens the request, where the reply is), so home runs once per motion setting.
  */
 const ANSWER_BUTTONS = [
   { label: '"Open request"', query: '', button: 'Open request' },
@@ -1075,25 +1087,27 @@ const ORANGE_BUTTONS = `[...document.querySelectorAll('[data-slot="work-shell"] 
 
 // Phase 6 fix V2 and the anti-pattern review's gap (page-03 had no count): a live state change, on home and on a focus
 // area's page. What may move is the change ticker's slide to the newest change; the board takes the change at once.
+// Home (design pass Phase 6) has no ticker and no board: nothing on it moves.
 for (const motion of ['allowed', 'reduced'] as const) {
   for (const answers of ANSWER_BUTTONS) for (const where of [
-    { name: 'home', query: '', view: 'Cards' }, { name: 'the Viewer area’s page', query: '&focus=fa-viewer', view: 'Cards' },
-    { name: 'home in the List', query: '', view: 'List' }, { name: 'the Viewer area’s page in the List', query: '&focus=fa-viewer', view: 'List' },
+    ...(answers.query ? [] : [{ name: 'home', query: '', view: null }]),
+    { name: 'the Viewer area’s page', query: '&focus=fa-viewer', view: 'Cards' }, { name: 'the Viewer area’s page in the List', query: '&focus=fa-viewer', view: 'List' },
   ]) {
     it.skipIf(!chromeExecutablePath)(`on ${where.name} a live state change moves two things at most (rule 8), the change ticker included, with motion ${motion} and the answer buttons ${answers.label}`, async () => {
       try {
         await openPage(where.query + answers.query, { width: 1440, height: 900 }, { reducedMotion: motion === 'reduced' });
         expect(await page!.evaluate(`matchMedia('(prefers-reduced-motion: reduce)').matches`)).toBe(motion === 'reduced');
-        if (where.view !== 'Cards') await page!.evaluate(`[...document.querySelectorAll('[role=radio]')].find((item) => window.nameOf(item) === ${JSON.stringify(where.view)}).click()`);
-        await waitFor(`document.querySelector('[data-request-opener="r1"]')`, 'r1 on the board');
+        if (where.view === 'List') await page!.evaluate(`[...document.querySelectorAll('[role=radio]')].find((item) => window.nameOf(item) === ${JSON.stringify(where.view)}).click()`);
+        await waitFor(`document.querySelector('[data-request-opener="r1"]')`, 'r1 on the page');
         await settleAnimations();
-        // On home the first card that needs you, r5's, holds the orange answer button, of the kind this run draws.
-        if (!where.query) expect(await page!.evaluate(ORANGE_BUTTONS)).toContain(`${answers.button} r5`);
+        const leadOpens = `document.querySelector('[data-lead-card] a[data-request-opener]')?.dataset.requestOpener ?? null`;
+        // On home the lead card holds the one orange button, Open request, for r5, the first that needs you.
+        if (!where.view) expect([await page!.evaluate(ORANGE_BUTTONS), await page!.evaluate(leadOpens)]).toEqual([['Open request '], 'r5']);
         // A first change the ticker shows (r2's first review), so the state change after it slides in: the first change
-        // a ticker shows has nothing to slide from.
+        // a ticker shows has nothing to slide from. Home has no ticker.
         await page!.evaluate(`window.receive((model) => ({ ...model, requests: model.requests.map((request) => request.id === 'r2'
           ? { ...request, contentFingerprint: 'r2-reviewed', progress: { ...request.progress, percent: 20, readings: 1, reviewedAt: '2:01 pm', history: [20] } } : request) }))`);
-        await waitFor(`document.querySelector('[data-ticker="changes"]')`, 'the ticker showing the first change');
+        if (where.view) await waitFor(`document.querySelector('[data-ticker="changes"]')`, 'the ticker showing the first change');
         await settleAnimations();
         await page!.evaluate(R1_FINISHES_AND_TWO_ARRIVE);
         // Each moving thing with what moves on it; a thing is counted once a frame however many of its parts move. Past the
@@ -1103,24 +1117,22 @@ for (const motion of ['allowed', 'reduced'] as const) {
         const most = Math.max(...seen.map((things) => things.length));
         const everything = [...new Set(seen.flat())];
         console.log(`[focus-area-page] ${where.name} with ${answers.button} during a state change, motion ${motion}: ${most} moving at most, ${JSON.stringify(everything)} ${JSON.stringify([...new Set(detail.flat())])}`);
-        expect(most).toBeLessThanOrEqual(motion === 'reduced' ? 0 : 2);
+        expect(most).toBeLessThanOrEqual(motion === 'reduced' || !where.view ? 0 : 2);
         // The two are the change ticker and, where rows show their status, the newest change's riffle (r1's, the model's
         // first change); nothing else moves: no card, row or button (an answer button's fade from orange is a third thing).
         expect({ where: where.name, alsoMoving: everything.filter((thing) => thing !== 'ticker' && thing !== 'riffle: r1') }).toEqual({ where: where.name, alsoMoving: [] });
-        // On home the orange went to the newer request that needs you, r6, which is where a fade from orange would show.
-        if (!where.query) expect(await page!.evaluate(ORANGE_BUTTONS)).toContain(`${answers.button} r6`);
-        if (!where.query) expect(await page!.evaluate(ORANGE_BUTTONS)).not.toContain(`${answers.button} r5`);
-        // The change happened: r1 is drawn as one that needs you (a card, the area's main card, or the List's row), and
-        // both arrivals are drawn.
-        expect(await page!.evaluate(`[...document.querySelectorAll('[data-request-opener="r1"]')].some((opener) => opener.closest('[data-request-card="needs-check"], section[data-main-card="needs-check"], [data-list-group="needs-you"]'))`)).toBe(true);
+        // On home the lead card, its orange Open request with it, went to the newer request that needs you, r6.
+        if (!where.view) expect([await page!.evaluate(ORANGE_BUTTONS), await page!.evaluate(leadOpens)]).toEqual([['Open request '], 'r6']);
+        // The change happened: r1 is drawn as one that needs you (a card, the area's main card, the List's row, or a row
+        // beside home's lead card), and both arrivals are drawn.
+        expect(await page!.evaluate(`[...document.querySelectorAll('[data-request-opener="r1"]')].some((opener) => opener.closest('[data-request-card="needs-check"], section[data-main-card="needs-check"], [data-list-group="needs-you"], [data-beside-lead="waiting"]'))`)).toBe(true);
         expect(await page!.evaluate(`['r6', 'r7'].filter((id) => document.querySelector('[data-request-opener="' + id + '"]'))`)).toEqual(['r6', 'r7']);
-        // In Cards the change re-placed and added board cards, where a glide or an entrance would show: home's board
-        // draws r6 and r7 among its cards; the area's page leads with r6 in its main card and its board draws r7 and r1.
+        // In Cards the change re-placed and added board cards, where a glide or an entrance would show: the area's page
+        // leads with r6 in its main card and its board draws r7 and r1.
         if (where.view === 'Cards') {
           const cards = await page!.evaluate(`({ board: [...document.querySelectorAll('[data-board-view] [data-request-card] [data-request-opener]')].map((opener) => opener.dataset.requestOpener),
             main: document.querySelector('section[data-main-card] [data-request-opener]')?.dataset.requestOpener ?? null })`);
-          if (where.query) expect(cards).toEqual({ board: ['r7', 'r1'], main: 'r6' });
-          else expect({ arrivedOnTheBoard: ['r6', 'r7'].every((id) => cards.board.includes(id)), main: cards.main }).toEqual({ arrivedOnTheBoard: true, main: null });
+          expect(cards).toEqual({ board: ['r7', 'r1'], main: 'r6' });
         }
         expect(fixtureErrors).toEqual([]);
       } finally {
@@ -1139,7 +1151,8 @@ const LONG_AREA_ZH = '查看器、实时请求监视器及其周围的每个页�
 for (const [scrollbar, areaName] of SCROLLBAR_MODES.flatMap((mode) => [LONG_AREA, LONG_AREA_ZH].map((name) => [mode, name] as const))) {
   it.skipIf(!chromeExecutablePath)(`in the List's table a request's title has its room before its area link: the link is cut first, at 1366 and 1440 with ${scrollbar.label}${areaName === LONG_AREA_ZH ? ', its area named in Chinese' : ''}`, async () => {
     try {
-      await openPage(scrollbar.query, { width: 1440, height: 900 });
+      // Viewer's page, where r1 sits: the List's table is on a focus area's page only since design pass Phase 6.
+      await openPage(`&focus=fa-viewer${scrollbar.query}`, { width: 1440, height: 900 });
       await page!.evaluate(`window.receive((model) => ({ ...model, requests: model.requests.map((request) => request.id === 'r1' ? { ...request, title: ${JSON.stringify(LONG_TITLE)} } : request),
         focusAreas: model.focusAreas.map((area) => area.id === 'fa-viewer' ? { ...area, name: ${JSON.stringify(areaName)} } : area) }))`);
       await page!.evaluate(`[...document.querySelectorAll('[role=radio]')].find((item) => window.nameOf(item) === 'List').click()`);
@@ -1179,85 +1192,6 @@ for (const [scrollbar, areaName] of SCROLLBAR_MODES.flatMap((mode) => [LONG_AREA
   }, 60_000);
 }
 
-/** What a screen reader reads inside the first element `selector` finds: the accessibility tree's text under it. */
-async function screenReaderText(selector: string): Promise<string> {
-  await page!.send('Accessibility.enable');
-  const { root } = await page!.send('DOM.getDocument', { depth: 0 });
-  const { nodeId } = await page!.send('DOM.querySelector', { nodeId: root.nodeId, selector });
-  if (!nodeId) throw new Error(`nothing matches ${selector}`);
-  const { nodes } = await page!.send('Accessibility.queryAXTree', { nodeId, role: 'StaticText' });
-  return nodes.filter((node: { ignored?: boolean }) => !node.ignored).map((node: { name?: { value?: string } }) => node.name?.value ?? '').join('');
-}
-
-/**
- * How a request's "Not sorted yet" reads in the List, for each one drawn: its words whole; cut with a whole ellipsis,
- * which says so; cut where its box has no room for a letter and the whole ellipsis ("clipped ellipsis": one dot, "N.");
- * or clipped without one (an element running past its own box, or a box cut by an ancestor that hides its overflow, with
- * no ellipsis drawn). Also its mark, its hover text, and whether it is in the table or a row.
- */
-const NOT_SORTED_LOOKS = `[...document.querySelectorAll('[data-board-view] [data-focus-area="not-sorted"]')].filter(window.visible).map((chip, index) => {
-  chip.setAttribute('data-test-chip', String(index));
-  const words = chip.querySelector(':scope > span');
-  const mark = chip.querySelector(':scope > svg');
-  const range = document.createRange();
-  range.selectNodeContents(words);
-  const text = range.getBoundingClientRect();
-  const box = words.getBoundingClientRect();
-  let clipRight = Infinity;
-  for (let element = words.parentElement; element && element !== document.documentElement; element = element.parentElement) {
-    if (getComputedStyle(element).overflowX !== 'visible') clipRight = Math.min(clipRight, element.getBoundingClientRect().left + element.clientLeft + element.clientWidth);
-  }
-  const style = getComputedStyle(words);
-  // Edges are fractional (the 17px root's rem); 1px covers their rounding, and a cut letter is wider than that.
-  const runsPastItsBox = text.right > box.right + 1;
-  const boxCut = box.right > clipRight + 1;
-  const drawsAnEllipsis = style.textOverflow === 'ellipsis' && style.overflowX !== 'visible' && style.whiteSpace === 'nowrap';
-  const ellipsis = runsPastItsBox && !boxCut && drawsAnEllipsis ? window.ellipsisRoom(words) : null;
-  const row = chip.closest('tr, [data-request-row]');
-  return { index, request: (row.matches('[data-request-opener]') ? row : row.querySelector('[data-request-opener]')).dataset.requestOpener, where: row.matches('tr') ? 'table' : 'row',
-    look: !runsPastItsBox && !boxCut ? 'whole' : ellipsis ? (ellipsis.whole ? 'ellipsis' : 'clipped ellipsis') : 'clipped', ellipsis,
-    markShown: mark.getBoundingClientRect().width > 0 && mark.getBoundingClientRect().right <= clipRight + 1,
-    hover: chip.closest('[title]')?.getAttribute('title') ?? null, textWidth: window.round(text.width), boxWidth: window.round(box.width), clipRight: window.round(clipRight), boxRight: window.round(box.right) };
-})`;
-
-// Phase 6 fix 2: a request not sorted yet read "○ Not so" in the List table at 1366 and 1440 on the owner's data, cut
-// mid-word with no ellipsis: its words were built to wrap, which the table's one-line row does not allow. In a one-line
-// row it is cut the way a placed area is, its mark, a letter and a whole ellipsis; where the chip can wrap (the rows'
-// facts line) it keeps wrapping.
-for (const scrollbar of SCROLLBAR_MODES) {
-  it.skipIf(!chromeExecutablePath)(`in the List a request not sorted yet reads its words whole or cut with a whole ellipsis, never clipped without one, the whole words in its hover text and for screen readers, at 1366 and 1440 with ${scrollbar.label}`, async () => {
-    try {
-      await openPage(scrollbar.query, { width: 1440, height: 900 });
-      // r2 is not sorted yet in the sample; a long title leaves its area part at its floor. r1, out of its area, has a
-      // short title, so its words have room.
-      await page!.evaluate(`window.receive((model) => ({ ...model, requests: model.requests.map((request) => request.id === 'r2' ? { ...request, title: ${JSON.stringify(LONG_TITLE)} }
-        : request.id === 'r1' ? { ...request, title: 'Fix it', focusAreaId: undefined } : request) }))`);
-      await page!.evaluate(`[...document.querySelectorAll('[role=radio]')].find((item) => window.nameOf(item) === 'List').click()`);
-      await waitFor(`document.querySelectorAll('[data-board-view] [data-focus-area="not-sorted"]').length >= 2`, 'both requests not sorted yet in the List');
-      type Look = { index: number; request: string; where: string; look: string; markShown: boolean; hover: string | null };
-      const seen: { width: number; look: Look; read: string }[] = [];
-      for (const width of [1440, 1366]) {
-        await resize(width);
-        const looks: Look[] = await page!.evaluate(NOT_SORTED_LOOKS);
-        console.log(`[focus-area-page] not sorted yet in the List at ${width} with ${scrollbar.label}: ${JSON.stringify(looks)}`);
-        expect({ width, requests: looks.map((look) => look.request).sort() }).toEqual({ width, requests: ['r1', 'r2'] });
-        for (const look of looks) seen.push({ width, look, read: await screenReaderText(`[data-test-chip="${look.index}"]`) });
-      }
-      console.log(`[focus-area-page] not sorted yet in the List with ${scrollbar.label}: ${JSON.stringify(seen.map(({ width, look }) => `${width} ${look.request} ${look.where} ${look.look}`))}`);
-      // Every one, at each width, read before any is checked so a failure names each one that fails: whole, or cut with a
-      // whole ellipsis after its mark and a letter, its mark shown; in the table, whose rows do not wrap, the whole words
-      // are its hover text (a row's facts line wraps them, whole); a screen reader reads the whole words.
-      const whole = (look: Look) => look.look === 'whole' || look.look === 'ellipsis';
-      expect(seen.map(({ width, look, read }) => ({ width, request: look.request, look: whole(look) ? 'whole, or cut with a whole ellipsis' : look.look, markShown: look.markShown, hover: look.where === 'table' ? look.hover : 'Not sorted yet', read })))
-        .toEqual(seen.map(({ width, look }) => ({ width, request: look.request, look: 'whole, or cut with a whole ellipsis', markShown: true, hover: 'Not sorted yet', read: 'Not sorted yet' })));
-      // The table, where the cut happened, is drawn at 1440 in both modes (LIST_TITLE_MIN_PX), and r2's words are cut there.
-      expect(seen.filter(({ width, look }) => width === 1440 && look.request === 'r2').map(({ look }) => `${look.where} ${look.look}`)).toEqual(['table ellipsis']);
-      expect(fixtureErrors).toEqual([]);
-    } finally {
-      await closePage();
-    }
-  }, 60_000);
-}
 
 it.skipIf(!chromeExecutablePath)('By agent rows on Requests give a long name as many lines as it needs, whole', async () => {
   try {
@@ -1285,7 +1219,7 @@ it.skipIf(!chromeExecutablePath)('By agent rows on Requests give a long name as 
   }
 }, 60_000);
 
-it.skipIf(!chromeExecutablePath)('a Try again that leaves nothing unreadable sends focus to the board’s heading, where the last Dismiss sends it, never the page body', async () => {
+it.skipIf(!chromeExecutablePath)('a Try again that leaves nothing unreadable sends focus to the page’s heading, where the last Dismiss sends it, never the page body', async () => {
   try {
     await openPage(sampleState('read-errors'));
     await waitFor(`document.querySelector('[data-read-errors="shown"]')`, 'the read-error card');
@@ -1294,8 +1228,9 @@ it.skipIf(!chromeExecutablePath)('a Try again that leaves nothing unreadable sen
     await pressNamed('[data-read-errors="shown"] button', '^Try again$');
     await waitFor(`!document.querySelector('[data-read-errors]')`, 'the card to leave');
     await page!.settle();
-    expect(await page!.evaluate(`({ id: document.activeElement?.id ?? null, heading: document.activeElement?.hasAttribute('data-view-heading') ?? false, body: document.activeElement === document.body })`))
-      .toEqual({ id: 'all-requests', heading: true, body: false });
+    // The home page's h1 (design pass Phase 6: the old board's heading went with the board).
+    expect(await page!.evaluate(`({ tag: document.activeElement?.tagName ?? null, heading: document.activeElement?.hasAttribute('data-view-heading') ?? false, body: document.activeElement === document.body })`))
+      .toEqual({ tag: 'H1', heading: true, body: false });
     expect(fixtureErrors).toEqual([]);
   } finally {
     await closePage();
@@ -1506,7 +1441,10 @@ const PINNED_NOW = '2026-11-17T10:00:00-08:00';
 // Phase 6 fix V3: every time from the one formatter, from the recorded instant, the date-and-time join in the reader's words.
 it.skipIf(!chromeExecutablePath)('in French and in Korean no time on the cards or in the drawer carries an English word, whether the model has its instant or only English words', async () => {
   try {
-    await openPage(`&clock=${encodeURIComponent(PINNED_NOW)}`);
+    // Viewer's page sorted by Newest, so r1 (working) and r3 (moved here, to check) are both cards on its board (the home
+    // page has no cards since design pass Phase 6).
+    await openPage(`&clock=${encodeURIComponent(PINNED_NOW)}&focus=fa-viewer`);
+    await page!.evaluate(`window.store.getState().setSort('started')`);
     expect(await page!.evaluate('new Date().toISOString()')).toBe(new Date(PINNED_NOW).toISOString());
     // r1 as this build's mapper writes it in a browser that joins en-US with "at": English words beside each instant. The
     // words are a minute behind the instant here, so a screen that printed the words instead would show the wrong minute.
@@ -1515,7 +1453,8 @@ it.skipIf(!chromeExecutablePath)('in French and in Korean no time on the cards o
         startedAt: 'Oct 20 at 1:16 pm', startedAtIso: '2026-10-20T13:17:00-07:00',
         progress: { ...request.progress, reviewedAt: 'Oct 19', reviewedAtIso: '2026-10-20T13:50:00-07:00' },
         conversations: request.conversations.map((conversation, index) => ({ ...conversation, at: 'Oct 20 at 1:' + (16 + index * 8) + ' pm', atIso: '2026-10-20T13:' + (17 + index * 8) + ':00-07:00' })) }
-      : request.id === 'r3' ? { ...request, startedAt: 'Oct 17 at 7:55 am', startedAtIso: undefined } : request) }))`);
+      : request.id === 'r3' ? { ...request, focusAreaId: 'fa-viewer', startedAt: 'Oct 17 at 7:55 am', startedAtIso: undefined } : request) }))`);
+    await waitFor(`document.querySelector('[data-slot="card"] [data-request-opener="r1"]') && document.querySelector('[data-slot="card"] [data-request-opener="r3"]')`, 'both cards');
     // French reads a 24-hour clock with two-digit hours ("07:55"), as tests/ui-display-time.test.ts holds it.
     const expected = { fr: { start: '20 oct., 13:17', words: '17 oct., 07:55', conversations: ['20 oct., 13:17', '20 oct., 13:25'], reviewed: '20 oct.' },
       ko: { start: '10월 20일 오후 1:17', words: '10월 17일 오전 7:55', conversations: ['10월 20일 오후 1:17', '10월 20일 오후 1:25'], reviewed: '10월 20일' } } as const;
@@ -1557,6 +1496,11 @@ for (const scrollbar of SCROLLBAR_MODES) {
         for (const width of [1440, 1366]) {
           await resize(width);
           await waitFor(`document.querySelector('[data-slot="work-shell"] main') && window.scrollY === 0`, 'the page at its top, the sample strip open');
+          // The strip slides in and its close button springs when a page loads (aceternity/sticky-banner.tsx), running a
+          // pixel past the window for its first 50ms or so; the home page draws fast since design pass Phase 6, so the
+          // page is measured with the strip at rest, as a person sees it (app-shell.browser.test.ts stripAtRest).
+          await waitFor(`(() => { const strip = document.querySelector('[data-slot="app-bar"]')?.previousElementSibling;
+            return !!strip && [strip, ...strip.querySelectorAll('button, a[href]')].every((node) => getComputedStyle(node).transform === 'none'); })()`, 'the sample strip at rest');
           const fit = pageFitsTheWindow(await page!.evaluate(PAGE_WIDTHS), width);
           console.log(`[focus-area-page] sample${query || ' home'} at ${width} with ${scrollbar.label}: ${JSON.stringify(fit)}`);
           expect(fit).toMatchObject(FITS_THE_WINDOW);
@@ -1570,7 +1514,7 @@ for (const scrollbar of SCROLLBAR_MODES) {
 }
 
 // Phase 6 fix V7: the ticker counted every area's working requests while the Working filter beside it counted the page's.
-it.skipIf(!chromeExecutablePath)('the change ticker watches the working requests the Working filter counts, on an area’s page and on home', async () => {
+it.skipIf(!chromeExecutablePath)('the change ticker watches the working requests the Working filter counts on an area’s page; home has no ticker', async () => {
   try {
     await openPage('&focus=fa-sync');
     const counts = () => page!.evaluate(`(() => {
@@ -1581,9 +1525,13 @@ it.skipIf(!chromeExecutablePath)('the change ticker watches the working requests
     await waitFor(`document.querySelector('[data-ticker="quiet"]')`, 'the ticker at rest');
     // Cloud sync has nothing working; r1 (Viewer) and r2 (no area) work elsewhere.
     expect(await counts()).toEqual({ watching: 0, filter: 0 });
+    await page!.evaluate(`window.store.getState().goToFocus('fa-viewer')`);
+    await waitFor(`new URLSearchParams(location.search).get('focus') === 'fa-viewer' && document.querySelector('[data-ticker="quiet"]')`, 'Viewer');
+    expect(await counts()).toEqual({ watching: 1, filter: 1 });
+    // The home page lost its ticker with its board (design pass Phase 6).
     await page!.evaluate(`window.store.getState().goToPage('work')`);
-    await waitFor(`!new URLSearchParams(location.search).get('focus')`, 'home');
-    expect(await counts()).toEqual({ watching: 2, filter: 2 });
+    await waitFor(`!new URLSearchParams(location.search).get('focus') && document.querySelector('[data-home-first-line]')`, 'home');
+    expect(await page!.evaluate(`document.querySelector('[data-ticker]')`)).toBe(null);
     expect(fixtureErrors).toEqual([]);
   } finally {
     await closePage();

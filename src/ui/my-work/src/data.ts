@@ -425,11 +425,14 @@ export function requestTitle(request: Pick<Request, 'title' | 'resolvesTo'>, t: 
   return request.title ?? request.resolvesTo?.title ?? t('New request, title being written')
 }
 
+/** Whether requestTitle has a title to show, its own or the one it resolves to, rather than the words for one being written. */
+export const hasOwnTitle = (request: Pick<Request, 'title' | 'resolvesTo'>) => !!(request.title ?? request.resolvesTo?.title)
+
 /** Waits on you: your move, or done and waiting for your check. The nav counts and the Needs you filter both use this. */
 export const needsYou = (request: Request) => request.state === 'your-move' || request.state === 'needs-check'
 
 /**
- * Working now: open, and an agent is on it. The one counting rule for the board's Working filter (pages/my-work.tsx
+ * Working now: open, and an agent is on it. The one counting rule for the board's Working filter (pages/focus-area.tsx
  * FILTERS) and the change ticker's "Watching N working requests" (components/live-motion.tsx), which count the same
  * requests: the page's, an area's own on its page (Phase 6 verify V7: the ticker counted every area's while the filter
  * beside it counted the page's).

@@ -1,10 +1,10 @@
-// Run with `npm test`. The Cards view's sections (pages/my-work.tsx CardsView): card sections as one flat keyed list,
+// Run with `npm test`. The Cards view's sections (pages/focus-area.tsx CardsView): card sections as one flat keyed list,
 // one-line sections apart, sizes by state, and one-line rows 50 at a time (G4).
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { describe, it } from 'node:test'
 import type { LiveState, Request } from '../data.ts'
-import { CARD_GROUPS, CARD_SIZE, LINE_ROWS_PER_PAGE, cardGridEntries, linePage, lineSections, requestSections } from './card-groups.ts'
+import { CARD_GROUPS, CARD_SIZE, LINE_ROWS_PER_PAGE, cardGridEntries, linePage, requestSections } from './card-groups.ts'
 
 const request = (id: string, state: Request['state']) => ({ id, state }) as Request
 
@@ -23,8 +23,6 @@ describe('cardGridEntries', () => {
   it('draws no card for an idle or shipped request: those sections fold to one line each (G4)', () => {
     const requests = [request('n', 'your-move'), request('w', 'working'), request('i', 'idle'), request('s', 'shipped')]
     assert.deepEqual(cardGridEntries(requests).filter((entry) => entry.kind === 'card').map((entry) => entry.key), ['n', 'w'])
-    assert.deepEqual(lineSections(requests).map(({ group, members }) => [group.id, members.map((member) => member.id)]), [['idle', ['i']], ['shipped', ['s']]])
-    assert.deepEqual(lineSections([request('n', 'your-move')]), [], 'an empty section is left out')
   })
 })
 
@@ -35,8 +33,9 @@ describe('requestSections', () => {
     assert.deepEqual(sections.map(({ group, members }) => [group.id, members.map((member) => member.id)]),
       [['needs-you', ['c', 'm']], ['working', ['w']], ['idle', ['i']], ['shipped', ['s']]])
     assert.equal(sections.flatMap((section) => section.members).length, requests.length)
-    // The groups that fold are the one-line ones, and only those (lineSections).
-    assert.deepEqual(sections.filter((section) => section.group.size === 'line'), lineSections(requests))
+    // The groups that fold are the ones whose states are one line each (CARD_SIZE), and only those.
+    assert.deepEqual(sections.filter((section) => section.group.size === 'line').map((section) => section.group.id),
+      CARD_GROUPS.filter((cardGroup) => cardGroup.states.every((state) => CARD_SIZE[state] === 'line')).map((cardGroup) => cardGroup.id))
     assert.deepEqual(requestSections([request('w', 'working')]).map((section) => section.group.id), ['working'])
   })
 })
@@ -50,8 +49,8 @@ describe('card size by state', () => {
     // The grid's card entries carry their state's size, so the board never restates the rule (L7).
     for (const state of Object.keys(CARD_SIZE) as LiveState[]) {
       const cards = cardGridEntries([request(state, state)]).filter((entry) => entry.kind === 'card')
-      const rows = lineSections([request(state, state)]).flatMap((section) => section.members)
-      if (CARD_SIZE[state] === 'line') assert.deepEqual([cards.length, rows.length], [0, 1], state)
+      const sizes = requestSections([request(state, state)]).map((section) => section.group.size)
+      if (CARD_SIZE[state] === 'line') assert.deepEqual([cards.length, sizes], [0, ['line']], state)
       else assert.deepEqual(cards.map((entry) => entry.kind === 'card' && entry.size), [CARD_SIZE[state]], state)
     }
   })

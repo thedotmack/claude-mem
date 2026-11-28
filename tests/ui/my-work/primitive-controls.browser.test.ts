@@ -124,7 +124,7 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
           <Button data-test="team-on" variant="secondary" size="sm" className="bg-accent text-accent-foreground hover:bg-accent">Team</Button>
           <Button data-test="secondary-plain" variant="secondary" size="sm">Plain</Button>
           <Button data-test="press-override" variant="outline" className="active:bg-accent">Pressed</Button>
-          {/* pages/my-work.tsx View switcher: a sliding pill drawn inside the chosen item, under its words. */}
+          {/* pages/focus-area.tsx View switcher: a sliding pill drawn inside the chosen item, under its words. */}
           <ToggleGroup type="single" variant="outline" size="sm" spacing={1} value="cards" aria-label="View with pill">
             <ToggleGroupItem data-test="pill-item" value="cards" className="relative data-[state=on]:bg-transparent"><span className="absolute inset-0 rounded-[inherit] bg-accent" /><span data-test="pill-label" className="relative">Cards</span></ToggleGroupItem>
           </ToggleGroup>

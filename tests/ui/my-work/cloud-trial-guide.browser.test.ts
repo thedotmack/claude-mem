@@ -229,8 +229,8 @@ browserTest('private Work View supports a full trial handoff and card setup on a
 
     await chooseUseCase(page, 10);
     expect(await page.evaluate(`document.querySelector('${guide} textarea').value`)).toContain('unresolved blocker');
-    // Each opens its page (Focus areas opens the home page at its board for now, design pass Phase 3; Requests is its
-    // own page, Phase 5). The guide sits on My Work's home page, so Back returns to it, where the next action is tried.
+    // Each opens its page (Focus areas is the focus area board, a page of its own since design pass Phase 6; Requests
+    // since Phase 5). The guide sits on My Work's home page, so Back returns to it, where the next action is tried.
     for (const [action, view, landed] of [['Open Focus Areas', 'focus', '#focus-areas'], ['All requests', 'requests', '[data-requests-lead]']]) {
       await chooseUseCase(page, 10);
       await clickGuideAction(page, action);

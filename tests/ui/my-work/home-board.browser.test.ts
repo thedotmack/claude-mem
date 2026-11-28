@@ -8,6 +8,7 @@ import {
 } from '../../helpers/chrome-devtools';
 import { REFRESH_LINE_STATES, type RefreshLineState } from '../../../src/ui/my-work/src/live/refresh-line';
 import { TICKER_STEP_MS } from '../../../src/ui/my-work/src/live/change-ticker';
+import { SAMPLE_REQUESTS, requestTitle } from '../../../src/ui/my-work/src/data';
 
 failOnCiWithoutChrome('CI requires Chrome for the My Work home page regressions.');
 
@@ -20,10 +21,16 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work home page regressions.
  *   Technical details is 44px on a touch phone;
  * - the change ticker (c-live-motion-change-ticker): its pause by button, hover and keyboard focus; its line is the
  *   Button primitive, 44px on touch; while the feed connects it says so, and Reconnect shows only where it can help;
- * - the home page (page-01) on the sample: what needs you comes first, with exactly one solid orange button on the
- *   first screen (G1), Shipped is one folded line until opened (G4), and the build story's recap tells times in the
- *   page's one clock; a suggested area's page also has one orange button; the focus board has no search box and no
- *   artwork control of its own (Find work and Workspace hold them, design pass Phase 4);
+ * - the home page (design pass Phase 6, Codex D01 and D03, Claude D02 and D03) on the sample: its first line counts
+ *   the requests marked as waiting on the owner; the first of them leads with its recorded sentence and the page's one
+ *   primary button (G1), or, with none, the working request with the newest review leads with its percent and review
+ *   time; the others and the working ones sit beside it with their Requests tabs, three rows each, then a See all that
+ *   counts what its tab holds once rows are cut; the first three focus areas follow, with See all wherever a card is
+ *   left out; nothing at all leaves no lead card; nothing is said under the alert when nothing could be read; on a phone
+ *   the lists are one link each, named for screen readers by their headings;
+ * - a focus area's page (split from the home page in Phase 6): Shipped is one folded line until opened (G4), the build
+ *   story's recap tells times in the page's one clock, and a suggested area's page has one orange button; the focus
+ *   board has no search box and no artwork control of its own (Find work and Workspace hold them, design pass Phase 4);
  * - Reply (G2) on a request whose conversation cannot be continued lands on the drawer's line saying so.
  */
 
@@ -65,6 +72,7 @@ beforeAll(async () => {
     import { ChangeTicker } from './src/ui/my-work/src/components/live-motion';
     import { RequestDetail } from './src/ui/my-work/src/components/request-detail';
     import { MyWork } from './src/ui/my-work/src/pages/my-work';
+    import { FocusAreaPage } from './src/ui/my-work/src/pages/focus-area';
     import { FocusOverview } from './src/ui/my-work/src/components/focus-overview';
     import { RefreshNotStartedError, SAMPLE_REQUESTS } from './src/ui/my-work/src/data';
     import { getConnectionStatus } from './src/ui/my-work/src/live/connection-status';
@@ -72,6 +80,7 @@ beforeAll(async () => {
     import { sampleSource } from './src/ui/my-work/src/live/sample-source';
     import { useStore } from './src/ui/my-work/src/store';
     window.React = React;
+    window.store = useStore;
     const report = (message) => fetch('/fixture-error', { method: 'POST', body: String(message) });
     window.addEventListener('error', (event) => report(event.error?.stack ?? event.message));
     window.addEventListener('unhandledrejection', (event) => report(event.reason?.stack ?? event.reason));
@@ -164,7 +173,10 @@ beforeAll(async () => {
         if (useStore.getState().work.load.state !== 'loaded') return requestAnimationFrame(fileUnderSuggestedArea);
         useStore.setState((state) => { state.work.load.model.requests.find((request) => request.id === 'r3').focusAreaId = 'fa-team'; });
       })();
-      root.render(<Providers><main style={{ padding: 16 }}><MyWork focusAreaId="fa-team" onOpen={ignore} onOpenFocus={ignore} onOpenRules={ignore} /></main></Providers>);
+      root.render(<Providers><main style={{ padding: 16 }}><FocusAreaPage focusAreaId="fa-team" onOpen={ignore} onOpenFocus={ignore} onOpenRules={ignore} /></main></Providers>);
+    } else if (view === 'area') {
+      // A focus area's page with its board and the build story's recap (the sample's Viewer: working and shipped requests).
+      root.render(<Providers><main style={{ padding: 16 }}><FocusAreaPage focusAreaId="fa-viewer" onOpen={ignore} onOpenFocus={ignore} onOpenRules={ignore} /></main></Providers>);
     } else if (view === 'reply') {
       // Reply on a request whose one conversation is Gemini's, which cannot be continued from here, or on one with none.
       const conversations = new URLSearchParams(location.search).get('conversations') === 'none' ? []
@@ -175,7 +187,7 @@ beforeAll(async () => {
       useStore.setState((state) => { state.view.openRequest = { id: request.id, fromLiveFeed: null, fallback: request, replyAsked: true }; });
       root.render(<Providers><RequestDetail request={request} onClose={ignore} onOpenFocus={ignore} /></Providers>);
     } else {
-      root.render(<Providers><main style={{ padding: 16 }}><MyWork focusAreaId={null} onOpen={ignore} onOpenFocus={ignore} onOpenRules={ignore} /></main></Providers>);
+      root.render(<Providers><main style={{ padding: 16, maxWidth: 1296, margin: '0 auto' }}><MyWork /></main></Providers>);
     }
     (function waitForPage() {
       const drawn = view === 'refresh' ? document.querySelectorAll('[data-focus-review]').length === REFRESH_LINE_STATES.length
@@ -185,11 +197,43 @@ beforeAll(async () => {
               : view === 'board' ? document.querySelector('.focus-area-card')
                 : view === 'suggested' ? document.querySelector('[data-slot="button"]') && document.querySelector('h2')
                   : view === 'reply' ? document.querySelector('[role="dialog"]')
-                    : document.querySelector('[data-line-section]');
+                    : view === 'area' ? document.querySelector('[data-board-view] [data-line-section]')
+                      : document.querySelector('[data-home-first-line]');
       if (drawn) document.fonts.ready.then(() => fetch('/fixture-ready'));
       else requestAnimationFrame(waitForPage);
     })();
     window.lineOf = (name) => document.querySelector('[data-case="' + name + '"]');
+    // The sample's requests changed in place, as a live model would bring them (the home page's cases).
+    window.setRequests = (change) => useStore.setState((state) => { const load = state.work.load; if (load.state === 'loaded') load.model.requests = change(load.model.requests); });
+    // Any other part of the model changed in place (its focus areas, whether the worker could read its store).
+    window.setModel = (change) => useStore.setState((state) => { const load = state.work.load; if (load.state === 'loaded') change(load.model); });
+    // What the home page shows: its first line, its lead card, the lists beside it and the focus areas.
+    window.homeFacts = () => {
+      // Drawn for the eye: a screen-reader-only element is a 1px box.
+      const shown = (element) => { const box = element.getBoundingClientRect(); return box.width > 1 && box.height > 1 && getComputedStyle(element).visibility !== 'hidden'; };
+      const words = (element) => element ? element.innerText.replace(/\\s+/g, ' ').trim() : null;
+      const lead = document.querySelector('[data-lead-card]');
+      return {
+        firstLine: words(document.querySelector('[data-home-first-line]')),
+        lead: lead ? {
+          kind: lead.dataset.leadCard, label: words(lead.querySelector('p')), title: words(lead.querySelector('h2')),
+          sentence: words(lead.querySelector('[data-lead-sentence]')), progress: words(lead.querySelector('[data-lead-progress]')),
+          opens: lead.querySelector('a[data-request-opener]')?.dataset.requestOpener ?? null,
+        } : null,
+        beside: [...document.querySelectorAll('[data-beside-lead]')].map((section) => ({
+          kind: section.dataset.besideLead, heading: words([...section.querySelectorAll('h2')].find(shown) ?? null),
+          // The section's name, from its heading (aria-labelledby), the only one it has.
+          name: section.hasAttribute('aria-label') ? 'aria-label: ' + section.getAttribute('aria-label') : document.getElementById(section.getAttribute('aria-labelledby'))?.textContent ?? null,
+          rows: [...section.querySelectorAll('[data-requests-row]')].filter(shown).map((row) => words(row.querySelector('[data-row-title]'))),
+          states: section.querySelectorAll('[data-state-words]').length,
+          links: [...section.querySelectorAll('a:not([data-requests-row])')].filter(shown).map((link) => ({ words: words(link), href: new URL(link.href).search })),
+        })),
+        areas: [...document.querySelectorAll('[data-home-area]')].filter(shown).map((card) => ({ id: card.dataset.homeArea, words: words(card), picture: !!card.querySelector('img'), href: new URL(card.href).search })),
+        seeAllAreas: [...document.querySelectorAll('[data-home-areas] h2 + a')].filter(shown).map(words)[0] ?? null,
+        empty: words(document.querySelector('[data-slot="empty"]')),
+        quiet: [...document.querySelectorAll('nav[aria-label="More of your work"] a, nav[aria-label="More of your work"] button')].map(words),
+      };
+    };
     window.visibleText = (element) => element.innerText;
     window.tickerTitle = () => document.querySelector('[data-ticker] button .truncate')?.textContent ?? null;
     // The build story with dated chapters as request-progress writes their headings (24-hour times), for the recap.
@@ -212,7 +256,7 @@ beforeAll(async () => {
     window.addRequestAndWatch = () => new Promise((resolve) => {
       const observer = new MutationObserver((mutations) => {
         for (const mutation of mutations) for (const node of mutation.addedNodes) {
-          // The board's card (it holds the card itself), not the home page's one-line "Moving now" row.
+          // The board's card (it holds the card itself), not a one-line row.
           if (node.nodeType === 1 && node.textContent.includes('A request that just arrived') && node.querySelector('[data-slot="card"]')) { observer.disconnect(); resolve({ opacity: node.style.opacity, transform: node.style.transform }); return; }
         }
       });
@@ -226,7 +270,7 @@ beforeAll(async () => {
   `, ['--loader:.webp=empty', '--loader:.css=empty']);
   // The stylesheet's @font-face rules ask for ./files/<name>.woff2 (Geist and Geist Mono); widths depend on the font,
   // so the real files are served (myWorkFontResponse).
-  // The focus board's own stylesheet (plain CSS, no Tailwind), after the app's as pages/my-work.tsx imports it after
+  // The focus board's own stylesheet (plain CSS, no Tailwind), after the app's as pages/focus-areas.tsx imports it after
   // main.tsx's index.css. Only the board view loads it: it lays out the whole card and its stretched button, which the
   // board's press test needs, while the other views measure the page without it.
   const boardStyles = readFileSync(resolve(app, 'src/components/focus-overview.css'), 'utf8');
@@ -506,41 +550,178 @@ const pressTryAgain = (name: string) => page!.evaluate(`[...window.lineOf(${JSON
   // About 1s here (2026-11-16); 60s for a slow CI runner.
 }, 60_000);
 
-(chromeExecutablePath ? it : it.skip)('home leads with what needs you and has exactly one solid orange button on its first screen; Shipped is one folded line', async () => {
+/**
+ * The sample's titles by request id, as the page words them (data.ts SAMPLE_REQUESTS, requestTitle): r5 your move
+ * (Other), r3 done and waiting for a check (Cloud sync), r1 and r2 working, r4 shipped. r2 has no title of its own: it
+ * shows the title of the request it resolves to.
+ */
+const SAMPLE_TITLES: Record<string, string> = Object.fromEntries(SAMPLE_REQUESTS.map((request) => [request.id, requestTitle(request, (english) => english)]));
+
+(chromeExecutablePath ? it : it.skip)('home, several waiting: the first line counts them; the first leads with its recorded sentence and the one primary button; the others and the working requests sit beside it with their Requests tabs; then the first three focus areas', async () => {
   await openFixture('source=sample', { width: 1440, height: 900 });
   try {
-    const home = await page!.evaluate(`(() => {
-      const needsYou = [...document.querySelectorAll('h2')].find((heading) => /Needs you/i.test(heading.textContent));
-      const board = document.querySelector('section.focus-overview');
-      const shipped = document.querySelector('[data-line-section="shipped"]');
-      return {
-        orange: window.orangeOnFirstScreen(),
-        needsYouTop: needsYou?.getBoundingClientRect().top ?? null,
-        needsYouBeforeBoard: !!(needsYou && board && (needsYou.compareDocumentPosition(board) & Node.DOCUMENT_POSITION_FOLLOWING)),
-        shippedTrigger: shipped?.querySelector('[data-slot="collapsible-fold-trigger"]')?.getAttribute('aria-expanded') ?? null,
-        shippedRows: shipped?.querySelectorAll('[data-request-line]').length ?? null,
-        shippedCards: [...document.querySelectorAll('[data-state-badge="shipped"]')].filter((badge) => badge.closest('[data-slot="card"]')).length,
-      };
-    })()`);
-    expect(home.orange).toHaveLength(1);
-    // The sample cannot continue a conversation, so the first card's one button reads "Open request" (G2).
-    expect(home.orange[0]).toContain('Open request');
-    expect(home.needsYouTop).not.toBeNull();
-    expect(home.needsYouTop!).toBeLessThan(900);
-    expect(home.needsYouBeforeBoard).toBe(true);
-    // Shipped folds to one line until opened (G4): no shipped request draws a card.
-    expect(home.shippedTrigger).toBe('false');
-    expect(home.shippedRows).toBe(0);
-    expect(home.shippedCards).toBe(0);
-    await page!.evaluate(`document.querySelector('[data-line-section="shipped"] [data-slot="collapsible-fold-trigger"]').click()`);
-    await waitFor(`document.querySelector('[data-line-section="shipped"] [data-request-line]')`, 'the Shipped rows to open');
+    const home = await page!.evaluate('window.homeFacts()');
+    expect(home.firstLine).toBe('2 requests are waiting on you.');
+    // Your move before done-and-waiting-for-a-check (data.ts byAttention): r5 leads, with the owner's move as recorded.
+    expect(home.lead).toEqual({ kind: 'waiting', label: 'Waiting on you in Other', title: SAMPLE_TITLES.r5, sentence: 'Pick which forecast to keep', progress: null, opens: 'r5' });
+    // Beside it, the other one waiting, then the working ones (no review time recorded in the sample: the newest start
+    // first), each list with its Requests tab; the rows carry no state words (the heading names it).
+    expect(home.beside).toEqual([
+      { kind: 'waiting', heading: 'Also waiting on you', name: 'Also waiting on you', rows: [SAMPLE_TITLES.r3], states: 0, links: [{ words: 'See all requests waiting on you', href: '?source=sample&view=requests&status=needs-you' }] },
+      { kind: 'working', heading: 'Also working', name: 'Also working', rows: [SAMPLE_TITLES.r2, SAMPLE_TITLES.r1], states: 0, links: [{ words: 'See all working requests', href: '?source=sample&view=requests&status=working' }] },
+    ]);
+    // The first three kept areas in the owner's order, each with its picture, name, goal and open requests.
+    expect(home.areas.map((area: { id: string }) => area.id)).toEqual(['fa-viewer', 'fa-sync', 'fa-search']);
+    expect(home.areas[0]).toEqual({ id: 'fa-viewer', words: 'Viewer Ship My Work LIVE as claude-mem 14. 2 requests', picture: true, href: '?source=sample&focus=fa-viewer' });
+    expect(home.seeAllAreas).toMatch(/^See all \d+$/);
+    expect(home.quiet).toEqual(['All 5 requests', 'Build story']);
+    // The lead card's Open request is the first screen's one primary button (G1).
+    expect(await page!.evaluate('window.orangeOnFirstScreen()')).toEqual(['Open request']);
+    // Nothing of the old home page is left: no Needs you block, no Moving now, no board, no ticker, no recap.
+    expect(await page!.evaluate(`[document.querySelector('[data-board-view]'), document.querySelector('[data-ticker]'), document.querySelector('section.focus-overview'),
+      [...document.querySelectorAll('h2')].find((heading) => /^(Needs you|Moving now|Build story)/i.test(heading.textContent))].filter(Boolean).length`)).toBe(0);
     expect(fixtureErrors).toEqual([]);
   } finally { await closeFixture(); }
-  // About 2s here (2026-11-16); 60s for a slow CI runner.
+  // About 2s here (2026-11-28); 60s for a slow CI runner.
 }, 60_000);
 
-(chromeExecutablePath ? it : it.skip)('the build story’s headings read their UTC times in the reader’s own zone, in the page’s twelve-hour notation; a range of days stays as written', async () => {
+(chromeExecutablePath ? it : it.skip)('home, one waiting: the line says so in the singular and nothing else waits beside it; none waiting: the working request with the newest review leads, with its percent and review time', async () => {
   await openFixture('source=sample', { width: 1440, height: 900 });
+  try {
+    await page!.evaluate(`window.setRequests((requests) => requests.filter((request) => request.id !== 'r3'))`);
+    await waitFor(`window.homeFacts().firstLine === '1 request is waiting on you.'`, 'the singular line');
+    let home = await page!.evaluate('window.homeFacts()');
+    expect(home.lead.opens).toBe('r5');
+    expect(home.beside.map((list: { kind: string }) => list.kind)).toEqual(['working']);
+    // None waiting: r1 has the newest review (r2, which started later, has none recorded), so r1 leads and says why.
+    await page!.evaluate(`window.setRequests((requests) => requests.filter((request) => request.id !== 'r5').map((request) => request.id === 'r1'
+      ? { ...request, progress: { ...request.progress, reviewedAtIso: new Date(Date.now() - 60_000).toISOString() } } : request))`);
+    await waitFor(`window.homeFacts().firstLine === 'No request is marked as waiting on you.'`, 'the line for none waiting');
+    home = await page!.evaluate('window.homeFacts()');
+    expect(home.lead).toMatchObject({ kind: 'working', label: 'Working in Viewer', title: SAMPLE_TITLES.r1, opens: 'r1',
+      sentence: 'Turn your prompts into a spec, then a React wireframe that traces every element back to it.' });
+    // Its reviewed percent and the review's time today, in the reader's clock.
+    expect(home.lead.progress).toMatch(/^70% · Latest review at \d{1,2}:\d{2} (am|pm)$/);
+    expect(home.beside).toEqual([{ kind: 'working', heading: 'Also working', name: 'Also working', rows: [SAMPLE_TITLES.r2], states: 0, links: [{ words: 'See all working requests', href: '?source=sample&view=requests&status=working' }] }]);
+    expect(await page!.evaluate('window.orangeOnFirstScreen()')).toEqual(['Open request']);
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeFixture(); }
+  // About 2s here (2026-11-28); 60s for a slow CI runner.
+}, 60_000);
+
+(chromeExecutablePath ? it : it.skip)('home with nothing waiting or working has no lead card; with no request at all it says none is recorded yet', async () => {
+  await openFixture('source=sample', { width: 1440, height: 900 });
+  try {
+    await page!.evaluate(`window.setRequests((requests) => requests.filter((request) => request.id === 'r4'))`);
+    await waitFor(`!document.querySelector('[data-lead-card]')`, 'no lead card');
+    let home = await page!.evaluate('window.homeFacts()');
+    expect(home).toMatchObject({ firstLine: 'No request is marked as waiting on you.', lead: null, beside: [], empty: null, quiet: ['All requests', 'Build story'] });
+    expect(home.areas).toHaveLength(3);
+    await page!.evaluate(`window.setRequests(() => [])`);
+    await waitFor(`document.querySelector('[data-slot="empty"]')`, 'the empty state');
+    home = await page!.evaluate('window.homeFacts()');
+    expect(home).toMatchObject({ firstLine: 'No request is marked as waiting on you.', lead: null, beside: [],
+      empty: 'No requests recorded yet. Ask an agent for something and it appears here.', quiet: ['Build story'] });
+    expect(await page!.evaluate('window.orangeOnFirstScreen()')).toEqual([]);
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeFixture(); }
+  // About 2s here (2026-11-28); 60s for a slow CI runner.
+}, 60_000);
+
+(chromeExecutablePath ? it : it.skip)('home names three rows beside the lead card; past them its See all says how many the Requests tab it opens holds', async () => {
+  await openFixture('source=sample', { width: 1440, height: 900 });
+  try {
+    // Five more of the owner's moves and three more working requests: six wait beside the lead card, five work.
+    await page!.evaluate(`window.setRequests((requests) => [...requests,
+      ...[1, 2, 3, 4, 5].map((index) => ({ ...requests.find((request) => request.id === 'r5'), id: 'r5-' + index, title: 'Another move ' + index, contentFingerprint: 'r5-' + index })),
+      ...[1, 2, 3].map((index) => ({ ...requests.find((request) => request.id === 'r1'), id: 'r1-' + index, title: 'Another working request ' + index, contentFingerprint: 'r1-' + index }))])`);
+    await waitFor(`window.homeFacts().firstLine === '7 requests are waiting on you.'`, 'seven waiting');
+    const home = await page!.evaluate('window.homeFacts()');
+    // The cap is hit in both lists: three rows each, and the link counts every request of that kind, the lead's too.
+    expect(home.beside.map((list: { kind: string; rows: string[]; links: { words: string }[] }) => ({ kind: list.kind, rows: list.rows.length, links: list.links.map((link) => link.words) }))).toEqual([
+      { kind: 'waiting', rows: 3, links: ['See all 7 requests waiting on you'] },
+      { kind: 'working', rows: 3, links: ['See all 5 working requests'] },
+    ]);
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeFixture(); }
+  // About 2s here (2026-11-28); 60s for a slow CI runner.
+}, 60_000);
+
+(chromeExecutablePath ? it : it.skip)('home with exactly three focus areas links to them all wherever it leaves one out: from 768 to 1024px, where the third card waits', async () => {
+  for (const [width, cards, seeAll] of [[1440, 3, null], [900, 2, 'See all 3'], [390, 3, null]] as const) {
+    await openFixture('source=sample', { width, height: 900 });
+    try {
+      // The sample's first three kept areas only.
+      await page!.evaluate(`window.setModel((model) => { const kept = model.focusAreas.filter((area) => area.status === 'kept').slice(0, 3).map((area) => area.id); model.focusAreas = model.focusAreas.filter((area) => kept.includes(area.id)); })`);
+      // The link is on the page at every width once a card can be left out, drawn only where one is.
+      await waitFor(`document.querySelector('[data-home-areas] h2 + a')?.textContent === 'See all 3'`, 'three focus areas');
+      const home = await page!.evaluate('window.homeFacts()');
+      expect({ width, cards: home.areas.length, seeAll: home.seeAllAreas }).toEqual({ width, cards, seeAll });
+      expect(fixtureErrors).toEqual([]);
+    } finally { await closeFixture(); }
+  }
+  // About 3s here, three widths (2026-11-28); 60s for a slow CI runner.
+}, 60_000);
+
+(chromeExecutablePath ? it : it.skip)('home says nothing under the alert when the worker could not read its saved work and nothing was read', async () => {
+  await openFixture('source=sample', { width: 1440, height: 900 });
+  try {
+    await page!.evaluate(`window.setModel((model) => { model.requests = []; model.sourceHealth = { connected: false, error: 'database is locked' }; })`);
+    await waitFor(`document.querySelector('main').innerText.includes("Can't read local work right now")`, 'the alert');
+    // As on Requests: no first line claims nothing waits, and no empty state claims nothing was recorded.
+    expect(await page!.evaluate(`[!!document.querySelector('[data-home-first-line]'), !!document.querySelector('[data-slot="empty"]')]`)).toEqual([false, false]);
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeFixture(); }
+  // About 1s here (2026-11-28); 60s for a slow CI runner.
+}, 60_000);
+
+(chromeExecutablePath ? it : it.skip)('home\'s links go where they say: Open request opens its request, See all its Requests tab, a focus area card its page, Build story its sheet', async () => {
+  await openFixture('source=sample', { width: 1440, height: 900 });
+  try {
+    const view = () => page!.evaluate(`(({ section, focusChoice, requestsStatus, openRequest }) => ({ section, focusChoice, requestsStatus, request: openRequest?.id ?? null }))(window.store.getState().view)`);
+    await page!.evaluate(`document.querySelector('[data-lead-card] a[data-request-opener]').click()`);
+    expect(await view()).toEqual({ section: 'work', focusChoice: null, requestsStatus: null, request: 'r5' });
+    await page!.evaluate(`window.store.getState().closeRequestDrawer()`);
+    await page!.evaluate(`document.querySelector('[data-beside-lead="working"] [data-requests-row]').click()`);
+    expect((await view()).request).toBe('r2');
+    await page!.evaluate(`window.store.getState().closeRequestDrawer()`);
+    await page!.evaluate(`[...document.querySelectorAll('[data-beside-lead="working"] a')].find((link) => link.textContent === 'See all working requests').click()`);
+    expect(await view()).toEqual({ section: 'requests', focusChoice: null, requestsStatus: 'working', request: null });
+    await page!.evaluate(`window.store.getState().goToPage('work')`);
+    await page!.evaluate(`document.querySelector('[data-home-area="fa-sync"]').click()`);
+    expect(await view()).toEqual({ section: 'work', focusChoice: 'fa-sync', requestsStatus: null, request: null });
+    await page!.evaluate(`window.store.getState().goToPage('work')`);
+    await page!.evaluate(`[...document.querySelectorAll('button')].find((button) => button.textContent === 'Build story').click()`);
+    await waitFor(`document.querySelector('[role="dialog"]')?.textContent.includes('What it learned about how you work')`, 'the story sheet');
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeFixture(); }
+  // About 2s here (2026-11-28); 60s for a slow CI runner.
+}, 60_000);
+
+(chromeExecutablePath ? it : it.skip)('home on a touch phone: each list beside the lead card is one link with its count, a focus area card a small picture, its name and count; every control is 44px or more and nothing scrolls sideways', async () => {
+  await openFixture('source=sample', PHONE);
+  try {
+    const home = await page!.evaluate('window.homeFacts()');
+    expect(home.lead.opens).toBe('r5');
+    expect(home.beside).toEqual([
+      // Each list keeps its name for screen readers; its heading is not drawn.
+      { kind: 'waiting', heading: null, name: 'Also waiting on you', rows: [], states: 0, links: [{ words: '1 more waiting on you', href: '?source=sample&view=requests&status=needs-you' }] },
+      { kind: 'working', heading: null, name: 'Also working', rows: [], states: 0, links: [{ words: '2 working requests', href: '?source=sample&view=requests&status=working' }] },
+    ]);
+    // The goal waits on the area's page: the card is its picture, its name and its count.
+    expect(home.areas[0]).toMatchObject({ id: 'fa-viewer', words: 'Viewer 2 requests', picture: true });
+    const layout = await page!.evaluate(`({
+      width: document.documentElement.scrollWidth,
+      small: [...document.querySelectorAll('main a[href], main button')].filter((element) => { const box = element.getBoundingClientRect(); return box.width > 0 && (box.height < 44 || box.width < 44); }).map((element) => element.textContent.trim()),
+    })`);
+    expect(layout).toEqual({ width: 390, small: [] });
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeFixture(); }
+  // About 2s here (2026-11-28); 60s for a slow CI runner.
+}, 60_000);
+
+(chromeExecutablePath ? it : it.skip)('a focus area\'s build story recap reads its UTC times in the reader’s own zone, in the page’s twelve-hour notation; a range of days stays as written', async () => {
+  await openFixture('source=sample&view=area', { width: 1440, height: 900 });
   try {
     // A fixed zone, so the test reads the same on every machine (CI runs in UTC).
     await page!.send('Emulation.setTimezoneOverride', { timezoneId: 'America/Los_Angeles' });
@@ -620,13 +801,13 @@ const pressTryAgain = (name: string) => page!.evaluate(`[...window.lineOf(${JSON
   // About 1s here (2026-11-16); 60s for a slow CI runner.
 }, 60_000);
 
-(chromeExecutablePath ? it : it.skip)('the story sheet: Read all is the shared fold row, four learned rules with the rest counted, every rail mark on the rail', async () => {
+(chromeExecutablePath ? it : it.skip)('the story sheet from home\'s Build story: Read all is the shared fold row, four learned rules with the rest counted, every rail mark on the rail', async () => {
   for (const theme of ['light', 'dark'] as const) {
     await openFixture('source=sample', { width: 1440, height: 900 });
     try {
       if (theme === 'dark') await page!.evaluate(`document.documentElement.classList.add('dark')`);
       await page!.evaluate('window.useLongStory(24)');
-      await page!.evaluate(`[...document.querySelectorAll('button')].find((button) => button.textContent.startsWith('Read the build story')).click()`);
+      await page!.evaluate(`[...document.querySelectorAll('button')].find((button) => button.textContent === 'Build story').click()`);
       await waitFor(`document.querySelector('[role="dialog"] ol li')`, 'the story sheet');
       const sheet = await page!.evaluate(`(() => {
         const dialog = document.querySelector('[role="dialog"]');
@@ -662,10 +843,13 @@ const pressTryAgain = (name: string) => page!.evaluate(`[...window.lineOf(${JSON
   // About 4s here, both themes (2026-11-16); 60s for a slow CI runner.
 }, 60_000);
 
-(chromeExecutablePath ? it : it.skip)('under reduced motion a card arrives on the board without its fade and slide, in the component itself (rule 8)', async () => {
-  await openFixture('source=sample', { width: 1440, height: 900 });
+(chromeExecutablePath ? it : it.skip)('under reduced motion a card arrives on a focus area\'s board without its fade and slide, in the component itself (rule 8)', async () => {
+  await openFixture('source=sample&view=area', { width: 1440, height: 900 });
   try {
     await page!.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+    // Sorted by Newest, the board draws a working request as a card too (pages/focus-area.tsx CardsView), so the
+    // arriving request is a card.
+    await page!.evaluate(`window.store.getState().setSort('started')`);
     await page!.settle();
     const arrived = await page!.evaluate('window.addRequestAndWatch()');
     // With motion, a card starts at opacity 0 and 8px down (MotionConfig's "user" setting still fades opacity).
@@ -676,10 +860,16 @@ const pressTryAgain = (name: string) => page!.evaluate(`[...window.lineOf(${JSON
   // About 1s here (2026-11-16); 60s for a slow CI runner.
 }, 60_000);
 
-(chromeExecutablePath ? it : it.skip)('one-line rows are the small button’s height at desktop and 44px on a touch phone, by the primitive’s own rule', async () => {
+(chromeExecutablePath ? it : it.skip)('on a focus area\'s page Shipped is one folded line until opened, and its one-line rows are the small button’s height at desktop and 44px on a touch phone, by the primitive’s own rule', async () => {
   for (const viewport of [{ width: 1440, height: 900 }, PHONE]) {
-    await openFixture('source=sample', viewport);
+    await openFixture('source=sample&view=area', viewport);
     try {
+      // Shipped is one folded line until opened (G4): its fold is closed, it draws no row, and no shipped request is a card.
+      expect(await page!.evaluate(`(() => {
+        const shipped = document.querySelector('[data-line-section="shipped"]');
+        return { trigger: shipped.querySelector('[data-slot="collapsible-fold-trigger"]').getAttribute('aria-expanded'), rows: shipped.querySelectorAll('[data-request-line]').length,
+          cards: [...document.querySelectorAll('[data-state-badge="shipped"]')].filter((badge) => badge.closest('[data-slot="card"]')).length };
+      })()`)).toEqual({ trigger: 'false', rows: 0, cards: 0 });
       await page!.evaluate(`document.querySelector('[data-line-section="shipped"] [data-slot="collapsible-fold-trigger"]').click()`);
       await waitFor(`document.querySelector('[data-line-section="shipped"] [data-request-line]')`, 'the Shipped rows to open');
       const height = await page!.evaluate(`document.querySelector('[data-line-section="shipped"] [data-request-line]').getBoundingClientRect().height`);

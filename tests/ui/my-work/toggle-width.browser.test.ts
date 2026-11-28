@@ -11,8 +11,8 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work toggle width regressio
 
 /**
  * D b22 M462: a chosen View or Filter item shows a check and heavier text, and keeps the width it has when it is not
- * chosen, so the row does not shift on every switch. Measured on the real My Work page (pages/my-work.tsx on the sample
- * source) with the app's real stylesheet and its Geist font, at 1440 and at 390: every item is chosen once, and after
+ * chosen, so the row does not shift on every switch. Measured on the real focus area page, whose board has them until
+ * design pass Phase 8 (pages/focus-area.tsx, the sample's Viewer) with the app's real stylesheet and its Geist font, at 1440 and at 390: every item is chosen once, and after
  * each choice every item's width is read. The chosen item's check must show and the others' must not, so hiding the
  * check cannot pass.
  */
@@ -32,14 +32,14 @@ type ItemSamples = { label: string; chosen: number[]; notChosen: number[]; check
   const styles = css.build(scanner.scan());
   // The stylesheet's @font-face rules ask for ./files/<name>.woff2 (Geist and Geist Mono); widths depend on the font,
   // so the real files are served (myWorkFontResponse).
-  // The page imports its focus artwork (.webp) and the focus overview's stylesheet. Neither styles the toggles, and
+  // The page imports its focus artwork (.webp) and the focus board's stylesheet. Neither styles the toggles, and
   // the one-file fixture bundle has nowhere to put them, so both load empty.
   const bundle = compileBrowserFixture(`
     import React from './src/ui/my-work/node_modules/react';
     import { createRoot } from './src/ui/my-work/node_modules/react-dom/client';
     import { MotionConfig } from './src/ui/my-work/node_modules/motion/react';
     import { TooltipProvider } from './src/ui/my-work/src/components/ui/tooltip';
-    import { MyWork } from './src/ui/my-work/src/pages/my-work';
+    import { FocusAreaPage } from './src/ui/my-work/src/pages/focus-area';
     import { sampleSource } from './src/ui/my-work/src/live/sample-source';
     import { useStore } from './src/ui/my-work/src/store';
     window.React = React;
@@ -51,7 +51,7 @@ type ItemSamples = { label: string; chosen: number[]; notChosen: number[]; check
     // App.tsx mounts the page inside these two providers.
     createRoot(document.getElementById('root')).render(
       <MotionConfig reducedMotion="user"><TooltipProvider delayDuration={150}><main style={{ padding: 16 }}>
-        <MyWork focusAreaId={null} onOpen={ignore} onOpenFocus={ignore} onOpenRules={ignore} />
+        <FocusAreaPage focusAreaId="fa-viewer" onOpen={ignore} onOpenFocus={ignore} onOpenRules={ignore} />
       </main></TooltipProvider></MotionConfig>);
     const group = (name) => document.querySelector('[data-slot="toggle-group"][aria-label="' + name + '"]');
     const items = (name) => [...(group(name)?.querySelectorAll('[data-slot="toggle-group-item"]') ?? [])];

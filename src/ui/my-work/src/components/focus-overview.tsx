@@ -133,7 +133,7 @@ function PastFocusLink() {
 }
 
 /**
- * My Work's saved areas on the home page board. Reading this view never starts inference. Finding an area by its words
+ * My Work's saved areas: the Focus areas page's board (pages/focus-areas.tsx) and setup's first reveal. Reading this view never starts inference. Finding an area by its words
  * is Find work's (the bar, Cmd K), and the artwork choice is Workspace's (design pass Phase 4).
  */
 export function FocusOverview({ areas, requests, loading = false, workLoading = false, incomplete = false, emptyMessage, discovering = false, onOpenArea, onOpenRequest, artwork = 'full', anchorId, expandAllOn = 0 }: {
@@ -142,7 +142,7 @@ export function FocusOverview({ areas, requests, loading = false, workLoading = 
   onOpenArea?: (id: string) => void; onOpenRequest?: (request: Request) => void
   /** Display density only, chosen on Workspace (store view.focusArtwork). The setup screen has no store, so it shows full artwork. */
   artwork?: ArtworkDensity
-  /** The board's place on the page (My Work: `focus-areas`, where the bar's Focus areas scrolls). */
+  /** The board's id (Focus areas: `focus-areas`, which the address `/#focus-areas` from before the bar names). */
   anchorId?: string
   /** Each new value shows every area (each press of the bar's Focus areas); 0 leaves the choice to the person. */
   expandAllOn?: number

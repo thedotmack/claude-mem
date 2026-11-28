@@ -21,7 +21,9 @@ import { CloudTrialGuide } from '@/components/cloud-trial-guide'
 import { sharedViewerOwner } from '@/live/shared-viewer-session'
 import { useCloudTrial } from '@/live/use-cloud-trial'
 import { StickyBanner } from '@/components/aceternity/sticky-banner'
-import { MyWork } from '@/pages/my-work'
+import { FocusAreaPage } from '@/pages/focus-area'
+import { FocusAreasBoard } from '@/pages/focus-areas'
+import { HomeDate, MyWork } from '@/pages/my-work'
 import { Requests } from '@/pages/requests'
 import { Req } from '@/spec/req'
 import { Spinner } from '@/components/ui/spinner'
@@ -162,19 +164,25 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
   // (once the page is tall enough to reach it). The next move's ask stops a wait that is still on.
   useLayoutEffect(() => scrollAsk ? runScrollAsk(scrollAsk.target) : undefined, [scrollAsk])
   const onHome = view === 'work' && !focusAreaId
+  // A focus area's page (or Other's) is My Work's `work` section with an area chosen.
+  const onAreaPage = view === 'work' && focusAreaId !== null
+  // Build story opens the home page until the design pass builds its page (Phase 7).
+  const showsHome = onHome || view === 'build-story'
   // A focus area's page is named by its area; its own header shows the name, so the h1 is for screen readers there.
   const areaName = focusAreaId === OTHER_FOCUS_AREA_ID ? t('Other') : focusAreas.find((area) => area.id === focusAreaId)?.name
   // Requests is headed by its status tab or its grouping ("Idle requests", "Requests by agent").
-  const heading = view === 'work' && focusAreaId ? areaName ?? pageHeading('focus', t)
+  const heading = onAreaPage ? areaName ?? pageHeading('focus', t)
     : view === 'requests' ? requestsHeading({ requestsStatus, requestsBy }, t) : pageHeading(view, t)
   const frame = PAGE_FRAME[view]
   const crumb = crumbOf({ section: view, requestsBy })
-  const home = <MyWork focusAreaId={view === 'work' ? focusAreaId : null} onOpen={openRequestDrawer} onReply={(request) => openRequestDrawer(request, { reply: true })} onOpenFocus={goToFocus} onOpenRules={() => goToPage('rules')} />
-  // What each page shows. Focus areas opens the home page at its board, and Build story opens it, until the design pass
-  // builds them (Phase 7). The same element at the same place, so moving between those keeps the home page's own state.
+  // The same element at the same place for the home page and Build story, so moving between them keeps its own state.
+  const home = <MyWork />
+  // What each page shows. Focus areas is the focus area board until the design pass builds its page (Phase 7).
   const page: Record<Section, () => ReactNode> = {
-    work: () => home,
-    focus: () => home,
+    work: () => focusAreaId
+      ? <FocusAreaPage focusAreaId={focusAreaId} onOpen={openRequestDrawer} onReply={(request) => openRequestDrawer(request, { reply: true })} onOpenFocus={goToFocus} onOpenRules={() => goToPage('rules')} />
+      : home,
+    focus: () => <FocusAreasBoard />,
     requests: () => <Requests />,
     'build-story': () => home,
     workspace: () => <Workspace />,
@@ -215,9 +223,11 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
         <TooltipProvider delayDuration={150}>
           {/* R8.1: My Work at the worker's own address, read from this computer's worker and its live feed. */}
           <Req ids={['R10.3', 'R10.2', 'R8.1']} className="min-h-svh">
-            <ShellFrame above={above} heading={heading} headingHidden={view === 'work' && focusAreaId !== null} mainRef={mainRef}
-              headingFocusTarget={frame.headingFocusTarget} compact={frame.compact} aboveHeading={crumb && <PageCrumb to={crumb} />}
-              belowHeading={frame.reviewLine && !(view === 'work' && focusAreaId) && <ReviewFailedLine />}
+            {/* A focus area's page has its own header: its view heading, and the failure line in it (focus-header.tsx). */}
+            <ShellFrame above={above} heading={heading} headingHidden={onAreaPage} mainRef={mainRef}
+              headingFocusTarget={frame.headingFocusTarget && !onAreaPage} compact={frame.compact} aboveHeading={crumb && <PageCrumb to={crumb} />}
+              headingAside={showsHome && <HomeDate />}
+              belowHeading={frame.reviewLine && !onAreaPage && <ReviewFailedLine />}
               below={
                 // Always mounted: its code loads after first paint, and closing keeps the loaded detail for a reopen.
                 <Suspense fallback={liveOpenRequest ? <RequestDetailLoading title={liveOpenRequest.title ?? liveOpenRequest.resolvesTo?.title ?? t('Untitled request')} onClose={closeRequestDrawer} /> : null}>

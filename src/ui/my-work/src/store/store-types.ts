@@ -87,8 +87,8 @@ export interface Workspace { mode: 'home' | 'web'; team: boolean; connected: boo
 
 /**
  * Where the window scrolls once the page has drawn the place the person went to (App.tsx, lib/scroll-ask.ts), one ask
- * per move: a new page from its top, Back, Forward and a reload where the person left that history entry, and Focus
- * areas at its board on the home page until it has a page of its own.
+ * per move: a new page from its top (or at an element it names: a rule Find work opened), Back, Forward and a reload
+ * where the person left that history entry.
  */
 export type ScrollTarget = { to: 'top' } | { to: 'element'; elementId: string } | { to: 'position'; y: number }
 
@@ -146,8 +146,8 @@ export interface ViewState {
 export interface ViewSlice {
   view: ViewState
   /**
-   * Shows a page from its top (Focus areas at its board on the home page, for now), or, with `elementId`, at that
-   * element once the page has drawn it (a rule Find work opened on My Rules). Requests opens on its All tab.
+   * Shows a page from its top, or, with `elementId`, at that element once the page has drawn it (a rule Find work
+   * opened on My Rules). Requests opens on its All tab.
    */
   goToPage: (page: Section, options?: { elementId?: string }) => void
   /**

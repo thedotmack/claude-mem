@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, setSystemTime } from 'bun:test';
 import { setLocale } from '../src/ui/i18n/core';
-import { clockTime, displayTime } from '../src/ui/my-work/src/lib/display-time';
+import { clockTime, displayTime, todayWords } from '../src/ui/my-work/src/lib/display-time';
 
 /**
  * The instant this process's clock reads while displayTime words a fixed instant (it takes no `now`; it reads
@@ -143,5 +143,43 @@ describe('clockTime', () => {
     expect(clockTime('not yet confirmed')).toBeNull();
     expect(clockTime('Today 3:45 pm')).toBeNull();
     expect(clockTime('2026-13-45T99:00:00Z')).toBeNull();
+  });
+});
+
+// The home page's date beside its title (design pass Phase 6): today in the reader's words, and the same day as a
+// <time>'s dateTime, both from the reader's own clock.
+describe('todayWords', () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  beforeAll(() => {
+    let stored: string | null = null;
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: { localStorage: {
+      getItem: () => stored,
+      setItem: (_key: string, value: string) => { stored = value; },
+    } } });
+    Object.defineProperty(globalThis, 'document', { configurable: true, value: { documentElement: { lang: 'en' } } });
+  });
+  afterAll(() => {
+    setLocale('en');
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow); else Reflect.deleteProperty(globalThis, 'window');
+    if (previousDocument) Object.defineProperty(globalThis, 'document', previousDocument); else Reflect.deleteProperty(globalThis, 'document');
+  });
+  // Local wall-clock instants, so the day holds in any time zone the tests run in: late on a Saturday, and early on a
+  // day whose month and day have one digit.
+  const lateSaturday = new Date(2026, 10, 28, 23, 30).getTime();
+  const earlyInJanuary = new Date(2027, 0, 5, 0, 5).getTime();
+
+  it('says the local day short with its weekday in English, and the same day as YYYY-MM-DD', () => {
+    setLocale('en');
+    expect(todayWords(lateSaturday)).toEqual({ short: 'Sat, Nov 28', iso: '2026-11-28' });
+    expect(todayWords(earlyInJanuary)).toEqual({ short: 'Tue, Jan 5', iso: '2027-01-05' });
+  });
+
+  it('says the day in the reader\'s language; the machine-read day does not change with it', () => {
+    setLocale('fr');
+    const french = todayWords(lateSaturday);
+    expect(french.short).toBe(new Intl.DateTimeFormat('fr', { weekday: 'short', month: 'short', day: 'numeric' }).format(lateSaturday));
+    expect(french.short).not.toContain('Sat');
+    expect(french.iso).toBe('2026-11-28');
   });
 });

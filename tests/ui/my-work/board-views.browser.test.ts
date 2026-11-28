@@ -104,6 +104,9 @@ beforeAll(async () => {
     const idleCards = ${IDLE_CARDS};
     const subTask = ${JSON.stringify(SUB_TASK)};
     const scenario = new URLSearchParams(location.search).get('scenario');
+    // Every generated request placed in this focus area (\`&placed=fa-viewer\`), so that area's page shows the old board
+    // with all of them (Home gave its board up in design pass Phase 6; an area's page keeps it until Phase 8).
+    const placed = new URLSearchParams(location.search).get('placed');
     // Every read the page makes, and every refresh it starts, counted (Try again must read or start exactly once).
     window.loads = 0;
     window.refreshStarts = 0;
@@ -115,7 +118,7 @@ beforeAll(async () => {
     // the lifecycle rules; each starts an hour after the one before, so Newest puts the last made first.
     const made = (index, state, agentId) => {
       const from = { 'your-move': byId('r5'), working: byId('r1'), idle: { ...byId('r1'), state: 'idle', runningLive: false }, shipped: byId('r4') }[state];
-      return { ...from, id: 'g' + index, title: 'Generated request ' + index, contentFingerprint: 'g' + index, agentId, askedBy: 'You',
+      return { ...from, ...(placed ? { focusAreaId: placed } : {}), id: 'g' + index, title: 'Generated request ' + index, contentFingerprint: 'g' + index, agentId, askedBy: 'You',
         startedAtIso: new Date(Date.UTC(2026, 9, 1, 12) + index * 3_600_000).toISOString(), startedAt: 'Oct ' + (1 + Math.floor(index / 24)) + ', 12:00 pm' };
     };
     // Empty agents and subagents of the work viewer's Claude Code: three linked to it, one whose parent is not recorded.
@@ -348,9 +351,12 @@ async function accessibleName(selector: string): Promise<{ role: string; name: s
 // Each test opens Chrome and the whole App (1–2s locally); 60s leaves room for a cold CI runner and the waits inside.
 const TEST_LIMIT_MS = 60_000;
 
+/** The many scenario on a focus area's page, every generated request placed in it: the old board's Cards, List, By agent and Team until design pass Phase 8. */
+const AREA_BOARD = '&scenario=many&placed=fa-viewer&focus=fa-viewer';
+
 it.skipIf(!chromeExecutablePath)('the List draws 50 rows; "Show 50 more" adds 50, says how many are left and moves focus to the first new row', async () => {
   try {
-    await openPage('&scenario=many');
+    await openPage(AREA_BOARD);
     await waitFor(`window.store.getState().work.load.state === 'loaded'`, 'the many-request board');
     await chooseView('List');
     // Sorted by Newest the List is one list in that order (G4: grouped only attention-first with every request).
@@ -390,13 +396,13 @@ it.skipIf(!chromeExecutablePath)('the List draws 50 rows; "Show 50 more" adds 50
     await waitFor(`window.tableRows().length === ${MANY.working}`, 'the working filter');
     await page!.evaluate(`window.store.getState().setFilter('all')`);
     await waitFor(`window.tableRows().length === ${LINE_ROWS_PER_PAGE}`, 'the first page after the filter');
-    // And a new area: two pages in the work viewer's area, then home again, one page.
-    await page!.evaluate(`window.store.getState().goToFocus('fa-viewer')`);
-    await waitFor(`window.tableRows().length === ${LINE_ROWS_PER_PAGE} && !document.getElementById('all-requests')`, "the area's first page");
+    // And a new area: two pages in the work viewer's area, then another area and back, one page.
     await page!.evaluate(`window.clickNamed('^Show 50 more')`);
     await waitFor(`window.tableRows().length === 100`, 'two pages in the area');
-    await page!.evaluate(`window.store.getState().goToPage('work')`);
-    await waitFor(`document.getElementById('all-requests') && window.tableRows().length === ${LINE_ROWS_PER_PAGE}`, 'home on its first page');
+    await page!.evaluate(`window.store.getState().goToFocus('fa-sync')`);
+    await waitFor(`window.tableRows().length === 0 && document.querySelector('[data-focus-header]')`, 'the Cloud sync area, which holds none of them');
+    await page!.evaluate(`window.store.getState().goToFocus('fa-viewer')`);
+    await waitFor(`window.tableRows().length === ${LINE_ROWS_PER_PAGE}`, "the work viewer's area on its first page");
     expect(fixtureErrors).toEqual([]);
   } finally {
     await closePage();
@@ -405,7 +411,7 @@ it.skipIf(!chromeExecutablePath)('the List draws 50 rows; "Show 50 more" adds 50
 
 it.skipIf(!chromeExecutablePath)('Tab reaches a List row, Enter opens its drawer, and the table has a name; non-sortable headings look plain', async () => {
   try {
-    await openPage('&scenario=many');
+    await openPage(AREA_BOARD);
     await waitFor(`window.store.getState().work.load.state === 'loaded'`, 'the many-request board');
     await chooseView('List');
     await waitFor(`window.tableRows().length > 0`, 'the List');
@@ -429,7 +435,7 @@ it.skipIf(!chromeExecutablePath)('Tab reaches a List row, Enter opens its drawer
 
 it.skipIf(!chromeExecutablePath)('the status cell reads as one word, also while its tiles riffle after a live change, and only the newest change riffles', async () => {
   try {
-    await openPage('&scenario=many');
+    await openPage(AREA_BOARD);
     await waitFor(`window.store.getState().work.load.state === 'loaded'`, 'the many-request board');
     await chooseView('List');
     await waitFor(`window.tableRows().length > 0`, 'the List');
@@ -473,7 +479,7 @@ it.skipIf(!chromeExecutablePath)('the status cell reads as one word, also while 
 
 it.skipIf(!chromeExecutablePath)('on a touch phone every List row is at least 44px tall and the page is as wide as the window', async () => {
   try {
-    await openPage('&scenario=many', { width: 390, height: 844, touch: true });
+    await openPage(AREA_BOARD, { width: 390, height: 844, touch: true });
     await waitFor(`window.store.getState().work.load.state === 'loaded'`, 'the many-request board');
     await chooseView('List');
     await page!.evaluate(`window.store.getState().setSort('started')`);
@@ -894,7 +900,7 @@ it.skipIf(!chromeExecutablePath)('Mark finished asks first (its route cannot be 
   }
 }, TEST_LIMIT_MS);
 
-it.skipIf(!chromeExecutablePath)('the read-error card (sample case) is plain words at the top of the board, its raw reason folded, and stays there when nothing matches', async () => {
+it.skipIf(!chromeExecutablePath)('the read-error card (sample case) is plain words on Home under its first line and at the top of Requests\' list, its raw reason folded, and stays there when nothing matches', async () => {
   try {
     await openPage(`&sample-state=${sampleState('read-errors')}`);
     await waitFor(`document.querySelector('[data-read-errors=shown]')`, 'the read-error card');
@@ -905,30 +911,21 @@ it.skipIf(!chromeExecutablePath)('the read-error card (sample case) is plain wor
     expect(await page!.evaluate(`${card}.innerText.includes('r-unreadable-1') || ${card}.innerText.includes('is inconsistent')`)).toBe(false);
     await page!.evaluate(`${card}.querySelector('[data-slot=collapsible-fold-trigger]').click()`);
     await waitFor(`${card}.innerText.includes('is inconsistent')`, 'the raw reason under Details');
-    // Shown once, at the top of the board, in every layout.
-    for (const view of ['Cards', 'List', 'By agent']) {
-      await chooseView(view);
-      expect(await page!.evaluate(`document.querySelectorAll('[data-read-errors]').length`)).toBe(1);
-      // After the board's controls (the Filter group is the last radio group on the page) and before everything the
-      // board draws, in document order.
-      expect(await page!.evaluate(`(() => {
-        const card = document.querySelector('[data-read-errors]');
-        const filter = [...document.querySelectorAll('[role=radiogroup]')].at(-1);
-        const follows = (first, second) => !!(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING);
-        const board = [...document.querySelectorAll('[data-slot=card], [data-list-row], [data-agent-group], [data-line-section], [data-request-group]')].filter((element) => follows(filter, element));
-        return follows(filter, card) && board.length > 0 && board.every((element) => follows(card, element));
-      })()`)).toBe(true);
-    }
-    // Nothing matches the filter: the card stays, "Nothing here" says so under it, and By agent still folds its agents
-    // with their count (nothing was drawn under the card).
-    await page!.evaluate(`window.store.getState().setFilter('closed')`);
-    for (const view of ['Cards', 'By agent']) {
-      await chooseView(view);
-      await waitFor(`[...document.querySelectorAll('[data-slot=empty]')].some((empty) => empty.textContent.includes('Nothing here'))`, `"Nothing here" on ${view}`);
-      expect(await page!.evaluate(`(() => { const empty = [...document.querySelectorAll('[data-slot=empty]')].find((each) => each.textContent.includes('Nothing here')); return !!(document.querySelector('[data-read-errors=shown]').compareDocumentPosition(empty) & Node.DOCUMENT_POSITION_FOLLOWING) })()`)).toBe(true);
-    }
-    expect(await page!.evaluate(`document.querySelector('[data-agent-fold=idle-agents] [data-slot=collapsible-fold-trigger] > span:not([data-slot])').textContent`)).toBe('4 agents have nothing in this view');
-    await page!.evaluate(`window.store.getState().setFilter('all')`);
+    // On Home: once, after the first line (whose count may be missing them) and before the lead card.
+    const placed = (before: string, after: string) => page!.evaluate(`(() => {
+      const follows = (first, second) => !!(first && second && first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING);
+      const card = document.querySelector('[data-read-errors]');
+      return { cards: document.querySelectorAll('[data-read-errors]').length, placed: follows(document.querySelector(${JSON.stringify(before)}), card) && follows(card, document.querySelector(${JSON.stringify(after)})) };
+    })()`);
+    expect(await placed('[data-home-first-line]', '[data-lead-card]')).toEqual({ cards: 1, placed: true });
+    // On Requests: once, after the status tabs and before the rows; words that match nothing leave it there, the line
+    // saying so under it.
+    await page!.evaluate(`window.store.getState().goToPage('requests')`);
+    await waitFor(`document.querySelector('[data-board-view=list] [data-requests-row]') && document.querySelector('[data-read-errors=shown]')`, 'Requests with the card');
+    expect(await placed('nav[aria-label="Status"]', '[data-board-view=list] [data-requests-row]')).toEqual({ cards: 1, placed: true });
+    await page!.evaluate(`window.store.getState().setRequestsWords('zebra')`);
+    await waitFor(`document.querySelector('[data-board-view=list] [data-slot=empty]')`, 'nothing found');
+    expect(await placed('nav[aria-label="Status"]', '[data-board-view=list] [data-slot=empty]')).toEqual({ cards: 1, placed: true });
     expect(fixtureErrors).toEqual([]);
   } finally {
     await closePage();
@@ -961,9 +958,9 @@ it.skipIf(!chromeExecutablePath)('the read-error card: Try again says what it di
     expect(await page!.evaluate(`document.querySelector('[data-read-errors=shown]').innerText`)).toContain('1 request couldn’t be read');
     const foldTrigger = `document.querySelector('[data-read-errors=dismissed] [data-slot=collapsible-fold-trigger]')`;
     expect(await page!.evaluate(`${foldTrigger}.textContent`)).toBe('1 dismissed request couldn’t be readShow them');
-    // The last one: the alert goes, its two requests fold to one row, and focus lands on the board's heading, shown.
+    // The last one: the alert goes, its two requests fold to one row, and focus lands on the page's heading, shown.
     await press('Enter');
-    await waitFor(`!document.querySelector('[data-read-errors=shown]') && document.activeElement?.id === 'all-requests'`, 'focus on the board heading');
+    await waitFor(`!document.querySelector('[data-read-errors=shown]') && document.activeElement?.matches('h1[data-view-heading]')`, "focus on the page's heading");
     expect(await page!.evaluate('window.focusShows()')).toBe(true);
     expect(await page!.evaluate(`${foldTrigger}.textContent`)).toBe('2 dismissed requests couldn’t be readShow them');
     // The fold row keeps focus as it opens and closes.
@@ -1162,11 +1159,11 @@ it.skipIf(!chromeExecutablePath)(`By agent rows at 768, 1024, 1280 and on a touc
 }, TEST_LIMIT_MS);
 }
 
-it.skipIf(!chromeExecutablePath)('one live model that changes two requests moves two things at most: the List on Home (the ticker and the newest riffle), By agent (nothing) and Team (the newest riffle) on Requests (rule 8)', async () => {
+it.skipIf(!chromeExecutablePath)('one live model that changes two requests moves two things at most: the List on a focus area\'s page (the ticker and the newest riffle), By agent (nothing) and Team (the newest riffle) on Requests (rule 8)', async () => {
   try {
-    await openPage('&scenario=many');
+    await openPage(AREA_BOARD);
     await waitFor(`window.store.getState().work.load.state === 'loaded'`, 'the many-request board');
-    // Each round flips the same two working requests in one model: on Home's List table, on By agent (where two agents'
+    // Each round flips the same two working requests in one model: on the area's List table, on By agent (where two agents'
     // groups change places), and on the Team board.
     const rounds: [string, string][] = [['List', 'your-move'], ['By agent', 'working'], ['Team', 'your-move']];
     for (const [view, state] of rounds) {
@@ -1207,7 +1204,7 @@ it.skipIf(!chromeExecutablePath)('one live model that changes two requests moves
 for (const scrollbar of SCROLLBAR_MODES) {
 it.skipIf(!chromeExecutablePath)(`from 768px up to the table a List row keeps its progress, start, area and running time; with Team on the List is rows that say who asked, the title kept readable; the table only where its title column keeps ${LIST_TITLE_MIN_PX}px, with ${scrollbar.label}`, async () => {
   try {
-    await openPage(`&scenario=many${scrollbar.query}`, { width: 1024, height: 900 });
+    await openPage(`${AREA_BOARD}${scrollbar.query}`, { width: 1024, height: 900 });
     await waitFor(`window.store.getState().work.load.state === 'loaded'`, 'the many-request board');
     await chooseView('List');
     await waitFor(`document.querySelector('[data-request-row] [data-row-facts]')`, 'the List rows');
@@ -1273,7 +1270,7 @@ it.skipIf(!chromeExecutablePath)(`from 768px up to the table a List row keeps it
 
 it.skipIf(!chromeExecutablePath)('the Progress cell reads its percent once, and a shipped request that took under a minute says so', async () => {
   try {
-    await openPage('&scenario=many');
+    await openPage(AREA_BOARD);
     await waitFor(`window.store.getState().work.load.state === 'loaded'`, 'the many-request board');
     await chooseView('List');
     await page!.evaluate(`window.store.getState().setSort('started')`);
@@ -1292,7 +1289,7 @@ it.skipIf(!chromeExecutablePath)('the Progress cell reads its percent once, and 
 
 it.skipIf(!chromeExecutablePath)('the sorted Cards board pages through the shared paging: a new sort starts over, and "Show more" puts focus on the first card it added, shown', async () => {
   try {
-    await openPage('&scenario=many');
+    await openPage(AREA_BOARD);
     await waitFor(`window.store.getState().work.load.state === 'loaded'`, 'the many-request board');
     // Every idle request working again: 83 working cards, a page and a half under the Working filter.
     await page!.evaluate(`window.receive((model) => ({ ...model, requests: model.requests.map((request) => request.state === 'idle' ? { ...request, state: 'working' } : request) }))`);

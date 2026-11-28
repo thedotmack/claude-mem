@@ -1,0 +1,1 @@
+import{Z as e}from"./parse-sse-frame-D5sye84f.js";var t={recorded:e=>e,unblock:(t,n)=>e(n(`Unblock: {step}`),{step:t}),ship:(e,t)=>t(`Ship it`)};function n(e,n){return t[e.step](e.text??``,n)}export{n as t};

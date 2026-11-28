@@ -27,6 +27,12 @@ export function usePageHref(section: Section): string {
   return writeRoute(new URL(window.location.href), { section, openRequest: null, ...NO_PAGE_DETAILS }).href
 }
 
+/** The address of a focus area's page (`?focus=<id>`), from the page's own address as usePageHref keeps it. */
+export function useFocusHref(focusAreaId: string): string {
+  useStore((state) => state.view.themeForThisVisit)
+  return writeRoute(new URL(window.location.href), { section: 'work', openRequest: null, ...NO_PAGE_DETAILS, focusChoice: focusAreaId }).href
+}
+
 /** The place shown, as an address names it (without the open request), and the visit's theme, which the address carries. */
 const placeShown = ({ view }: { view: ViewState }) => ({
   section: view.section, focusChoice: view.focusChoice, findQuery: view.findQuery, requestsStatus: view.requestsStatus, requestsBy: view.requestsBy,
@@ -44,7 +50,7 @@ export function useRequestsHref(move: RequestsMove): string {
 
 /**
  * The address of a request opened over the page shown (`?request=`, kept with the page's own details), for the rows
- * that are links to their request (pages/requests.tsx RequestListRow).
+ * that are links to their request (components/request-rows.tsx RequestListRow).
  */
 export function useRequestHref(): (requestId: string) => string {
   const place = useStore(useShallow(placeShown))

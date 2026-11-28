@@ -1,8 +1,10 @@
 // Requests as rows in their state groups (decision G4): the old board's List below the table's width, the Team columns,
-// and the Cards board's folded Idle and Shipped (By agent draws Requests' own rows, pages/requests.tsx RequestListRow).
-// Self-contained, so either board layout can mount them (plan rule 12).
+// and the Cards board's folded Idle and Shipped. And Requests' own one-line rows (RequestListRow), which Requests, its
+// By agent and the home page's lists beside its lead card draw. Self-contained, so any layout can mount them (plan
+// rule 12).
 import type { ReactNode } from 'react'
-import { AgentIcon, FocusAreaChip, LocalTime, NextMove, ProgressMeter, STATE_LABEL, STATE_SURFACE, StateBadge } from '@/components/bits'
+import { ChevronRightIcon } from 'lucide-react'
+import { AgentIcon, FocusAreaChip, LocalTime, NextMove, ProgressMeter, STATE_LABEL, STATE_SURFACE, StateBadge, StateWords } from '@/components/bits'
 import { RunningFor } from '@/components/live-motion'
 import { SplitFlapText } from '@/components/split-flap'
 import { Button } from '@/components/ui/button'
@@ -10,12 +12,15 @@ import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/compo
 import { TablePageFooter } from '@/components/ui/table'
 import { interpolate, useI18n } from '@/lib/i18n'
 import { usePagedRows } from '@/lib/paged-rows'
+import { placeLinkPress } from '@/lib/place-link'
 import { usePrefersReducedMotion } from '@/lib/use-media'
 import { cn } from '@/lib/utils'
 import { LINE_ROWS_PER_PAGE, requestSections, type CardGroup } from '@/live/card-groups'
 import { DURATION_WORD } from '@/live/running-time'
-import { requestTitle, type Request } from '@/data'
-import { useFreshlyUpdated, useStore, useWorkspace } from '@/store'
+import { hasOwnTitle, requestTitle, type Request } from '@/data'
+import { focusAreaPlaceWords } from '@/live/to-focus-model'
+import { Req } from '@/spec/req'
+import { useFreshlyUpdated, useStore, useWorkModel, useWorkspace } from '@/store'
 
 /** "Show 50 more · 68 left": the next page of one-line rows (G4, live/card-groups.ts LINE_ROWS_PER_PAGE). */
 export function ShowMoreRows({ left, onShowMore }: { left: number; onShowMore: () => void }) {
@@ -215,5 +220,32 @@ export function RequestRow({ request, onOpen, showAgentName = false, titleOnItsO
       </div>
       {facts && <RowFacts request={request} onOpenFocus={facts.onOpenFocus} />}
     </div>
+  )
+}
+
+/**
+ * One request on Requests (Codex's `.listrow`): its plain name (requestTitle: a request still being named says so,
+ * never its prompt), its focus area under it ("Not sorted yet" until a review places it), its state's mark and word at
+ * the right, then the arrow. The whole row is a link to the request (`?request=`: a new tab, a copied link), and a
+ * plain press opens it over the page. At least 64px tall, so every row is a whole touch target on a phone. No timer, no
+ * progress and no agent: By agent names the agent once, over its rows. `showState={false}` where the list's heading
+ * already names every row's state (the home page's "Also working").
+ */
+export function RequestListRow({ request, href, onOpen, showState = true }: { request: Request; href: string; onOpen: (request: Request) => void; showState?: boolean }) {
+  const { t } = useI18n()
+  const { focusAreas } = useWorkModel()
+  const named = hasOwnTitle(request)
+  return (
+    <Req ids={['R2.1']}>
+      <a href={href} data-request-opener={request.id} data-requests-row={request.state} onClick={placeLinkPress(() => onOpen(request))}
+        className="flex min-h-16 w-full items-center gap-3 rounded-sm px-1 py-4 outline-none transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 md:gap-4">
+        <span className="min-w-0 flex-1">
+          <span data-row-title="" className={cn('block text-row-title [overflow-wrap:anywhere]', !named && 'text-muted-foreground')}>{requestTitle(request, t)}</span>
+          <span data-row-area="" className="mt-1 block text-sm text-muted-foreground">{focusAreaPlaceWords(request.focusAreaId, focusAreas, t)}</span>
+        </span>
+        {showState && <StateWords state={request.state} />}
+        <ChevronRightIcon aria-hidden="true" className="size-4.5 shrink-0 text-muted-foreground" />
+      </a>
+    </Req>
   )
 }

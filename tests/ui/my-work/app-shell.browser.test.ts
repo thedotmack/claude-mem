@@ -35,7 +35,8 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work shell regressions.');
  * - phones: the places are the bottom bar, every bar control and Workspace row is at least 44px on a coarse pointer,
  *   the page is exactly 390 wide, the page ends above the pinned bottom bar, and no focused control sits under the bars;
  * - the places not shown are muted, the one shown green with an edge along its foot (not colour alone);
- * - Back, Forward and a reload land where the page was left scrolled (the app restores it: scrollRestoration manual);
+ * - Back, Forward and a reload land where the page was left scrolled (the app restores it: scrollRestoration manual),
+ *   and a click, like a press or a key, ends the hold on that position; Home's date beside its title, on Home only;
  *   Account & billing on the cloud viewer; names that contain their visible words in every language; the sample
  *   strip under reduced motion.
  */
@@ -324,6 +325,17 @@ async function pressPlace(name: string, { phone = false } = {}) {
     const controls: { name: string; height: number; current: string | null }[] = await page!.evaluate('window.headerControls()');
     expect(controls.map((control) => control.name)).toEqual(['claude-mem', ...PLACES, ...BAR_END]);
     expect(currentPlace(controls)).toEqual(['My Work']);
+    // Home's title has today's date at its right, on its line: the reader's day (Swedish dates are written YYYY-MM-DD),
+    // in the reader's words. No other page has it.
+    expect(await page!.evaluate(`(() => {
+      const date = document.querySelector('main time[data-home-date]');
+      return { day: date?.dateTime ?? null, words: date?.textContent ?? null, besideTitle: date?.previousElementSibling === document.querySelector('main h1') };
+    })()`)).toEqual(await page!.evaluate(`({ day: new Date().toLocaleDateString('sv-SE'), words: new Intl.DateTimeFormat('en', { weekday: 'short', month: 'short', day: 'numeric' }).format(new Date()), besideTitle: true })`));
+    await pressPlace('Requests');
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'requests' && !document.querySelector('[data-home-first-line]')`, 'Requests');
+    expect(await page!.evaluate(`!!document.querySelector('time[data-home-date]')`)).toBe(false);
+    await pressPlace('My Work');
+    await waitFor(`!new URLSearchParams(location.search).get('view') && document.querySelector('[data-home-first-line]')`, 'home again');
     // Every control in the bar is 44px tall (Codex's nav links and icon button), the brand's 34px mark aside.
     expect(controls.filter((control) => control.name !== 'claude-mem' && control.height < 44)).toEqual([]);
     // Memory is another page, at its own address.
@@ -348,10 +360,11 @@ async function pressPlace(name: string, { phone = false } = {}) {
     await pressPlace('My Rules');
     await waitFor(`new URLSearchParams(location.search).get('view') === 'rules' && document.querySelector('main h1')?.textContent === 'My Rules'`, 'My Rules');
     expect(currentPlace(await page!.evaluate('window.headerControls()'))).toEqual(['My Rules']);
-    // Focus areas opens the home page at its focus area board until it has a page of its own (design pass Phase 7).
+    // Focus areas is the focus area board, a page of its own since Home gave it up (design pass Phase 6), opened at its
+    // top, until Phase 7 builds the page with its tabs.
     await pressPlace('Focus areas');
     await waitFor(`new URLSearchParams(location.search).get('view') === 'focus' && document.getElementById('focus-areas')`, 'Focus areas');
-    await waitFor(`Math.abs(document.getElementById('focus-areas').getBoundingClientRect().top - 82) <= 2`, 'the focus area board at the top, under the bar');
+    await waitFor(`scrollY === 0 && document.querySelector('main h1')?.textContent === 'Focus areas'`, 'Focus areas from its top');
     expect(currentPlace(await page!.evaluate('window.headerControls()'))).toEqual(['Focus areas']);
     // Past focus, where areas marked done go, has a quiet link on the board until Focus areas has its tabs (Phase 7).
     const pastFocus = `[...document.querySelectorAll('#focus-areas a[href]')].find((link) => link.textContent.trim() === 'Past focus')`;
@@ -364,6 +377,7 @@ async function pressPlace(name: string, { phone = false } = {}) {
     await page!.settle();
     expect(currentPlace(await page!.evaluate('window.headerControls()'))).toEqual(['Focus areas']);
     expect(await page!.evaluate(`document.querySelector('main h1').classList.contains('sr-only')`)).toBe(true);
+    expect(await page!.evaluate(`!!document.querySelector('time[data-home-date]')`)).toBe(false);
     // The brand goes home.
     await page!.evaluate(`document.querySelector('[data-slot="app-bar"] a[href]').click()`);
     await waitFor(`!new URLSearchParams(location.search).get('view') && !new URLSearchParams(location.search).get('focus')`, 'home');
@@ -693,39 +707,54 @@ async function chooseInWorkspace(row: string, option: string) {
   // About 2s here with its ~110 Tab stops (2026-11-16); 90s for a slow CI runner.
 }, 90_000);
 
+/**
+ * Every picture on the page has finished, drawn or failed. This fixture loads the artwork empty (its bundle has nowhere
+ * to put a .webp) and the focus board's own stylesheet empty, so each board picture is a 1000x667 box until it fails and
+ * hides itself (components/focus-artwork.tsx): the page shrinks by those boxes over the next frames. Shrinking above the
+ * window, it lets the browser's scroll anchoring move the window (to the top, once, after Forward: Phase 6 verify, a
+ * frame-by-frame timeline) until the app's hold puts it back, and a reload in that frame saved the top. Real artwork
+ * has its size from the board's stylesheet and loads.
+ */
+const ARTWORK_DONE = `[...document.querySelectorAll('main img')].every((image) => image.complete)`;
+
 (chromeExecutablePath ? it : it.skip)('Back, Forward and a reload land where the person left each page scrolled, restored by the app, not the browser', async () => {
-  await openShell();
+  await openShell({ query: '&areas=many' });
   try {
     await desktop();
+    // A short window, so the sample's home page and Focus areas both scroll (the home page has no board since design
+    // pass Phase 6, and the sample's is about 1,200px tall).
+    await page!.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 500, deviceScaleFactor: 1, mobile: false });
+    await page!.settle();
     // The app restores positions itself, once the page is drawn; the browser's own restore is off.
     expect(await page!.evaluate('history.scrollRestoration')).toBe('manual');
-    await page!.evaluate('window.scrollTo(0, 1200)');
+    await page!.evaluate('window.scrollTo(0, 300)');
     // The sample strip folds away as the page scrolls (hideOnScroll), and the browser's scroll anchoring may then move
     // the window by a pixel or two: the position the person left is wherever it settles.
-    await waitFor('Math.abs(scrollY - 1200) <= 3', 'the home page scrolled');
+    await waitFor('Math.abs(scrollY - 300) <= 3', 'the home page scrolled');
     await page!.settle();
     const homeY: number = await page!.evaluate('scrollY');
     await pressPlace('My Rules');
     await waitFor(`document.querySelector('main h1')?.textContent === 'My Rules' && scrollY === 0`, 'My Rules from its top');
     await page!.evaluate('history.back()');
-    await waitFor(`!new URLSearchParams(location.search).get('view') && document.getElementById('all-requests') && Math.abs(scrollY - ${homeY}) <= 1`, 'home where it was left again');
-    // Focus areas opens at its board on the home page (until design pass Phase 7); the person scrolls on past it, goes
-    // Back home, then Forward: Focus areas comes back where it was left, not at its board (the entry left by Back keeps
-    // its own position). (Requests opened at its board too until it became a page of its own, Phase 5.)
+    await waitFor(`!new URLSearchParams(location.search).get('view') && document.querySelector('[data-home-first-line]') && Math.abs(scrollY - ${homeY}) <= 1`, 'home where it was left again');
+    // Focus areas opens from its top, a page of its own (design pass Phase 6); the person scrolls down it, goes Back
+    // home, then Forward: Focus areas comes back where it was left (the entry left by Back keeps its own position).
     await pressPlace('Focus areas');
-    await waitFor(`new URLSearchParams(location.search).get('view') === 'focus' && Math.abs(document.getElementById('focus-areas').getBoundingClientRect().top - 82) <= 2`, 'Focus areas at its board');
-    const atBoard: number = await page!.evaluate('Math.round(scrollY)');
-    const past: number = await page!.evaluate(`Math.min(Math.round(scrollY) + 600, document.documentElement.scrollHeight - innerHeight)`);
-    expect(past - atBoard).toBeGreaterThan(300);
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'focus' && document.getElementById('focus-areas') && scrollY === 0 && ${ARTWORK_DONE}`, 'Focus areas from its top');
+    const past: number = await page!.evaluate(`Math.min(600, document.documentElement.scrollHeight - innerHeight)`);
+    expect(past).toBeGreaterThan(200);
     await page!.evaluate(`window.scrollTo(0, ${past})`);
-    await waitFor(`Math.round(scrollY) === ${past}`, 'Focus areas scrolled past its board');
+    await waitFor(`Math.round(scrollY) === ${past}`, 'Focus areas scrolled down');
     await page!.evaluate('history.back()');
     await waitFor(`!new URLSearchParams(location.search).get('view') && Math.abs(scrollY - ${homeY}) <= 1`, 'home where it was left, after Back');
     await page!.evaluate('history.forward()');
-    await waitFor(`new URLSearchParams(location.search).get('view') === 'focus' && Math.abs(scrollY - ${past}) <= 1`, 'Focus areas where it was left, after Forward');
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'focus' && Math.abs(scrollY - ${past}) <= 1 && ${ARTWORK_DONE}`, 'Focus areas where it was left, after Forward');
+    // The last picture to fail can still take the window off the position for a frame, until the hold puts it back: the
+    // position is the one the page keeps once it holds there (the reload saves whatever the window shows as it goes).
+    await page!.settle();
+    await waitFor(`Math.abs(scrollY - ${past}) <= 1`, 'Focus areas holding where it was left, after Forward');
     // A reload opens that entry where it was left too, once the work has been read again, and stays there while the
-    // page settles: the focus area board above it draws taller for a frame (about 3,300px, then 670px here), and the
-    // browser's scroll anchoring moved the window up by that much until the app held it at the position.
+    // page settles (the browser's scroll anchoring once moved the window while the board drew).
     const ready = new Promise<void>((resolveReady) => { markReady = resolveReady; });
     await page!.send('Page.reload', {});
     // The reload draws the whole App again in about a second here (2026-11-27); 20s is for a cold CI runner.
@@ -734,6 +763,33 @@ async function chooseInWorkspace(row: string, option: string) {
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }
   // 2–3s here (2026-11-27); 30s for a slow CI runner.
+}, 30_000);
+
+(chromeExecutablePath ? it : it.skip)('a click is the person acting: after Back the page stops holding the position it put back, so a scroll it did not make stays', async () => {
+  await openShell();
+  try {
+    await desktop();
+    await page!.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 500, deviceScaleFactor: 1, mobile: false });
+    await page!.settle();
+    await page!.evaluate('window.scrollTo(0, 300)');
+    await waitFor('Math.abs(scrollY - 300) <= 3', 'the home page scrolled');
+    await page!.settle();
+    const homeY: number = await page!.evaluate('scrollY');
+    await pressPlace('My Rules');
+    await waitFor(`document.querySelector('main h1')?.textContent === 'My Rules' && scrollY === 0`, 'My Rules from its top');
+    await page!.evaluate('history.back()');
+    await waitFor(`!new URLSearchParams(location.search).get('view') && document.querySelector('[data-home-first-line]') && Math.abs(scrollY - ${homeY}) <= 1`, 'home where it was left');
+    // A click with no press or key before it, as assistive technology activates a control (Review Stack's test, which
+    // presses this way, had its own scroll undone by the hold a reload left on: 5 of 42 runs under load, Phase 6 fixes).
+    await page!.evaluate(`document.querySelector('main h1').click()`);
+    // Then something other than the page scrolls it, and the page's height changes.
+    await page!.evaluate('window.scrollTo(0, 0)');
+    await page!.evaluate(`document.body.append(Object.assign(document.createElement('div'), { style: 'height: 400px' }))`);
+    await page!.settle();
+    expect(await page!.evaluate('scrollY')).toBe(0);
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeShell(); }
+  // About 2s here (2026-11-28); 30s for a slow CI runner.
 }, 30_000);
 
 (chromeExecutablePath ? it : it.skip)('on the cloud viewer, Account & billing is a named, translated row of Workspace; on this computer it is not there', async () => {
@@ -819,7 +875,7 @@ async function chooseInWorkspace(row: string, option: string) {
     await press('Enter');
     await waitFor(`document.querySelector('[role="alert"]') && document.activeElement?.textContent === 'Try again'`, 'the second failed screen with focus on Try again');
     await press('Enter');
-    await waitFor(`document.getElementById('all-requests')`, 'the loaded page');
+    await waitFor(`document.querySelector('[data-home-first-line]')`, 'the loaded page');
     await waitFor(`document.activeElement?.id === 'main-content'`, 'focus on the main content');
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }
@@ -1030,11 +1086,21 @@ const FIND_RESULTS = `(() => {
   // 1.1–1.3s here (2026-11-28, three runs); 30s for a slow CI runner.
 }, 30_000);
 
+/**
+ * The failure line right under the page's title: after the h1, or after the row that holds the h1 and the home page's
+ * date (components/app-shell.tsx ShellFrame `headingAside`).
+ */
+const LINE_UNDER_TITLE = `(() => {
+  const line = document.querySelector('main [data-review-failed-line]');
+  const before = line?.previousElementSibling;
+  return before && (before.matches('h1') || before.querySelector(':scope > h1')) ? line : null;
+})()`;
+
 (chromeExecutablePath ? it : it.skip)('a failed review is one line under the title of each page that showed the refresh banner, and Review details opens Machine and sync', async () => {
   await openShell({ query: `&sample-state=refresh-failed` });
   try {
     await desktop();
-    const lineUnderTitle = `document.querySelector('main h1 + [data-review-failed-line]')`;
+    const lineUnderTitle = LINE_UNDER_TITLE;
     // Every page, from the one page list, split by the frame each page is drawn in (lib/page-frame.ts).
     for (const section of WORK_VIEW_SECTIONS.filter((page) => PAGE_FRAME[page].reviewLine)) {
       await page!.evaluate(`window.store.getState().goToPage(${JSON.stringify(section)})`);
@@ -1076,8 +1142,8 @@ const FIND_RESULTS = `(() => {
     // The worker's record turns failed while Home is open, as refresh.json does when a review fails.
     await page!.evaluate(`window.store.setState((state) => ({ work: { ...state.work, load: { ...state.work.load, model: { ...state.work.load.model,
       refresh: { state: 'failed', finishedAt: 'Nov 28 at 2:40 am', finishedAtIso: '2026-11-28T10:40:00.000Z', error: 'a new cause' } } } } }))`);
-    await waitFor(`document.querySelector('main h1 + [data-review-failed-line]')`, 'the failure line');
-    expect(await page!.evaluate(`document.querySelector('main h1 + [data-review-failed-line]').getAttribute('role')`)).toBe('alert');
+    await waitFor(LINE_UNDER_TITLE, 'the failure line');
+    expect(await page!.evaluate(`${LINE_UNDER_TITLE}.getAttribute('role')`)).toBe('alert');
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }
   // 0.9s here (2026-11-28, three runs); 30s for a slow CI runner.

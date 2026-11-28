@@ -163,6 +163,17 @@ describe('My Work colour tokens meet rule 7 and G12', () => {
         expectAtLeast(theme, ACTIVE_PLACE_MARK, ['--card (the bar)', tokenRgb(theme, 'card')], 3, 'active place edge');
       });
 
+      it('the home page\'s lead card: its words ≥4.5:1 on its fill; its progress fill, the focus ring and Open request ≥3:1 there (design pass Phase 6)', () => {
+        // The card is the goal family (Codex's --lead): the request's name in --goal-heading, the label, sentence and
+        // review line in --goal-foreground; its bar's track is --goal-foreground at 27% (pages/my-work.tsx ReviewedProgress).
+        const card: [string, Rgb] = ['--goal (the lead card)', tokenRgb(theme, 'goal')];
+        expectAtLeast(theme, 'goal-heading', card, 4.5, 'lead request name');
+        expectAtLeast(theme, 'goal-foreground', card, 4.5, 'lead label, sentence and review line');
+        expectAtLeast(theme, 'working-foreground', ['--goal-foreground/27 on --goal (the track)', over(tokenRgb(theme, 'goal-foreground'), 0.27, tokenRgb(theme, 'goal'))], 3, 'lead progress fill');
+        expectAtLeast(theme, 'ring', card, 3, 'focus ring on the lead card');
+        expectAtLeast(theme, 'primary', card, 3, 'Open request on the lead card');
+      });
+
       it('each state word is ≥4.5:1 on its own badge surface (D b3 K61)', () => {
         for (const state of STATES) expectAtLeast(theme, `${state}-foreground`, [`--${state}`, tokenRgb(theme, state)], 4.5, 'state badge text');
       });

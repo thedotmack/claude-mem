@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
  * Local changes (c-aceternity-tracing-beam): the rail and its light use the page's own colours (the vendor's emerald
  * dot and cyan-to-violet gradient were not this palette), the rail follows the content's height as entries open and
  * close (it was measured once), and under reduced motion the light and the dot stay still, here in the component
- * (plan rule 8). The caller marks the entry being read on the rail (pages/my-work.tsx StorySheet), so the rail stays on
+ * (plan rule 8). The caller marks the entry being read on the rail (components/build-story-sheet.tsx StorySheet), so the rail stays on
  * one line, 19px from the left, to its end: the vendor's path jogged back to x=1 for its last fifth, where the newest
  * entry's mark then sat 18px off the line.
  */

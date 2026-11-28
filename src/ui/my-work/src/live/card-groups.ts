@@ -91,11 +91,6 @@ export function requestSections(requests: Request[]): { group: CardGroup; member
     .filter((section) => section.members.length > 0)
 }
 
-/** The one-line sections (idle, shipped), each with its requests in board order. Empty sections are left out. */
-export function lineSections(requests: Request[]): { group: CardGroup; members: Request[] }[] {
-  return requestSections(requests).filter((section) => section.group.size === 'line')
-}
-
 /** How many of `total` rows show once `pages` pages are open, and how many are left (G4: "Show 50 more · 68 left"). */
 export function linePage(total: number, pages: number): { shown: number; left: number } {
   const shown = Math.min(total, Math.max(0, pages) * LINE_ROWS_PER_PAGE)
