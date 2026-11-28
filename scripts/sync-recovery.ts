@@ -3,8 +3,11 @@
  * Preview commands only read. Creating a job starts it paused; resume is separate.
  */
 import { readFile } from 'node:fs/promises';
+import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../src/shared/paths.js';
 
-const HELP = `Usage: bun scripts/sync-recovery.ts [--worker http://127.0.0.1:37777] COMMAND
+const HELP = `Usage: bun scripts/sync-recovery.ts [--worker http://127.0.0.1:PORT] COMMAND
+The default PORT is this install's CLAUDE_MEM_WORKER_PORT.
   inventory
   preview --scope scope.json
   create --preview preview.json
@@ -31,7 +34,7 @@ function record(value: unknown): Record<string, unknown> {
 
 export async function runRecoveryCommand(argv: string[], io: RecoveryCliIo): Promise<unknown> {
   const args = [...argv];
-  let worker = 'http://127.0.0.1:37777';
+  let worker = `http://127.0.0.1:${SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, true, { readOnly: true }).CLAUDE_MEM_WORKER_PORT}`;
   if (args[0] === '--worker') {
     args.shift();
     worker = args.shift() ?? '';
