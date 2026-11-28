@@ -153,20 +153,83 @@ check_git() {
   exit 1
 }
 
-check_port_37777() {
+# Resolve the worker port the same way the shipped code does
+# (src/shared/install-port.ts + SettingsDefaultsManager.applyEnvOverrides):
+#   1. An explicit CLAUDE_MEM_WORKER_PORT env override wins over settings.
+#   2. settings.json — the nested `env` block when it carries CLAUDE_MEM_*
+#      keys, the flat document otherwise (mirrors readSettings), BOM-tolerant.
+#   3. Otherwise the derived install default: 37700 + (uid % 100).
+#
+# The installer previously hardcoded the Windows-era legacy port 37777 into
+# settings defaults, the worker spawn, worker.pid, health checks and the
+# OpenClaw plugin config alike. A user with a different configured port then
+# got a worker the hooks could never reach — and, if a worker was already
+# running on the configured port, a second worker and a second Chroma writer
+# on the same data directory.
+resolve_worker_port() {
+  local raw="${CLAUDE_MEM_WORKER_PORT:-}"
+
+  # 1. Explicit env override wins, matching applyEnvOverrides. An invalid
+  #    value falls through to the next source instead of being used as-is.
+  if [[ "$raw" =~ ^[0-9]+$ ]]; then
+    if (( raw >= 1024 && raw <= 65535 )); then
+      echo "$raw"
+      return 0
+    fi
+  fi
+
+  # 2. Persisted settings. settings.json is hand-editable, so the port can be
+  #    a JSON string or number; both spellings mean the same thing.
+  if command -v node &>/dev/null; then
+    INSTALLER_RESOLVE_DATA_DIR="${CLAUDE_MEM_DATA_DIR:-$HOME/.claude-mem}" node -e '
+      const fs = require("fs");
+      const path = require("path");
+      const os = require("os");
+      const dataDir = String(process.env.INSTALLER_RESOLVE_DATA_DIR || "").replace(/^~(?=\/|$)/, os.homedir());
+      try {
+        const settingsPath = path.join(dataDir, "settings.json");
+        const document = JSON.parse(fs.readFileSync(settingsPath, "utf8").replace(/^\uFEFF/, ""));
+        const nested = document.env;
+        const source = (nested && typeof nested === "object" && !Array.isArray(nested)
+          && Object.keys(nested).some((key) => key.startsWith("CLAUDE_MEM_")))
+          ? nested
+          : document;
+        const raw = source.CLAUDE_MEM_WORKER_PORT;
+        if (raw === undefined || raw === null) process.exit(1);
+        const text = String(raw).trim();
+        if (!/^\d+$/.test(text)) process.exit(1);
+        const port = Number(text);
+        if (!Number.isInteger(port) || port < 1024 || port > 65535) process.exit(1);
+        process.stdout.write(String(port));
+      } catch (e) {
+        process.exit(1);
+      }
+    ' && return 0
+  fi
+
+  # 3. Derived install default. install-port.ts also carries a Windows-only
+  #    legacy-37777 branch and a no-uid dataDir hash; this installer targets
+  #    POSIX (lsof/ss/nohup), where the uid is always available.
+  local uid
+  uid="$(id -u 2>/dev/null)" || uid=0
+  echo $(( 37700 + (uid % 100 + 100) % 100 ))
+}
+
+worker_port_in_use() {
+  local port="${1:?worker port required}"
   local port_in_use=""
 
   if command -v lsof &>/dev/null; then
-    if lsof -i :37777 -sTCP:LISTEN &>/dev/null; then
+    if lsof -i ":$port" -sTCP:LISTEN &>/dev/null; then
       port_in_use="true"
     fi
   elif command -v ss &>/dev/null; then
-    if ss -tlnp 2>/dev/null | grep -q ':37777 '; then
+    if ss -tlnp 2>/dev/null | grep -q ":$port "; then
       port_in_use="true"
     fi
   elif command -v curl &>/dev/null; then
     local response
-    response="$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:37777/api/health" 2>/dev/null)" || true
+    response="$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$port/api/health" 2>/dev/null)" || true
     if [[ "$response" == "200" ]]; then
       port_in_use="true"
     fi
@@ -833,7 +896,7 @@ configure_memory_slot() {
 
   if [[ ! -f "$config_file" ]]; then
     info "Creating OpenClaw configuration with claude-mem memory slot..."
-    INSTALLER_CONFIG_FILE="$config_file" node -e "
+    INSTALLER_CONFIG_FILE="$config_file" INSTALLER_WORKER_PORT="$WORKER_PORT" node -e "
       const config = {
         plugins: {
           slots: { memory: 'claude-mem' },
@@ -841,7 +904,7 @@ configure_memory_slot() {
             'claude-mem': {
               enabled: true,
               config: {
-                workerPort: 37777,
+                workerPort: Number(process.env.INSTALLER_WORKER_PORT),
                 syncMemoryFile: true
               }
             }
@@ -856,7 +919,7 @@ configure_memory_slot() {
 
   info "Updating OpenClaw configuration to use claude-mem memory slot..."
 
-  INSTALLER_CONFIG_FILE="$config_file" node -e "
+  INSTALLER_CONFIG_FILE="$config_file" INSTALLER_WORKER_PORT="$WORKER_PORT" node -e "
     const fs = require('fs');
     const configPath = process.env.INSTALLER_CONFIG_FILE;
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -875,12 +938,19 @@ configure_memory_slot() {
       config.plugins.entries['claude-mem'] = {
         enabled: true,
         config: {
-          workerPort: 37777,
+          workerPort: Number(process.env.INSTALLER_WORKER_PORT),
           syncMemoryFile: true
         }
       };
     } else {
       config.plugins.entries['claude-mem'].enabled = true;
+      // Rewrite only the legacy port this installer itself used to seed, so a
+      // pre-#I-3 install does not keep pointing the plugin at a worker that
+      // never binds there. Any other value is the user's deliberate choice.
+      const entryConfig = config.plugins.entries['claude-mem'].config;
+      if (entryConfig && typeof entryConfig === 'object' && entryConfig.workerPort === 37777) {
+        entryConfig.workerPort = Number(process.env.INSTALLER_WORKER_PORT);
+      }
       // Remove unrecognized keys that cause OpenClaw config validation errors
       const allowedKeys = new Set(['enabled', 'config']);
       for (const key of Object.keys(config.plugins.entries['claude-mem'])) {
@@ -1062,6 +1132,7 @@ write_settings() {
   INSTALLER_AI_PROVIDER="$AI_PROVIDER" \
   INSTALLER_AI_API_KEY="$AI_PROVIDER_API_KEY" \
   INSTALLER_SETTINGS_FILE="$settings_file" \
+  INSTALLER_WORKER_PORT="$WORKER_PORT" \
   node -e "
     const fs = require('fs');
     const path = require('path');
@@ -1074,7 +1145,7 @@ write_settings() {
     const defaults = {
       CLAUDE_MEM_MODEL: 'claude-sonnet-5',
       CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
-      CLAUDE_MEM_WORKER_PORT: '37777',
+      CLAUDE_MEM_WORKER_PORT: String(process.env.INSTALLER_WORKER_PORT),
       CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
       CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
       CLAUDE_MEM_PROVIDER: 'claude',
@@ -1196,6 +1267,11 @@ WORKER_UPTIME=""
 start_worker() {
   info "Starting claude-mem worker service..."
 
+  # The port everything below uses — spawn env, worker.pid — must be the
+  # resolved one, or the recorded pid file points at a port no component
+  # actually binds.
+  WORKER_PORT="${WORKER_PORT:-$(resolve_worker_port)}"
+
   if ! find_claude_mem_install_dir; then
     error "Cannot find claude-mem plugin installation directory"
     error "Expected worker-service.cjs in one of:"
@@ -1221,16 +1297,16 @@ start_worker() {
     fi
   fi
 
-  CLAUDE_MEM_WORKER_PORT=37777 nohup "$BUN_PATH" "$worker_script" \
+  CLAUDE_MEM_WORKER_PORT="$WORKER_PORT" nohup "$BUN_PATH" "$worker_script" \
     >> "$log_file" 2>&1 &
   WORKER_PID=$!
 
   local pid_file="${HOME}/.claude-mem/worker.pid"
   mkdir -p "${HOME}/.claude-mem"
-  INSTALLER_PID_FILE="$pid_file" INSTALLER_WORKER_PID="$WORKER_PID" node -e "
+  INSTALLER_PID_FILE="$pid_file" INSTALLER_WORKER_PID="$WORKER_PID" INSTALLER_WORKER_PORT="$WORKER_PORT" node -e "
     const info = {
       pid: parseInt(process.env.INSTALLER_WORKER_PID, 10),
-      port: 37777,
+      port: parseInt(process.env.INSTALLER_WORKER_PORT, 10),
       startedAt: new Date().toISOString(),
       version: 'installer'
     };
@@ -1242,10 +1318,11 @@ start_worker() {
 }
 
 verify_health() {
+  local port="${WORKER_PORT:-$(resolve_worker_port)}"
   local max_attempts=30
   local attempt=1
-  local health_url="http://127.0.0.1:37777/api/health"
-  local readiness_url="http://127.0.0.1:37777/api/readiness"
+  local health_url="http://127.0.0.1:$port/api/health"
+  local readiness_url="http://127.0.0.1:$port/api/readiness"
   local health_alive=false
 
   info "Verifying worker health..."
@@ -1274,7 +1351,7 @@ verify_health() {
   if [[ "$health_alive" != "true" ]]; then
     warn "Worker health check timed out after ${max_attempts} attempts"
     warn "The worker may still be starting up. Check status with:"
-    warn "  curl http://127.0.0.1:37777/api/health"
+    warn "  curl http://127.0.0.1:$port/api/health"
     warn "  Or check logs: ~/.claude-mem/logs/"
     return 1
   fi
@@ -1296,7 +1373,7 @@ verify_health() {
 
   warn "Worker is running but initialization is still in progress"
   warn "This is normal on first run — the worker will finish initializing in the background."
-  warn "Check readiness with: curl http://127.0.0.1:37777/api/readiness"
+  warn "Check readiness with: curl http://127.0.0.1:$port/api/readiness"
   return 0
 }
 
@@ -1556,11 +1633,11 @@ print_completion_summary() {
   echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Settings written to ~/.claude-mem/settings.json"
 
   if [[ -n "$WORKER_PID" ]] && kill -0 "$WORKER_PID" 2>/dev/null; then
-    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Worker running on port ${COLOR_BOLD}37777${COLOR_RESET} (PID: ${WORKER_PID})"
+    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Worker running on port ${COLOR_BOLD}$WORKER_PORT${COLOR_RESET} (PID: ${WORKER_PID})"
   elif [[ -n "$WORKER_UPTIME" && "$WORKER_UPTIME" =~ ^[0-9]+$ ]] && (( WORKER_UPTIME > 0 )); then
     local uptime_formatted
     uptime_formatted="$(format_uptime_ms "$WORKER_UPTIME")"
-    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Worker running on port ${COLOR_BOLD}37777${COLOR_RESET} (PID: ${WORKER_REPORTED_PID}, uptime: ${uptime_formatted})"
+    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Worker running on port ${COLOR_BOLD}$WORKER_PORT${COLOR_RESET} (PID: ${WORKER_REPORTED_PID}, uptime: ${uptime_formatted})"
   else
     echo -e "  ${COLOR_YELLOW}⚠${COLOR_RESET}  Worker may not be running — check logs at ~/.claude-mem/logs/"
   fi
@@ -1582,7 +1659,7 @@ print_completion_summary() {
   echo ""
   echo -e "  ${COLOR_CYAN}1.${COLOR_RESET} Restart your OpenClaw gateway to load the plugin"
   echo -e "  ${COLOR_CYAN}2.${COLOR_RESET} Verify with ${COLOR_BOLD}/claude-mem-status${COLOR_RESET} in any OpenClaw chat"
-  echo -e "  ${COLOR_CYAN}3.${COLOR_RESET} Check the viewer UI at ${COLOR_BOLD}http://localhost:37777${COLOR_RESET}"
+  echo -e "  ${COLOR_CYAN}3.${COLOR_RESET} Check the viewer UI at ${COLOR_BOLD}http://localhost:$WORKER_PORT${COLOR_RESET}"
   if [[ "$FEED_CONFIGURED" == "true" ]]; then
     echo -e "  ${COLOR_CYAN}4.${COLOR_RESET} Run ${COLOR_BOLD}/claude-mem-feed${COLOR_RESET} to check feed status"
   fi
@@ -1596,6 +1673,12 @@ main() {
   setup_tty
   print_banner
   detect_platform
+
+  # One resolved port for every consumer below: settings defaults, the
+  # OpenClaw plugin config, the worker spawn, worker.pid, health checks and
+  # the completion summary all previously repeated a hardcoded 37777.
+  WORKER_PORT="$(resolve_worker_port)"
+  export WORKER_PORT
 
   echo ""
   info "${COLOR_BOLD}[1/8]${COLOR_RESET} Checking dependencies..."
@@ -1642,8 +1725,8 @@ main() {
   echo ""
   info "${COLOR_BOLD}[7/8]${COLOR_RESET} Starting worker service..."
 
-  if check_port_37777; then
-    warn "Port 37777 is already in use (worker may already be running)"
+  if worker_port_in_use "$WORKER_PORT"; then
+    warn "Port $WORKER_PORT is already in use (worker may already be running)"
     info "Checking if the existing service is healthy..."
     if verify_health; then
       local expected_version=""
@@ -1677,10 +1760,10 @@ main() {
 
       if [[ "$needs_restart" == "true" ]]; then
         info "Stopping existing worker..."
-        curl -s -X POST "http://127.0.0.1:37777/api/admin/shutdown" >/dev/null 2>&1 || true
+        curl -s -X POST "http://127.0.0.1:$WORKER_PORT/api/admin/shutdown" >/dev/null 2>&1 || true
         sleep 2
 
-        if check_port_37777; then
+        if worker_port_in_use "$WORKER_PORT"; then
           if [[ -n "$WORKER_REPORTED_PID" ]]; then
             kill "$WORKER_REPORTED_PID" 2>/dev/null || true
             sleep 1
@@ -1728,7 +1811,7 @@ main() {
         fi
       fi
     else
-      warn "Port 37777 is occupied but not responding to health checks"
+      warn "Port $WORKER_PORT is occupied but not responding to health checks"
       warn "Another process may be using this port. Stop it and re-run the installer,"
       warn "or change CLAUDE_MEM_WORKER_PORT in ~/.claude-mem/settings.json"
     fi
