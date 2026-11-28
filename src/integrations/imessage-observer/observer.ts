@@ -113,6 +113,7 @@ export class GroupChatObserver {
   /** Chats already looked up, so a hand-over can copy the chat as it is right now. */
   private readonly known = new Map<string, ChatInfo>();
   private readonly state: StateFile;
+  private stateDirty = false;
   private queue: Promise<void> = Promise.resolve();
   private timer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
@@ -226,18 +227,23 @@ export class GroupChatObserver {
    * split the chat across two projects and slip past name-based exclusions.
    */
   private projectFor(chat: ChatInfo, nameKnown: boolean): string | null {
-    const known = this.state.chats[chat.guid];
-    if (known) return known.project;
-    if (!nameKnown) return null;
-    const project = projectNameFor(chat);
-    this.state.chats[chat.guid] = { project, name: chat.displayName };
-    try {
-      writeState(this.options.statePath, this.state);
-    } catch (error) {
-      this.options.log.warn(`Could not save the chat list: ${error instanceof Error ? error.message : String(error)}`);
+    let known = this.state.chats[chat.guid];
+    if (!known) {
+      if (!nameKnown) return null;
+      known = { project: projectNameFor(chat), name: chat.displayName };
+      this.state.chats[chat.guid] = known;
+      this.stateDirty = true;
+      this.options.log.info(`Observing "${chat.displayName}" as Claude-Mem project ${known.project}.`);
     }
-    this.options.log.info(`Observing "${chat.displayName}" as Claude-Mem project ${project}.`);
-    return project;
+    if (this.stateDirty) {
+      try {
+        writeState(this.options.statePath, this.state);
+        this.stateDirty = false;
+      } catch (error) {
+        this.options.log.warn(`Could not save the chat list: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return known.project;
   }
 
   private excluded(project: string, chat: ChatInfo): boolean {
