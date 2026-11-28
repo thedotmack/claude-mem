@@ -6,6 +6,7 @@ import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout, maxSessionInitRequestTimeoutMs } from "./hook-constants.js";
 import { readSseEvents } from "./sse-reader.js";
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
+import { getDefaultWorkerPort, parseWorkerPortValue } from "./install-port.js";
 import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { isWorkerAutostartDisabled } from "./worker-autostart.js";
@@ -391,12 +392,33 @@ function readSettingsBackedTimeout(
   return defaultValue;
 }
 
+let warnedInvalidWorkerPort = false;
+
 export function getWorkerPort(options: { readOnly?: boolean } = {}): number {
   if (!options.readOnly && cachedPort !== null) {
     return cachedPort;
   }
 
-  const port = parseInt(getWorkerSettings(options).CLAUDE_MEM_WORKER_PORT, 10);
+  const rawPort = getWorkerSettings(options).CLAUDE_MEM_WORKER_PORT;
+  const port = parseWorkerPortValue(rawPort);
+  if (port === null) {
+    // A hand-edited settings.json or env override can carry an invalid port.
+    // Never use it as-is: parseInt('abc') is NaN, and a NaN port poisons
+    // every worker URL as http://127.0.0.1:NaN/... which reads as an
+    // unreachable worker (and "37700abc" previously parsed as 37700, eating
+    // the typo silently). Fall back to the derived install default instead,
+    // with a one-time warning so the bad value stays visible in the log.
+    const fallbackPort = getDefaultWorkerPort(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'));
+    if (!warnedInvalidWorkerPort) {
+      warnedInvalidWorkerPort = true;
+      logger.warn('SYSTEM', 'Invalid CLAUDE_MEM_WORKER_PORT, using the default install port', {
+        value: rawPort,
+        fallbackPort,
+      });
+    }
+    if (!options.readOnly) cachedPort = fallbackPort;
+    return fallbackPort;
+  }
   if (!options.readOnly) cachedPort = port;
   return port;
 }
