@@ -47,6 +47,15 @@ describe('install port defaults', () => {
     expect(getDefaultServerPort(dataDir, { platform: 'win32', uid: null })).toBe(37954);
   });
 
+  it('preserves the old Windows port offset when 37777 is saved as a JSON number', () => {
+    // settings.json is hand-editable, so the legacy port can be persisted as
+    // a number; the worker binds either form identically through parseInt.
+    writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_WORKER_PORT: 37777 }));
+
+    expect(getDefaultWorkerPort(dataDir, { platform: 'win32', uid: null })).toBe(37777);
+    expect(getDefaultServerPort(dataDir, { platform: 'win32', uid: null })).toBe(37954);
+  });
+
   it('preserves the legacy Windows server URL after the worker port changes', () => {
     const options = { platform: 'win32' as const, uid: null };
     const expectedWorkerPort = getDefaultWorkerPort(dataDir, options);

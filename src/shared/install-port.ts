@@ -31,7 +31,10 @@ function readSettings(dataDir: string): Record<string, unknown> | null {
 }
 
 function hasLegacyWindowsWorkerPort(dataDir: string): boolean {
-  return readSettings(dataDir)?.CLAUDE_MEM_WORKER_PORT === LEGACY_WINDOWS_WORKER_PORT;
+  // settings.json is hand-editable, so the port can be persisted as a JSON
+  // number as easily as a string. The worker binds either form the same way
+  // (parseInt), so legacy detection must recognize both too.
+  return String(readSettings(dataDir)?.CLAUDE_MEM_WORKER_PORT ?? '').trim() === LEGACY_WINDOWS_WORKER_PORT;
 }
 
 function hasLegacyWindowsServerPort(dataDir: string): boolean {
@@ -71,6 +74,23 @@ export function getInstallPortOffset(
 
 export function getDefaultWorkerPort(dataDir?: string, options?: { platform?: NodeJS.Platform; uid?: number | null }): number {
   return WORKER_PORT_BASE + getInstallPortOffset(dataDir, options);
+}
+
+/**
+ * Validate a persisted or env-overridden worker port value. Returns the port
+ * as a whole number within the same bounds the HTTP settings write path
+ * enforces (1024-65535), or null when the value is unusable — a typo like
+ * "abc", a trailing garbage suffix like "37700abc", a stray boolean, or an
+ * out-of-range number. Callers decide what a null means; nothing here falls
+ * back silently.
+ */
+export function parseWorkerPortValue(raw: unknown): number | null {
+  if (typeof raw !== 'string' && typeof raw !== 'number') return null;
+  const text = String(raw).trim();
+  if (!/^\d+$/.test(text)) return null;
+  const port = Number(text);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) return null;
+  return port;
 }
 
 export function getDefaultServerPort(dataDir = defaultDataDir(), options: { platform?: NodeJS.Platform; uid?: number | null } = {}): number {
