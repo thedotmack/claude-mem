@@ -64,10 +64,20 @@ describe('settings save refreshes the context settings snapshot', () => {
     try {
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('no TCP address');
+      // The port is a bind-time, file-only setting now (FILE_ONLY_SETTING_KEYS):
+      // a live change over HTTP would leave hooks spawning a second worker on the
+      // same data directory. The value change goes through the file, and an
+      // unrelated save drives the same pipeline the Greptile fix covers — the
+      // save must invalidate the 5s settings snapshot so the re-render reads
+      // what is on disk, not what was cached before.
+      writeFileSync(USER_SETTINGS_PATH, JSON.stringify({
+        CLAUDE_MEM_WELCOME_HINT_ENABLED: 'true',
+        CLAUDE_MEM_WORKER_PORT: '38222',
+      }));
       const response = await fetch(`http://127.0.0.1:${address.port}/api/settings`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ CLAUDE_MEM_WORKER_PORT: '38222' }),
+        body: JSON.stringify({ CLAUDE_MEM_LOG_LEVEL: 'DEBUG' }),
       });
       expect(response.status).toBe(200);
     } finally {

@@ -296,7 +296,7 @@ const previewOf = (project: string, rows: number) => [
     const { evaluate, settle } = page;
     const input = (label: string) => `${field(label)}.querySelector('input')`;
     const cleared: Record<string, unknown> = {};
-    for (const [section, label] of [['Backups', 'Interval (hours)'], ['Backups', 'Snapshots to keep'], ['Advanced', 'Worker Port'],
+    for (const [section, label] of [['Backups', 'Interval (hours)'], ['Backups', 'Snapshots to keep'],
       ['AI provider', 'OpenRouter Model'], ['AI provider', 'App Name (Optional)']] as const) {
       await evaluate(showSection(section)); await settle();
       await evaluate(setValue(input(label), '')); await settle();
@@ -310,11 +310,11 @@ const previewOf = (project: string, rows: number) => [
       // A number field puts its default back (the worker's own default for these two)...
       'Interval (hours)': { value: DEFAULT_SETTINGS.CLAUDE_MEM_BACKUP_INTERVAL_HOURS, placeholder: '' },
       'Snapshots to keep': { value: DEFAULT_SETTINGS.CLAUDE_MEM_BACKUP_RETAIN_COUNT, placeholder: '' },
-      // ...and the port its saved value: never empty, never the viewer's 37700.
-      'Worker Port': { value: '41234', placeholder: '' },
       // A text field stays empty, with the default the worker will use as its placeholder.
       'OpenRouter Model': { value: '', placeholder: `e.g., ${DEFAULT_SETTINGS.CLAUDE_MEM_OPENROUTER_MODEL}` },
       'App Name (Optional)': { value: '', placeholder: DEFAULT_SETTINGS.CLAUDE_MEM_OPENROUTER_APP_NAME },
+      // The Worker Port field is read-only now (bind-time setting, file/env only — see
+      // FILE_ONLY_SETTING_KEYS), so it no longer belongs in a cleared-fields save test.
     });
     expect(changes).toBe('4 unsaved changes');
     expect(posts).toEqual([{
