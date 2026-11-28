@@ -35,6 +35,7 @@ type PhotonMessageEvent = PhotonEventBase & {
   messageGuid?: string;
   content?: { text?: string };
   reaction?: { kind: string; emoji?: string };
+  targetPartIndex?: number;
 };
 type PhotonGroupEvent = PhotonEventBase & {
   change: { type: string; displayName?: string; participant?: PhotonAddress };
@@ -124,10 +125,13 @@ export function fromPhotonMessageEvent(event: PhotonMessageEvent): ObserverEvent
     case 'message.unsent':
       return event.messageGuid ? { ...base, type: 'unsent', messageGuid: event.messageGuid } : null;
     case 'message.reactionAdded':
+    case 'message.reactionRemoved':
       if (!event.messageGuid || !event.reaction) return null;
       return {
         ...base, type: 'reaction', messageGuid: event.messageGuid, sender, isFromMe: event.isFromMe,
         reaction: event.reaction.kind === 'emoji' ? event.reaction.emoji ?? 'emoji' : event.reaction.kind,
+        ...(event.type === 'message.reactionRemoved' ? { removed: true } : {}),
+        ...(event.targetPartIndex !== undefined ? { targetPartIndex: event.targetPartIndex } : {}),
       };
     default:
       return null;

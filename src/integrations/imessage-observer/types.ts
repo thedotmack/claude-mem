@@ -43,6 +43,10 @@ export type ObserverEvent = (
     sender?: string;
     isFromMe: boolean;
     reaction: string;
+    /** Removes this person's matching tapback from the open window only. */
+    removed?: boolean;
+    /** A reaction on one part must not remove the same reaction on another. */
+    targetPartIndex?: number;
     occurredAt: Date;
   }
   | { type: 'renamed'; chatGuid: string; displayName: string; sender?: string; isFromMe: boolean; occurredAt: Date }

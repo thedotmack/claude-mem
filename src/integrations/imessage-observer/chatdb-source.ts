@@ -396,12 +396,18 @@ export class ChatDbSource implements MessageSource {
 
     const assocType = row.assoc_type ?? 0;
     if (assocType !== 0) {
-      const reaction = TAPBACKS[assocType];
+      const removed = assocType >= 3000 && assocType <= 3006;
+      const reaction = TAPBACKS[removed ? assocType - 1000 : assocType];
       if (!reaction || !row.assoc_guid) return null;
       // "p:0/GUID" (part 0 of a message) or "bp:GUID".
       const target = row.assoc_guid.replace(/^(?:p:\d+\/|bp:)/, '');
+      const part = /^p:(\d+)\//.exec(row.assoc_guid)?.[1];
       const word = reaction === 'emoji' ? (row.assoc_emoji?.trim() || 'an emoji') : reaction;
-      return { type: 'reaction', chatGuid, messageGuid: target, sender, isFromMe, reaction: word, occurredAt };
+      return {
+        type: 'reaction', chatGuid, messageGuid: target, sender, isFromMe, reaction: word, occurredAt,
+        ...(removed ? { removed: true } : {}),
+        ...(part !== undefined ? { targetPartIndex: Number(part) } : {}),
+      };
     }
 
     const text = this.textOf(row);

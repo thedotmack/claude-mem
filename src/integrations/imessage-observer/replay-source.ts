@@ -73,6 +73,9 @@ export function parseReplay(contents: string): { chats: Map<string, ChatInfo>; e
         events.push({
           type: 'reaction', chatGuid, messageGuid: text(line.id), sender, isFromMe,
           reaction: text(line.reaction) || 'like', occurredAt: when(line.at, lineNumber),
+          ...(line.removed === true ? { removed: true } : {}),
+          ...(Number.isInteger(line.targetPartIndex) && Number(line.targetPartIndex) >= 0
+            ? { targetPartIndex: Number(line.targetPartIndex) } : {}),
         });
         return;
       case 'renamed':

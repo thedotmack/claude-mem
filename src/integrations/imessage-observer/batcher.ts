@@ -46,6 +46,7 @@ export interface WindowEntry {
   reactsTo?: string;
   /** For a tapback: "loved", "liked" and so on. */
   verb?: string;
+  targetPartIndex?: number;
   attachments: string[];
 }
 
@@ -217,14 +218,24 @@ export class ChatWindowBatcher {
         const target = open.find(entry => entry.id === event.messageGuid && entry.kind === 'message');
         if (!target) return null;
         const verb = REACTION_WORDS[event.reaction] ?? `reacted ${event.reaction} to`;
+        const speaker = speakerOf(event);
+        if (event.removed) {
+          // An absent actor cannot identify which person's tapback was withdrawn.
+          if (state && speaker !== undefined) {
+            state.entries = open.filter(entry => !(entry.reactsTo === target.id && entry.speaker === speaker
+              && entry.verb === verb && (entry.targetPartIndex ?? 0) === (event.targetPartIndex ?? 0)));
+          }
+          return null;
+        }
         return {
           id: `${event.messageGuid}:reaction:${event.occurredAt.getTime()}`,
           at: event.occurredAt,
           kind: 'reaction',
-          speaker: speakerOf(event),
+          speaker,
           text: reactionText(verb, target),
           reactsTo: target.id,
           verb,
+          targetPartIndex: event.targetPartIndex,
           attachments: [],
         };
       }
