@@ -1,6 +1,7 @@
 import { afterEach, describe, test, expect, jest } from 'bun:test';
 import { SessionMessageBuffer } from '../../../src/services/worker/SessionMessageBuffer.js';
 import type { PendingMessage, PendingMessageWithId } from '../../../src/services/worker-types.js';
+import { LIVE_OBSERVER_MAX_SESSION_MESSAGES, LIVE_OBSERVER_MAX_TOTAL_MESSAGES } from '../../../src/shared/observer-work-policy.js';
 
 function obs(toolName: string, toolUseId?: string): PendingMessage {
   return { type: 'observation', tool_name: toolName, tool_input: {}, tool_response: {}, toolUseId };
@@ -97,6 +98,46 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
     expect(buffer.enqueue(1, obs('Read', 'a'))).toBeGreaterThan(0);
     expect(buffer.clear(1)).toBe(1);
     expect(buffer.enqueue(1, obs('Read', 'a'))).toBeGreaterThan(0); // not suppressed
+  });
+
+  test('parked batches do not consume per-session capacity or hide new work', async () => {
+    const buffer = new SessionMessageBuffer();
+    const ids: number[] = [];
+    for (let i = 0; i < LIVE_OBSERVER_MAX_SESSION_MESSAGES; i++) {
+      const id = buffer.enqueue(1, obs('Read', `park-${i}`));
+      expect(id).toBeGreaterThan(0);
+      ids.push(id);
+    }
+    expect(buffer.enqueue(1, obs('Read', 'over-cap'))).toBe(0);
+
+    expect(buffer.park(1, ids, 'spent-budget')).toHaveLength(LIVE_OBSERVER_MAX_SESSION_MESSAGES);
+    expect(buffer.getPendingCount(1)).toBe(0);
+    expect(buffer.getTotalDepth()).toBe(0);
+
+    const newId = buffer.enqueue(1, obs('Bash', 'after-park'));
+    expect(newId).toBeGreaterThan(0);
+    expect(buffer.getPendingCount(1)).toBe(1);
+    const drained = await drainAll(buffer, 1);
+    expect(drained.map(m => m._persistentId)).toEqual([newId]);
+    // Parked ids remain visible for diagnostics and are never re-sent.
+    expect(buffer.getParkedMessages(1)).toHaveLength(LIVE_OBSERVER_MAX_SESSION_MESSAGES);
+  });
+
+  test('parked batches do not consume the global live-buffer capacity', () => {
+    const buffer = new SessionMessageBuffer();
+    const sessions = Math.ceil(LIVE_OBSERVER_MAX_TOTAL_MESSAGES / LIVE_OBSERVER_MAX_SESSION_MESSAGES);
+    for (let sessionDbId = 1; sessionDbId <= sessions; sessionDbId++) {
+      for (let i = 0; i < LIVE_OBSERVER_MAX_SESSION_MESSAGES; i++) {
+        expect(buffer.enqueue(sessionDbId, obs('Read'))).toBeGreaterThan(0);
+      }
+    }
+    // At the global cap a new session is rejected.
+    expect(buffer.enqueue(sessions + 1, obs('Read'))).toBe(0);
+
+    const firstSessionIds = Array.from({ length: LIVE_OBSERVER_MAX_SESSION_MESSAGES }, (_, i) => i + 1);
+    expect(buffer.park(1, firstSessionIds, 'spent-budget')).toHaveLength(LIVE_OBSERVER_MAX_SESSION_MESSAGES);
+    expect(buffer.getTotalDepth()).toBe(LIVE_OBSERVER_MAX_TOTAL_MESSAGES - LIVE_OBSERVER_MAX_SESSION_MESSAGES);
+    expect(buffer.enqueue(sessions + 1, obs('Bash'))).toBeGreaterThan(0);
   });
 
   test('clearUnclaimed preserves in-flight evidence and delivery identities', async () => {
