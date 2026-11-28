@@ -96,9 +96,14 @@ export class SessionMessageBuffer {
     }
 
     // Never build a catch-up obligation. Keep in-flight paid work intact;
-    // reject new work when this short-lived buffer is full.
-    if ((this.buffers.get(sessionDbId)?.length ?? 0) >= LIVE_OBSERVER_MAX_SESSION_MESSAGES
-      || this.totalBuffered() >= LIVE_OBSERVER_MAX_TOTAL_MESSAGES) {
+    // reject new work when this short-lived buffer is full. Parked messages
+    // are diagnostic residue that will never be sent again, so they must not
+    // consume capacity: otherwise a spent paid-send budget silently drops
+    // every later event until the parked batch expires.
+    const sessionLiveCount = (this.buffers.get(sessionDbId) ?? [])
+      .filter(message => !message.parked).length;
+    if (sessionLiveCount >= LIVE_OBSERVER_MAX_SESSION_MESSAGES
+      || this.liveBufferedCount() >= LIVE_OBSERVER_MAX_TOTAL_MESSAGES) {
       logger.debug('QUEUE', 'Live observer buffer full; skipping event', { sessionId: sessionDbId });
       return 0;
     }
@@ -347,9 +352,14 @@ export class SessionMessageBuffer {
     return next;
   }
 
-  private totalBuffered(): number {
+  /** Live (sendable) messages only; parked batches are never sent again. */
+  private liveBufferedCount(): number {
     let total = 0;
-    for (const list of this.buffers.values()) total += list.length;
+    for (const list of this.buffers.values()) {
+      for (const message of list) {
+        if (!message.parked) total++;
+      }
+    }
     return total;
   }
 
