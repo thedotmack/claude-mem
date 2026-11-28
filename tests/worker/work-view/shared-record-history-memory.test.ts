@@ -8,6 +8,9 @@ import { decodeChanges } from '../../../src/services/sync/SyncClient.js';
 import { logger } from '../../../src/utils/logger.js';
 import { createSharedRecordReader, publishSharedRecords, readSharedRecords } from '../../../src/services/work-view/shared-record-store.mjs';
 import { createSharedBatch, createSharedEntry, sharedRecordKey } from '../../../src/services/work-view/shared-records.mjs';
+import { join } from 'node:path';
+import { removeTempDir } from '../../helpers/temp-dir.js';
+import { scratchDir } from '../../helpers/scratch-dir.js';
 
 // Shared My Work rows are an append-only history: every revision of every object stays. The
 // cloud viewer read all of it (24,424 rows, 50 MB, for 1,587 current objects) every few seconds
@@ -313,6 +316,57 @@ test('a publish reuses only a kept reader of its own database, device and valida
     () => readSharedRecords(db, { deviceId: DEVICE, validateValue }),
   ]) expect(() => publish(reader)).toThrow('the reader reads another database, device or validator');
   expect(publish(createSharedRecordReader(db, { deviceId: DEVICE, validateValue })).changed).toBe(1);
+});
+
+test('a publish builds on readState only when it is what its reader returned in the open transaction, once', () => {
+  const db = new Database(':memory:');
+  new SessionStore(db).setLocalSyncDeviceId(DEVICE);
+  disposables.push(() => db.close());
+  const validateValue = () => true;
+  const reader = createSharedRecordReader(db, { deviceId: DEVICE, validateValue });
+  const publish = (readState: unknown, value: unknown) => publishSharedRecords(db, { deviceId: DEVICE, project: 'repo', validateValue,
+    updates: [{ kind: 'group', key: 'g', value }], reader, readState: readState as any });
+  const outside = reader();
+  // Read outside a transaction, a state may be stale by the time a write lock is taken.
+  expect(() => db.transaction(() => publish(outside, 1))()).toThrow('readState must be what this reader returned in the open transaction');
+  // Not the reader's own return, even with the same records.
+  expect(() => db.transaction(() => { reader(); return publish(readSharedRecords(db, { deviceId: DEVICE, validateValue }), 1); })()).toThrow('readState must be what this reader returned');
+  expect(db.transaction(() => publish(reader(), 1))().changed).toBe(1);
+  // Used once: after a publish wrote, the same state is not the records any more.
+  expect(() => db.transaction(() => { const state = reader(); publish(state, 2); return publish(state, 3); })()).toThrow('readState must be what this reader returned');
+  expect(readSharedRecords(db, { deviceId: DEVICE }).records.get(sharedRecordKey('group', 'g'))?.value).toBe(1);
+});
+
+test('a readState read in an earlier transaction, or with a row written since, is refused: the records may have changed', () => {
+  const dir = scratchDir('shared-read-state');
+  disposables.push(() => removeTempDir(dir));
+  const store = new SessionStore(join(dir, 'state.db'));
+  store.setLocalSyncDeviceId(DEVICE);
+  disposables.push(() => store.close());
+  const db = store.db, other = new Database(join(dir, 'state.db'));
+  disposables.push(() => other.close());
+  const validateValue = () => true;
+  const reader = createSharedRecordReader(db, { deviceId: DEVICE, validateValue });
+  const publish = (onDb: Database, value: unknown, extra: object = {}) => publishSharedRecords(onDb, { deviceId: DEVICE, project: 'repo', validateValue,
+    updates: [{ kind: 'group', key: 'g', value, expectedHash: null }], ...extra });
+  const g = () => readSharedRecords(db, { deviceId: DEVICE }).records.get(sharedRecordKey('group', 'g'))?.value;
+  // Read in a transaction that commits without publishing; then another connection writes g.
+  const stale = db.transaction(() => reader())();
+  publish(other, 'other writer');
+  expect(() => db.transaction(() => publish(db, 'stale overwrite', { reader, readState: stale }))())
+    .toThrow('readState must be what this reader returned in the open transaction, with nothing written since');
+  expect(g()).toBe('other writer');
+  // This connection writes a row between the read and the publish.
+  db.exec('CREATE TABLE unrelated (x INTEGER)');
+  expect(() => db.transaction(() => {
+    const state = reader();
+    db.run('INSERT INTO unrelated VALUES (1)');
+    return publish(db, 'after a write', { reader, readState: state, updates: [{ kind: 'group', key: 'g', value: 'after a write' }] });
+  })()).toThrow('with nothing written since');
+  expect(g()).toBe('other writer');
+  // Read and published with nothing between, in one transaction, the state is used.
+  expect(db.transaction(() => publish(db, 'current', { reader, readState: reader(), updates: [{ kind: 'group', key: 'g', value: 'current' }] }))().changed).toBe(1);
+  expect(g()).toBe('current');
 });
 
 test('a row cache past the history size the machine was sized for logs an error once and drops nothing', () => {

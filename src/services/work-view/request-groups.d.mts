@@ -28,8 +28,14 @@ export function readGoals(database: LedgerDatabase): SavedGoals;
 export function readConversationProjects(database: LedgerDatabase, conversationKeys: string[]): Map<string, string>;
 export function groupIdFor(anchorConversationKey: string): string;
 export function refreshNeeds(options: { dir?: string; database: LedgerDatabase; now?: number; days?: number; localDeviceId: string }): RefreshNeeds;
-export function writeJsonAtomic(path: string, value: unknown): void;
+/** With a shared writer registered, it commits the shared records and puts the file in place under its write lock.
+ * readHash: the hash of the file `value` was built from (readHashOf); the shared write refuses it when the file changed since. */
+export function writeJsonAtomic(path: string, value: unknown, options?: { readHash?: string }): void;
 export function readLedger(dir?: string): Record<string, any>;
+/** The hash of a ledger file's bytes (sha256), or 'missing'. */
+export function ledgerFileHash(path: string): string;
+/** What a write built from this readLedger result passes as readHash for the ledger file `name`. */
+export function readHashOf(ledger: Record<string, any>, name: string): string;
 export function readCandidates(database: LedgerDatabase, options: { sinceEpoch?: number; conversationKeys?: string[] | null; fullAsks?: boolean; recentAsks?: boolean; excludedPromptIds?: Set<number> | null }): any[];
 export function ledgerSignature(dir?: string): string;
 /** The decisions `apply` takes, merged into `stored` with projects and first asks read from the database; not written. */
@@ -87,12 +93,19 @@ export interface SubFocusInput {
   alreadyUngrouped: string[];
   passHash: string;
 }
-/** One kept area as sub-focus-input lists it, with how many placed requests it holds. */
+/** One kept area as sub-focus-input lists it, with how many placed requests it holds that My Work shows (shownGroupIds). */
 export interface SubFocusAreaEntry { focusAreaId: string; name: string; requests: number }
 /** sub-focus-input with no area: the kept areas to group now (`due`), and those whose last pass failed on the requests they
  * hold now (`failed`), which only the owner's Refresh asks again. */
 export interface SubFocusAreaListing { due: SubFocusAreaEntry[]; failed: SubFocusAreaEntry[] }
-export function subFocusInput(ledger: Record<string, any>, focus: ReturnType<typeof import('./my-focus.mjs').buildFocusAreas>, focusAreaId: string): SubFocusInput;
+/** The ledger requests My Work shows as cards, from sessions and prompts only: one with a conversation holding a human ask
+ * once agent-written prompts are left out, or one whose anchor conversation is not recorded here (shown from its stored
+ * first ask). Not My Work's whole rule: a request whose asking conversations all carry an explicit work-state request_id,
+ * or whose stored root is unknown and whose only asking conversation is from another root, is counted here with no card
+ * there; and shared-only sessions, shared exclusions and My Work's 12,000-prompt load limit can differ either way. */
+export function shownGroupIds(ledger: Record<string, any>, database: LedgerDatabase): Set<string>;
+/** Counts only the requests shownGroupIds holds, the requests a sub focus card counts. */
+export function subFocusInput(ledger: Record<string, any>, focus: ReturnType<typeof import('./my-focus.mjs').buildFocusAreas>, focusAreaId: string, database: LedgerDatabase): SubFocusInput;
 /** coerce: the refresh's one retry drops what would be refused (naming each new group it dropped in droppedNewGroups) and
  * leaves a left-out request ungrouped. recordPass false: an earlier part of a large area, which does not record the pass. */
 export function validateSubFocusAnswer(answer: unknown, input: SubFocusInput, options?: { coerce?: boolean; recordPass?: boolean; droppedNewGroups?: Set<string> }): import('./my-focus.mjs').RouterFocusBody & { subFocus: import('./my-focus.mjs').RouterSubFocusBody };

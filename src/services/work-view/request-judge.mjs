@@ -18,7 +18,7 @@ import { isCmemGatewayUrl, isKeyAllowedForEndpoint } from '../../shared/cmem-gat
 import { isOpenRouterApiUrl, resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { applyDecisions, groupIdFor, groupingInput, LEDGER_DIR, placeholderTitleFromAsk, readCandidates, readLedger, writeJsonAtomic } from './request-groups.mjs';
+import { applyDecisions, groupIdFor, groupingInput, LEDGER_DIR, placeholderTitleFromAsk, readCandidates, readHashOf, readLedger, writeJsonAtomic } from './request-groups.mjs';
 
 const DAY_MS = 86400000;
 const iso = (epoch) => new Date(epoch).toISOString();
@@ -228,7 +228,9 @@ export async function routeUndecided({ dir = LEDGER_DIR, database, judge = null,
   const skip = new Set();
   const routed = [], unplaced = [];
   let working = ledger.groups;
-  const persist = () => { if (apply) writeJsonAtomic(join(dir, 'request-groups.json'), working); };
+  // The hash of the request-groups.json `working` was read from: a shared write refuses it once another writer replaced that file.
+  let readHash = readHashOf(ledger, 'request-groups.json');
+  const persist = () => { if (apply) writeJsonAtomic(join(dir, 'request-groups.json'), working, { readHash }); };
   for (;;) {
     const input = groupingInput({ ...ledger, groups: working }, database, { sinceEpoch, limit: Infinity, skip });
     if (!input.conversations.length) break;
@@ -261,9 +263,14 @@ export async function routeUndecided({ dir = LEDGER_DIR, database, judge = null,
       }
       // Applied runs re-read the ledger before each write: the owner may have answered a suggestion (or
       // another run decided this conversation) while the judge was awaited, and that answer must survive.
-      // Between this read and persist() nothing is awaited, so no other write can land in between.
+      // Nothing is awaited between this read and persist(), but another process (the worker, a CLI) can still
+      // write the file in between. With shared state on, persist() passes this read's hash and the shared write
+      // refuses the decision when the file changed since; running the judge again re-reads and decides again.
+      // With shared state off there is no such check: a write landing in that window is overwritten.
       if (apply) {
-        working = readLedger(dir).groups;
+        const current = readLedger(dir);
+        working = current.groups;
+        readHash = readHashOf(current, 'request-groups.json');
         if (working.conversations[key] || working.ignored?.[key]) { skip.add(key); continue; }
       }
       // The request picked, as the ledger holds it now: an owner Join meanwhile may have moved it into another

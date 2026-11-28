@@ -373,6 +373,12 @@ export function workStateRowsRevision(db, { where = '1', syncRev = true } = {}) 
 const sharedRecordReaders = new WeakMap();
 
 /**
+ * Whether anything was committed or written on `db` since: PRAGMA data_version moves when another connection commits,
+ * and total_changes() when this connection writes a row. Both are counters SQLite keeps, so no row is read.
+ */
+const writeMark = (db) => `${db.query('PRAGMA data_version').get().data_version}:${db.query('SELECT total_changes() AS changes').get().changes}`;
+
+/**
  * One reader that reuses its last read until the shared rows change (workStateRowsRevision). A
  * pull that touches other tables, which on a replica is almost every commit, reuses the last read
  * instead of parsing the history again. A read inside a caller's transaction may include rows it
@@ -388,11 +394,17 @@ export function createSharedRecordReader(db, options) {
       throw error;
     }
   };
+  // lastInTransaction: what this reader returned inside the caller's open transaction and the database's writeMark then,
+  // for publishSharedRecords' readState.
+  const reads = { db, deviceId: options.deviceId, validateValue: options.validateValue ?? null, reviewStack: options.reviewStack, lastInTransaction: null };
   const reader = () => {
     if (db.inTransaction) {
       const revision = revisionOf();
-      return kept && revision !== null && revision === kept.revision ? kept.state : readSharedRecords(db, options);
+      const state = kept && revision !== null && revision === kept.revision ? kept.state : readSharedRecords(db, options);
+      reads.lastInTransaction = { state, mark: writeMark(db) };
+      return state;
     }
+    reads.lastInTransaction = null;
     return db.transaction(() => {
       const revision = revisionOf();
       if (kept && revision !== null && revision === kept.revision) return kept.state;
@@ -401,12 +413,17 @@ export function createSharedRecordReader(db, options) {
       return state;
     })();
   };
-  sharedRecordReaders.set(reader, { db, deviceId: options.deviceId, validateValue: options.validateValue ?? null, reviewStack: options.reviewStack });
+  sharedRecordReaders.set(reader, reads);
   return reader;
 }
 
-/** Atomic local commit; callers emit notifications only after this returns. */
-export function publishSharedRecords(db, { deviceId, project, updates, now = Date.now(), validateValue, reader }) {
+/**
+ * Atomic local commit; callers emit notifications only after this returns.
+ * readState: the state `reader` returned inside the caller's open transaction, which has written nothing since (checked
+ * by writeMark), so this publish builds on it instead of reading again. SharedLedgerAdapter.stageFile reads under the write lock and publishes
+ * next; a second read there held the lock 0.2 to 0.7 s longer on the owner's Mac (2026-11-27). Used once.
+ */
+export function publishSharedRecords(db, { deviceId, project, updates, now = Date.now(), validateValue, reader, readState }) {
   sharedWriter(deviceId);
   // A kept reader (createSharedRecordReader) saves a read, but only one of this database, device and validator
   // sees the records this publish must build on.
@@ -419,11 +436,19 @@ export function publishSharedRecords(db, { deviceId, project, updates, now = Dat
       throw new TypeError('Shared My Work: the reader excludes review stack updates');
     }
   }
+  if (readState !== undefined) {
+    // The same open transaction and nothing written since: no other connection committed (a state read in an earlier
+    // transaction fails here) and this one wrote no row.
+    const reads = reader === undefined ? null : sharedRecordReaders.get(reader);
+    const last = reads?.lastInTransaction;
+    if (!last || !db.inTransaction || readState !== last.state || writeMark(db) !== last.mark) throw new TypeError('Shared My Work: readState must be what this reader returned in the open transaction, with nothing written since');
+    reads.lastInTransaction = null;
+  }
   if (typeof project !== 'string' || !project.trim() || project.length > 1_024) throw new TypeError('Shared My Work: invalid project');
   if (!Array.isArray(updates) || updates.length > SHARED_WORK_MAX_UPDATES) throw new RangeError('Shared My Work: too many updates');
   if (!Number.isSafeInteger(now) || now < 0 || !Number.isFinite(new Date(now).getTime())) throw new TypeError('Shared My Work: invalid timestamp');
   return db.transaction(() => {
-    const state = reader ? reader() : readSharedRecords(db, { deviceId, validateValue, reviewStack: 'metadata' });
+    const state = readState ?? (reader ? reader() : readSharedRecords(db, { deviceId, validateValue, reviewStack: 'metadata' }));
     const batchId = randomUUID();
     const entries = [], seen = new Set();
     for (const update of updates) {

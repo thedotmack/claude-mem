@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, statSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, writeFileSync, readFileSync, statSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { writeJsonAtomic } from '../../../src/services/work-view/request-groups.mjs';
 import { registerSharedFileWriter } from '../../../src/services/work-view/shared-file-hooks.mjs';
+import { scratchDir } from '../../helpers/scratch-dir.js';
 
 function fixture(run) {
-  const dir = mkdtempSync(join(tmpdir(), 'ledger-atomic-'));
+  const dir = scratchDir('ledger-atomic');
   try { run(dir); } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
@@ -21,29 +21,29 @@ test('a ledger write does not consume another writer’s unfinished temporary fi
   if (process.platform !== 'win32') assert.equal(statSync(path).mode & 0o777, 0o600);
 }));
 
-test('the durable hook replacement is written before its completion callback', () => fixture(dir => {
+// The shared writer renames the file under its database write lock (SharedLedgerAdapter.finishWrite), so the raw value
+// is never written by writeJsonAtomic and nothing is written before the writer's completion runs.
+test('a registered shared writer writes the file in its completion, and the raw value is never written', () => fixture(dir => {
   const path = join(dir, 'story.json');
   let finished = false;
-  const unregister = registerSharedFileWriter(dir, (name, value) => {
+  const unregister = registerSharedFileWriter(dir, (name, value, options) => {
     assert.equal(name, 'story.json');
     assert.equal(value.private, 'raw');
-    const finish = () => {
-      assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { public: 'redacted' });
+    assert.deepEqual(options, { readHash: 'hash-of-the-read' });
+    return () => {
+      assert.equal(existsSync(path), false);
+      writeFileSync(path, JSON.stringify({ public: 'redacted' }));
       finished = true;
     };
-    finish.value = { public: 'redacted' };
-    return finish;
   });
-  try { writeJsonAtomic(path, { private: 'raw' }); } finally { unregister(); }
+  try { writeJsonAtomic(path, { private: 'raw' }, { readHash: 'hash-of-the-read' }); } finally { unregister(); }
   assert.equal(finished, true);
+  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { public: 'redacted' });
 }));
 
-test('a failed rename removes its temporary file and does not report completion', () => fixture(dir => {
+test('without a shared writer, a failed rename throws and removes its temporary file', () => fixture(dir => {
   const path = join(dir, 'story.json');
   mkdirSync(path);
-  let finished = false;
-  const unregister = registerSharedFileWriter(dir, () => () => { finished = true; });
-  try { assert.throws(() => writeJsonAtomic(path, { narrative: 'complete' })); } finally { unregister(); }
-  assert.equal(finished, false);
+  assert.throws(() => writeJsonAtomic(path, { narrative: 'complete' }));
   assert.deepEqual(readdirSync(dir), ['story.json']);
 }));

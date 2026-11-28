@@ -1,16 +1,16 @@
 import { afterEach, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { ensureLocalDeviceIdentity } from '../../../src/services/sync/local-device-identity.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { publishSharedRecords } from '../../../src/services/work-view/shared-record-store.mjs';
+import { scratchDir } from '../../helpers/scratch-dir.js';
 
 const cleanup: Array<() => void> = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 function fixture() {
-  const dir = mkdtempSync(join(tmpdir(), 'local-device-identity-'));
+  const dir = scratchDir('local-device-identity');
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const db = new Database(join(dir, 'state.db'));
   db.exec('PRAGMA busy_timeout=5000');
@@ -117,4 +117,24 @@ try { console.log('IDENTITY=' + ensureLocalDeviceIdentity(db, ${JSON.stringify(p
     }
     await Promise.all(children.map(child => child.exited));
   }
+});
+
+test('confirms an identity already pinned and saved without taking the write lock', () => {
+  const { db, dir, path } = fixture();
+  const id = ensureLocalDeviceIdentity(db, path);
+  // Another connection holds the write lock, and this one would not wait for it: only reads can succeed.
+  const holder = new Database(join(dir, 'state.db'));
+  cleanup.push(() => holder.close());
+  holder.exec('BEGIN IMMEDIATE');
+  db.exec('PRAGMA busy_timeout=0');
+  expect(ensureLocalDeviceIdentity(db, path)).toBe(id);
+  expect(ensureLocalDeviceIdentity(db, path, id)).toBe(id);
+  // A conflict is still refused before anything is written.
+  expect(() => ensureLocalDeviceIdentity(db, path, 'other-device')).toThrow('conflicts');
+  // Settings that lost the identity need a write, which waits for the lock like any other.
+  writeFileSync(path, '{}');
+  expect(() => ensureLocalDeviceIdentity(db, path)).toThrow('database is locked');
+  holder.exec('COMMIT');
+  expect(ensureLocalDeviceIdentity(db, path)).toBe(id);
+  expect(JSON.parse(readFileSync(path, 'utf8')).CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID).toBe(id);
 });

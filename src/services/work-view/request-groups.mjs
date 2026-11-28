@@ -81,17 +81,84 @@ function queryInChunks(database, values, sqlFor, parametersFor = (chunk) => chun
   return rows;
 }
 
+const SESSION_COLUMNS = 'SELECT id, platform_source, content_session_id, project, user_prompt, started_at_epoch FROM sdk_sessions';
+
+/** The recorded sessions of these conversations. 250 pairs (500 parameters) per query, under SQLite's 999-parameter
+ * limit before 3.32. */
+function sessionsOf(database, conversationKeys) {
+  const pairs = conversationKeys.map((key) => JSON.parse(key).slice(1));
+  return queryInChunks(database, pairs, (chunk) => `${SESSION_COLUMNS} WHERE (platform_source, content_session_id) IN (VALUES ${chunk.map(() => '(?, ?)').join(',')})`, (chunk) => chunk.flat(), 250);
+}
+
+/** The prompts of these sessions, each as a list by session id. */
+function promptsOf(database, sessionIds, { fullAsks = false } = {}) {
+  const prompts = queryInChunks(database, [...new Set(sessionIds)], (chunk) => `SELECT id, session_db_id, prompt_number, ${fullAsks ? 'prompt_text' : 'substr(prompt_text, 1, 1200) AS prompt_text'}, created_at_epoch
+    FROM user_prompts WHERE session_db_id IN (${placeholders(chunk)})`);
+  const bySession = new Map();
+  for (const prompt of prompts) {
+    if (!bySession.has(prompt.session_db_id)) bySession.set(prompt.session_db_id, []);
+    bySession.get(prompt.session_db_id).push(prompt);
+  }
+  return bySession;
+}
+
+/** A conversation's opening human ask once the setup scan's agent-written prompts are left out, and the prompts that are
+ * its own. An excluded prompt is never an ask, and the session's stored opening prompt is a copy of its first prompt row,
+ * so a rejected first prompt stays rejected. My Work reads asks the same way (applySharedProjection drops the excluded
+ * prompts and the rejected opening before buildHumanRequests looks for an ask), so a conversation with no ask here is one
+ * My Work shows no card for. */
+function openingAsk(session, prompts, excludedPromptIds) {
+  const own = prompts.filter((prompt) => !excludedPromptIds?.has(prompt.id));
+  const openingRejected = prompts.some((prompt) => excludedPromptIds?.has(prompt.id) && (prompt.prompt_number === 1 || prompt.prompt_text === session.user_prompt));
+  return { own, original: conversationKey(session) ? originalFor(openingRejected ? { ...session, user_prompt: null } : session, own) : null };
+}
+
+/**
+ * The ledger requests My Work shows as cards (buildHumanRequests), as far as sessions and prompts tell: one with a
+ * conversation that holds a human ask (openingAsk), and one whose anchor conversation is not recorded on this computer,
+ * which My Work shows from the first ask the ledger stored. A request whose every ask the setup scan judged agent-written
+ * after it was grouped has no card (32 of the 251 requests on the owner's Mac on 2026-11-27), so no step that counts an
+ * area's requests counts it. All 219 shown requests on that Mac matched My Work's cards. My Work also reads work-state,
+ * shared records and its load limits, which this does not, so these requests are counted here and have no card there:
+ * - Explicit request ids: every asking conversation carries a work-state request_id. My Work files that work under an
+ *   explicit-request card, and the request's own card is not made while its anchor is recorded.
+ * - Another root: the request's stored root is unknown (none, or the "no project" root) and its only asking conversation
+ *   is from another root than the request's. My Work gives that conversation a card of its own.
+ * - Shared state and load limits: My Work also counts sessions known only from shared records and skips openings that
+ *   shared exclusions name, reads at most 12,000 prompts (agent-view.mjs) and the first session of each conversation.
+ *   This reads only this computer's sessions, every prompt, and agentWrittenPromptIds, so either side can count a
+ *   request the other does not.
+ * tests/work-view/request-groups.test.ts keeps the first two as fixture cases.
+ * Reads sessions and prompts only: readCandidates also reads work lists, observations and tool activity, 22 to 38 s
+ * over the 533 ledger conversations on that Mac, against 6 ms for these two reads.
+ */
+export function shownGroupIds(ledger, database) {
+  const keys = Object.keys(ledger.groups.conversations).filter(isConversationKey);
+  const sessions = sessionsOf(database, keys);
+  const prompts = promptsOf(database, sessions.map((session) => session.id));
+  const recorded = new Set(), asking = new Set();
+  for (const session of sessions) {
+    const key = conversationKey(session);
+    recorded.add(key);
+    if (openingAsk(session, prompts.get(session.id) ?? [], ledger.agentWrittenPromptIds).original) asking.add(key);
+  }
+  const shown = new Set();
+  for (const [key, groupId] of Object.entries(ledger.groups.conversations)) if (asking.has(key)) shown.add(groupId);
+  for (const [groupId, group] of Object.entries(ledger.groups.groups)) {
+    if (group.anchorAsk && !recorded.has(group.anchor) && !ledger.groups.ignored?.[group.anchor]) shown.add(groupId);
+  }
+  return shown;
+}
+
 // Pass sinceEpoch for a time window, or conversationKeys for specific conversations.
 // fullAsks returns every qualifying ask untruncated (for `show`); listings stay short.
 // Grouping needs the recent window; ordinary candidate listings keep the opening one.
 // excludedPromptIds: hook-recorded prompts the setup scan found an agent wrote (agent-written-prompts.json).
 export function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, fullAsks = false, recentAsks = false, excludedPromptIds = null }) {
-  const columns = 'SELECT id, platform_source, content_session_id, project, user_prompt, started_at_epoch FROM sdk_sessions';
-  const pairs = conversationKeys?.map((key) => JSON.parse(key).slice(1));
-  const stored = pairs
-    ? queryInChunks(database, pairs, (chunk) => `${columns} WHERE (platform_source, content_session_id) IN (VALUES ${chunk.map(() => '(?, ?)').join(',')})`, (chunk) => chunk.flat(), 250)
+  const stored = conversationKeys
+    ? sessionsOf(database, conversationKeys)
     // Any recent activity counts: a new start, prompt, observation or recorded tool use (a commit, a push, a work-state write).
-    : database.prepare(`${columns} WHERE started_at_epoch >= ?
+    : database.prepare(`${SESSION_COLUMNS} WHERE started_at_epoch >= ?
         OR id IN (SELECT DISTINCT session_db_id FROM user_prompts WHERE created_at_epoch >= ?)
         OR id IN (SELECT DISTINCT session_db_id FROM tool_uses WHERE created_at_epoch >= ?)
         OR memory_session_id IN (SELECT DISTINCT memory_session_id FROM observations WHERE created_at_epoch >= ?)`).all(sinceEpoch, sinceEpoch, sinceEpoch, sinceEpoch);
@@ -99,8 +166,7 @@ export function readCandidates(database, { sinceEpoch = 0, conversationKeys = nu
   // A session started from an agent scratch folder takes the repo its tool calls touched.
   const sessions = withDerivedProjects(database, stored);
   const ids = [...new Set(sessions.map((session) => session.id))];
-  const prompts = queryInChunks(database, ids, (chunk) => `SELECT id, session_db_id, prompt_number, ${fullAsks ? 'prompt_text' : 'substr(prompt_text, 1, 1200) AS prompt_text'}, created_at_epoch
-    FROM user_prompts WHERE session_db_id IN (${placeholders(chunk)})`);
+  const promptsBySession = promptsOf(database, ids, { fullAsks });
   const writes = queryInChunks(database, ids, (chunk) => `SELECT session_db_id, tool_input, created_at_epoch FROM tool_uses
     WHERE tool_name LIKE '%work_state_write%' AND session_db_id IN (${placeholders(chunk)})`);
   const observations = queryInChunks(database, ids, (chunk) => `SELECT s.id AS session_db_id, COUNT(*) AS count, MAX(o.created_at_epoch) AS last_epoch
@@ -111,19 +177,10 @@ export function readCandidates(database, { sinceEpoch = 0, conversationKeys = nu
   const toolActivity = queryInChunks(database, ids, (chunk) => `SELECT session_db_id, MAX(created_at_epoch) AS last_epoch FROM tool_uses
     WHERE session_db_id IN (${placeholders(chunk)}) GROUP BY session_db_id`);
   const lastToolUseBySession = new Map(toolActivity.map((row) => [row.session_db_id, row.last_epoch ?? 0]));
-  const promptsBySession = new Map();
-  for (const prompt of prompts) {
-    if (!promptsBySession.has(prompt.session_db_id)) promptsBySession.set(prompt.session_db_id, []);
-    promptsBySession.get(prompt.session_db_id).push(prompt);
-  }
   const candidates = new Map();
   for (const session of sessions) {
     const key = conversationKey(session);
-    const all = promptsBySession.get(session.id) ?? [];
-    const own = all.filter((prompt) => !excludedPromptIds?.has(prompt.id));
-    // The session's stored opening prompt is a copy of its first prompt row: a rejected first prompt stays rejected.
-    const openingRejected = all.some((prompt) => excludedPromptIds?.has(prompt.id) && (prompt.prompt_number === 1 || prompt.prompt_text === session.user_prompt));
-    const original = key ? originalFor(openingRejected ? { ...session, user_prompt: null } : session, own) : null;
+    const { own, original } = openingAsk(session, promptsBySession.get(session.id) ?? [], excludedPromptIds);
     if (!original) continue;
     own.sort((a, b) => a.created_at_epoch - b.created_at_epoch || a.id - b.id);
     const lastPrompt = own.at(-1)?.created_at_epoch ?? 0;
@@ -209,16 +266,36 @@ export function readGoals(database) {
   return { summary: listState.human_summary ?? null, generatedAt: listState.generated_at ?? null, mapPath: listState.map_path ?? null, goals };
 }
 
-function readJson(path, fallback) {
-  try { return JSON.parse(readFileSync(path, 'utf8')); }
-  catch (error) { if (error.code === 'ENOENT') return fallback; throw error; }
+/** A ledger file's bytes, or null when it does not exist. */
+function readBytes(path) {
+  try { return readFileSync(path); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
 }
 
-export function writeJsonAtomic(path, value) {
-  const finish = beforeSharedFileWrite(path, value);
-  const stored = finish && Object.hasOwn(finish, 'value') ? finish.value : value;
-  writeJsonFileAtomic(path, stored, { mode: 0o600 });
-  finish?.();
+/** The sha256 of a file's bytes as read, or 'missing'. A shared write compares it under its write lock with the file's
+ * hash then (SharedLedgerAdapter.stageFile readHash), so a value built from an older read is refused. Raw bytes, so the
+ * hash is of exactly what the reader parsed. */
+const bytesHash = (bytes) => bytes === null ? 'missing' : createHash('sha256').update(bytes).digest('hex');
+export const ledgerFileHash = (path) => bytesHash(readBytes(path));
+
+/** readHashes: when given, the read's hash (bytesHash) is recorded under `name`. */
+function readJson(path, fallback, readHashes = null, name = null) {
+  const bytes = readBytes(path);
+  if (readHashes) readHashes[name] = bytesHash(bytes);
+  return bytes === null ? fallback : JSON.parse(bytes.toString('utf8'));
+}
+
+/**
+ * Write one ledger file. With a shared writer registered (shared state on), that writer commits the shared records first
+ * and then puts the file in place itself, under its database write lock (SharedLedgerAdapter.finishWrite): a rename made
+ * after the lock was released could land after a newer write's and leave the older value in the file. readHash: the hash
+ * of the file this value was built from (readLedger's readHashes); the shared write refuses the value when another writer
+ * replaced that file since, instead of saving it over the newer decision.
+ */
+export function writeJsonAtomic(path, value, { readHash } = {}) {
+  const finish = beforeSharedFileWrite(path, value, readHash === undefined ? undefined : { readHash });
+  if (finish) finish();
+  else writeJsonFileAtomic(path, value, { mode: 0o600 });
 }
 
 const emptyGroups = () => ({ version: 1, updatedAt: null, conversations: {}, groups: {}, ignored: {} });
@@ -636,22 +713,29 @@ function readRefreshStatus(dir) {
   catch (error) { if (error instanceof SyntaxError) return null; throw error; }
 }
 
-/** Everything the monitor needs, read without touching the database. */
+/** Everything the monitor needs, read without touching the database. `readHashes` holds the hash of each file a command
+ * writes back (request-groups.json, story.json, progress/<groupId>.json) as this read found it; readHashOf names it. */
 export function readLedger(dir = LEDGER_DIR) {
-  const groups = readJson(join(dir, 'request-groups.json'), emptyGroups());
+  const readHashes = {};
+  const groups = readJson(join(dir, 'request-groups.json'), emptyGroups(), readHashes, 'request-groups.json');
   const progress = {};
   let names = [];
   try { names = readdirSync(join(dir, 'progress')).filter((name) => /^g_[0-9a-f]{12}\.json$/.test(name)); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   for (const name of names) {
-    const entry = readJson(join(dir, 'progress', name), null);
+    const entry = readJson(join(dir, 'progress', name), null, readHashes, `progress/${name}`);
     if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, title: groups.groups[entry.groupId].title };
   }
   return {
-    groups, progress, story: readJson(join(dir, 'story.json'), null), refresh: readRefreshStatus(dir),
+    groups, progress, story: readJson(join(dir, 'story.json'), null, readHashes, 'story.json'), refresh: readRefreshStatus(dir),
     agentWrittenPromptIds: new Set(readJson(join(dir, AGENT_WRITTEN_PROMPTS_FILE), { promptIds: [] }).promptIds ?? []),
+    readHashes,
   };
 }
+
+/** The hash a write built from `ledger` passes as readHash for the ledger file `name`: a progress file the read did not
+ * list did not exist then. */
+export const readHashOf = (ledger, name) => ledger.readHashes[name] ?? bytesHash(null);
 
 /** Cheap change detector for the monitor's one-second poll. */
 export function ledgerSignature(dir = LEDGER_DIR) {
@@ -931,10 +1015,20 @@ export function validateFocusAnswer(answer, input, ledger, { other = false } = {
  * than two groups' worth cannot make cards and is never asked about. */
 const SUB_FOCUS_AREA_MIN_REQUESTS = 2 * SUB_FOCUS_MIN_REQUESTS;
 
-/** The ledger requests placed in each kept area (not merged): the areas the sub focus step groups. */
-function requestsByKeptArea(ledger, focus) {
-  const kept = new Map(focus.focusAreas.filter((area) => area.status === 'kept' && !area.mergedInto).map((area) => [area.focusAreaId, { area, groupIds: [] }]));
-  for (const [groupId, group] of Object.entries(ledger.groups.groups)) kept.get(focus.focusAreaIdByAnchor.get(group.anchor))?.groupIds.push(groupId);
+/** The ledger requests placed in each kept area (not merged) that My Work shows as cards (shownGroupIds): the areas the
+ * sub focus step groups. A sub focus card counts the served requests that name it (docs/design/focus-areas.md), so a
+ * request with no card is never asked about, never makes a group, and never counts toward an area's four. */
+function requestsByKeptArea(ledger, focus, database) {
+  const shown = shownGroupIds(ledger, database);
+  // placedGroupIds: every placed request, shown or not: the set a pass hash covered before passes counted only shown ones
+  // (subFocusAreas).
+  const kept = new Map(focus.focusAreas.filter((area) => area.status === 'kept' && !area.mergedInto).map((area) => [area.focusAreaId, { area, groupIds: [], placedGroupIds: [] }]));
+  for (const [groupId, group] of Object.entries(ledger.groups.groups)) {
+    const entry = kept.get(focus.focusAreaIdByAnchor.get(group.anchor));
+    if (!entry) continue;
+    entry.placedGroupIds.push(groupId);
+    if (shown.has(groupId)) entry.groupIds.push(groupId);
+  }
   return [...kept.values()];
 }
 
@@ -942,19 +1036,22 @@ function requestsByKeptArea(ledger, focus) {
  * only when that set changes (a request placed in it or moved out), never for a new review or a regrouping by the owner. */
 const subFocusPassHash = (ledger, groupIds) => createHash('sha256').update(JSON.stringify(groupIds.map((groupId) => ledger.groups.groups[groupId].anchor).sort())).digest('hex').slice(0, 16);
 
-/** Kept areas with SUB_FOCUS_AREA_MIN_REQUESTS or more placed requests that this computer's last answered pass over the
- * area did not look at. `due`: no pass failed on this set either, so any refresh asks the area. `failed`: this computer's
+/** Kept areas with SUB_FOCUS_AREA_MIN_REQUESTS or more placed requests My Work shows that this computer's last answered
+ * pass over the area did not look at. `due`: no pass failed on this set either, so any refresh asks the area. `failed`: this computer's
  * last pass failed on exactly this set (refused twice, the model call failed, or its answer could not be saved). The same
  * question would buy the same paid call again, and a quota reset, a login or a timer does not make it new
  * (docs/architecture/observer-lifecycle.md), so no scheduled refresh asks it; it is due again once its set changes, and the
- * owner's Refresh (OWNER_REFRESH_REASON) asks it. */
-function subFocusAreas(ledger, focus) {
+ * owner's Refresh (OWNER_REFRESH_REASON) asks it.
+ * A hash recorded before passes counted only shown requests covers every request placed in the area. It still names the
+ * area's set while those placed requests are unchanged: an upgrade alone never asks an area again, neither one answered
+ * nor one whose pass failed, and the area is asked again when a request is next placed in it or moved out. */
+function subFocusAreas(ledger, focus, database) {
   const due = [], failed = [];
-  for (const entry of requestsByKeptArea(ledger, focus)) {
+  for (const entry of requestsByKeptArea(ledger, focus, database)) {
     if (entry.groupIds.length < SUB_FOCUS_AREA_MIN_REQUESTS) continue;
-    const hash = subFocusPassHash(ledger, entry.groupIds);
-    if (hash === focus.subFocusPassHashes.get(entry.area.focusAreaId)) continue;
-    (hash === focus.subFocusFailedHashes.get(entry.area.focusAreaId) ? failed : due).push(entry);
+    const hashes = [subFocusPassHash(ledger, entry.groupIds), subFocusPassHash(ledger, entry.placedGroupIds)];
+    if (hashes.includes(focus.subFocusPassHashes.get(entry.area.focusAreaId))) continue;
+    (hashes.includes(focus.subFocusFailedHashes.get(entry.area.focusAreaId)) ? failed : due).push(entry);
   }
   return { due, failed };
 }
@@ -968,8 +1065,8 @@ function subFocusAreas(ledger, focus) {
  * requests the router left ungrouped last time: leaving one ungrouped again writes nothing. `passHash` names the requests
  * the pass looks at; the answer's last part records it.
  */
-export function subFocusInput(ledger, focus, focusAreaId) {
-  const entry = requestsByKeptArea(ledger, focus).find(({ area }) => area.focusAreaId === focusAreaId);
+export function subFocusInput(ledger, focus, focusAreaId, database) {
+  const entry = requestsByKeptArea(ledger, focus, database).find(({ area }) => area.focusAreaId === focusAreaId);
   if (!entry) throw new TypeError(`${focusAreaId} is not a kept focus area.`);
   const { area, groupIds } = entry;
   const anchorOf = (groupId) => ledger.groups.groups[groupId].anchor;
@@ -1146,7 +1243,7 @@ export function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), day
   const otherChanged = otherHash !== null && otherHash !== focus.otherPassHash;
   // Kept areas whose set of placed requests changed since this computer last grouped them into sub focuses. An area whose
   // last pass failed on its current set is counted apart and never makes a scheduled run needed.
-  const subFocus = subFocusAreas(ledger, focus);
+  const subFocus = subFocusAreas(ledger, focus, database);
   const subFocusDue = subFocus.due.length;
   return { due: due.length, ungrouped, goalsStale, unplaced: queued.length, otherChanged, subFocusDue, subFocusFailed: subFocus.failed.length,
     needed: Boolean(due.length || ungrouped || goalsStale || queued.length || otherChanged || subFocusDue) };
@@ -1360,7 +1457,7 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
   if (command === 'apply') {
     const ledger = readLedger(dir);
     const next = applyDecisions(ledger.groups, readInput(args[0] ?? '-'), { database: db(), now, excludedPromptIds: ledger.agentWrittenPromptIds });
-    writeJsonAtomic(join(dir, 'request-groups.json'), next);
+    writeJsonAtomic(join(dir, 'request-groups.json'), next, { readHash: readHashOf(ledger, 'request-groups.json') });
     return print({ groups: Object.keys(next.groups).length, conversations: Object.keys(next.conversations).length });
   }
   if (command === 'pending' || command === 'show') {
@@ -1403,13 +1500,13 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     // The story is retold only from reviews whose facts moved; reworded prose and review timestamps are not news.
     const unchanged = previous && JSON.stringify(storyFacts(previous)) === JSON.stringify(storyFacts(reviewed));
     const entry = { ...reviewed, checkedAt, changedAt: unchanged ? previous.changedAt ?? previous.checkedAt : checkedAt, readings: appendReading(ledger.progress[reviewed.groupId], { at: checkedAt, percent: reviewed.percent }) };
-    writeJsonAtomic(join(dir, 'progress', `${entry.groupId}.json`), entry);
+    writeJsonAtomic(join(dir, 'progress', `${entry.groupId}.json`), entry, { readHash: readHashOf(ledger, `progress/${entry.groupId}.json`) });
     return print({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length, ...(coercedFields.size ? { coercedFields: [...coercedFields] } : {}),
       ...(droppedPreferences.size ? { droppedPreferences: [...droppedPreferences] } : {}) });
   }
   if (command === 'title-input') return print(titleInput(readLedger(dir), db(), { limit: option(args, 'limit', TITLE_BATCH) }));
   if (command === 'record-titles') {
-    const { groups } = readLedger(dir);
+    const ledger = readLedger(dir), { groups } = ledger;
     const answer = readInput(args[0] ?? '-');
     if (!Array.isArray(answer?.titles)) throw new TypeError('The answer needs a titles array.');
     let titled = 0;
@@ -1421,7 +1518,7 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
       const title = writtenTitle(entry.title, group.anchorAsk?.text ?? null, `titles[${index}].title`);
       if (hasPlaceholderTitle(group)) { group.title = title; titled++; }
     }
-    if (titled) { groups.updatedAt = iso(now); writeJsonAtomic(join(dir, 'request-groups.json'), groups); }
+    if (titled) { groups.updatedAt = iso(now); writeJsonAtomic(join(dir, 'request-groups.json'), groups, { readHash: readHashOf(ledger, 'request-groups.json') }); }
     return print({ titled, kept: answer.titles.length - titled });
   }
   if (command === 'story-input') {
@@ -1435,9 +1532,10 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
   if (command === 'record-story') {
     const validated = validateStory(readInput(args[0] ?? '-'));
     // Rules owner-goals found in the owner's prompts (save_goals.py) are its to replace, not the story's.
-    const fromOwnerGoals = (readLedger(dir).story?.preferences ?? []).filter((preference) => preference?.source === OWNER_GOALS_LIST);
+    const ledger = readLedger(dir);
+    const fromOwnerGoals = (ledger.story?.preferences ?? []).filter((preference) => preference?.source === OWNER_GOALS_LIST);
     const story = { ...validated, preferences: [...validated.preferences, ...fromOwnerGoals], writtenAt: iso(now) };
-    writeJsonAtomic(join(dir, 'story.json'), story);
+    writeJsonAtomic(join(dir, 'story.json'), story, { readHash: readHashOf(ledger, 'story.json') });
     return print({ recorded: 'story', preferences: story.preferences.length });
   }
   // focus-input and record-focus take the same flags, so record-focus checks the answer against the input it answers.
@@ -1461,16 +1559,16 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     const ledger = readLedger(dir), focus = readFocus(db(), { localDeviceId: requireDeviceId(localDeviceId) });
     const focusAreaId = textOption(args, 'area');
     if (command === 'sub-focus-input') {
-      if (focusAreaId) return print(subFocusInput(ledger, focus, focusAreaId));
+      if (focusAreaId) return print(subFocusInput(ledger, focus, focusAreaId, db()));
       const listed = ({ area, groupIds }) => ({ focusAreaId: area.focusAreaId, name: area.name, requests: groupIds.length });
-      const { due, failed } = subFocusAreas(ledger, focus);
+      const { due, failed } = subFocusAreas(ledger, focus, db());
       return print({ due: due.map(listed), failed: failed.map(listed) });
     }
     // Saved through the worker, like record-focus: sub focus rows are my-focus rows, which sync.
     if (!saveFocus) throw new Error('record-sub-focus saves through the claude-mem worker, and none was given.');
     if (!focusAreaId) throw new TypeError('record-sub-focus needs --area <focusAreaId>, the area sub-focus-input --area asked about.');
     const file = args.filter((arg, index) => !arg.startsWith('--') && args[index - 1] !== '--area').at(-1) ?? '-';
-    const body = validateSubFocusAnswer(readInput(file), subFocusInput(ledger, focus, focusAreaId));
+    const body = validateSubFocusAnswer(readInput(file), subFocusInput(ledger, focus, focusAreaId, db()));
     return Promise.resolve(saveFocus(body)).then(() => print(subFocusAnswerCounts(body)));
   }
   if (command === 'refresh-needs') return print(refreshNeeds({ dir, database: db(), now, days: option(args, 'days', 14), localDeviceId }));

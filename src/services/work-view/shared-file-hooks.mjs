@@ -20,12 +20,15 @@ export function ledgerRelativeName(root, filePath, paths = path) {
   return name.split(paths.sep).join('/');
 }
 
-export function beforeSharedFileWrite(filePath, value) {
-  // The completion may carry a redacted replacement value. The central file
-  // writer uses it after the durable commit instead of persisting raw input.
+/**
+ * The registered writer commits the durable decision and returns the completion that writes the file (with the redacted
+ * value, never the raw input), or null when the file is not one it records. options.readHash: the hash of the file the
+ * value was built from, so the writer refuses a value built from a file another writer has replaced since.
+ */
+export function beforeSharedFileWrite(filePath, value, options) {
   for (const [root, writer] of writers) {
     const name = ledgerRelativeName(root, filePath);
-    if (name) return writer(name, value);
+    if (name) return writer(name, value, options);
   }
   return null;
 }

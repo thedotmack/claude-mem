@@ -76,7 +76,7 @@ export class SharedWorkSync {
   start(): void {
     if (!this.adapter || this.stopWriter || this.closed) return;
     const adapter = this.adapter;
-    this.stopWriter = registerSharedFileWriter(this.options.directory, (name, value) => adapter.beforeWrite(name, value));
+    this.stopWriter = registerSharedFileWriter(this.options.directory, (name, value, options) => adapter.beforeWrite(name, value, options));
     const interval = this.options.intervalMs ?? 5_000;
     // A background pass that hits the deadline has already recorded its timeout
     // in status(); the next tick opens a replacement. Interactive callers get

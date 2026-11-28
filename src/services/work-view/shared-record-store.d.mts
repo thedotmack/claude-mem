@@ -28,6 +28,8 @@ export function publishSharedRecords(db: Database, options: {
   validateValue?: SharedValueValidator;
   /** A reader from createSharedRecordReader for this database, deviceId and validateValue; any other throws. */
   reader?: SharedRecordReader;
+  /** What `reader` returned inside the caller's open transaction, with nothing committed or written since (PRAGMA data_version and total_changes() unchanged); anything else throws. */
+  readState?: SharedRecordState;
 }): { changed: number; rowIds: number[]; batchId: string | null };
 export type SharedRecordReader = () => SharedRecordState;
 export function createSharedRecordReader(db: Database, options: { deviceId: string; validateValue?: SharedValueValidator; includeHistory?: boolean; reviewStack?: 'full' | 'metadata' | 'exclude' }): SharedRecordReader;

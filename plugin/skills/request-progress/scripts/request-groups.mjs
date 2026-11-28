@@ -3864,8 +3864,8 @@ function buildHumanRequests(view, records2 = {}, { titleCache = {}, ledger = nul
       }
       return [...unique.values()];
     };
-    const resources = collect("resources", "url"), classifications = collect("classifications", "text"), notes = collect("notes", "text");
-    request.afterShip = resources.length || classifications.length || notes.length ? { resources, classifications, notes } : null;
+    const resources = collect("resources", "url"), classifications = collect("classifications", "text"), notes2 = collect("notes", "text");
+    request.afterShip = resources.length || classifications.length || notes2.length ? { resources, classifications, notes: notes2 } : null;
     const cached2 = titleCache instanceof Map ? titleCache.get(request.id) : titleCache[request.id];
     const cachedTitle = typeof cached2 === "string" ? cached2.trim() : cached2 && cached2.source === request.original.source && cached2.sourceId != null && String(cached2.sourceId) === String(request.original.sourceId) && typeof cached2.title === "string" ? cached2.title.trim() : "";
     const groupTitle = request.groupId ? ledger?.groups?.groups?.[request.groupId]?.title?.trim() ?? "" : "";
@@ -4483,10 +4483,10 @@ function ledgerRelativeName(root, filePath, paths2 = path3) {
   if (!name || name === ".." || name.startsWith(`..${paths2.sep}`) || paths2.isAbsolute(name)) return null;
   return name.split(paths2.sep).join("/");
 }
-function beforeSharedFileWrite(filePath, value) {
+function beforeSharedFileWrite(filePath, value, options) {
   for (const [root, writer] of writers) {
     const name = ledgerRelativeName(root, filePath);
-    if (name) return writer(name, value);
+    if (name) return writer(name, value, options);
   }
   return null;
 }
@@ -4905,8 +4905,9 @@ async function routeUndecided({ dir = LEDGER_DIR, database, judge = null, now = 
   const skip = /* @__PURE__ */ new Set();
   const routed = [], unplaced = [];
   let working = ledger.groups;
+  let readHash = readHashOf(ledger, "request-groups.json");
   const persist = () => {
-    if (apply) writeJsonAtomic(join10(dir, "request-groups.json"), working);
+    if (apply) writeJsonAtomic(join10(dir, "request-groups.json"), working, { readHash });
   };
   for (; ; ) {
     const input2 = groupingInput({ ...ledger, groups: working }, database, { sinceEpoch, limit: Infinity, skip });
@@ -4944,7 +4945,9 @@ async function routeUndecided({ dir = LEDGER_DIR, database, judge = null, now = 
         continue;
       }
       if (apply) {
-        working = readLedger(dir).groups;
+        const current = readLedger(dir);
+        working = current.groups;
+        readHash = readHashOf(current, "request-groups.json");
         if (working.conversations[key] || working.ignored?.[key]) {
           skip.add(key);
           continue;
@@ -5092,19 +5095,52 @@ function queryInChunks(database, values2, sqlFor, parametersFor = (chunk) => chu
   }
   return rows;
 }
+function sessionsOf(database, conversationKeys) {
+  const pairs = conversationKeys.map((key) => JSON.parse(key).slice(1));
+  return queryInChunks(database, pairs, (chunk) => `${SESSION_COLUMNS} WHERE (platform_source, content_session_id) IN (VALUES ${chunk.map(() => "(?, ?)").join(",")})`, (chunk) => chunk.flat(), 250);
+}
+function promptsOf(database, sessionIds, { fullAsks = false } = {}) {
+  const prompts = queryInChunks(database, [...new Set(sessionIds)], (chunk) => `SELECT id, session_db_id, prompt_number, ${fullAsks ? "prompt_text" : "substr(prompt_text, 1, 1200) AS prompt_text"}, created_at_epoch
+    FROM user_prompts WHERE session_db_id IN (${placeholders(chunk)})`);
+  const bySession = /* @__PURE__ */ new Map();
+  for (const prompt of prompts) {
+    if (!bySession.has(prompt.session_db_id)) bySession.set(prompt.session_db_id, []);
+    bySession.get(prompt.session_db_id).push(prompt);
+  }
+  return bySession;
+}
+function openingAsk(session, prompts, excludedPromptIds) {
+  const own2 = prompts.filter((prompt) => !excludedPromptIds?.has(prompt.id));
+  const openingRejected = prompts.some((prompt) => excludedPromptIds?.has(prompt.id) && (prompt.prompt_number === 1 || prompt.prompt_text === session.user_prompt));
+  return { own: own2, original: conversationKey(session) ? originalFor(openingRejected ? { ...session, user_prompt: null } : session, own2) : null };
+}
+function shownGroupIds(ledger, database) {
+  const keys = Object.keys(ledger.groups.conversations).filter(isConversationKey);
+  const sessions = sessionsOf(database, keys);
+  const prompts = promptsOf(database, sessions.map((session) => session.id));
+  const recorded = /* @__PURE__ */ new Set(), asking = /* @__PURE__ */ new Set();
+  for (const session of sessions) {
+    const key = conversationKey(session);
+    recorded.add(key);
+    if (openingAsk(session, prompts.get(session.id) ?? [], ledger.agentWrittenPromptIds).original) asking.add(key);
+  }
+  const shown = /* @__PURE__ */ new Set();
+  for (const [key, groupId] of Object.entries(ledger.groups.conversations)) if (asking.has(key)) shown.add(groupId);
+  for (const [groupId, group] of Object.entries(ledger.groups.groups)) {
+    if (group.anchorAsk && !recorded.has(group.anchor) && !ledger.groups.ignored?.[group.anchor]) shown.add(groupId);
+  }
+  return shown;
+}
 function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, fullAsks = false, recentAsks = false, excludedPromptIds = null }) {
-  const columns = "SELECT id, platform_source, content_session_id, project, user_prompt, started_at_epoch FROM sdk_sessions";
-  const pairs = conversationKeys?.map((key) => JSON.parse(key).slice(1));
-  const stored = pairs ? queryInChunks(database, pairs, (chunk) => `${columns} WHERE (platform_source, content_session_id) IN (VALUES ${chunk.map(() => "(?, ?)").join(",")})`, (chunk) => chunk.flat(), 250) : database.prepare(`${columns} WHERE started_at_epoch >= ?
+  const stored = conversationKeys ? sessionsOf(database, conversationKeys) : database.prepare(`${SESSION_COLUMNS} WHERE started_at_epoch >= ?
         OR id IN (SELECT DISTINCT session_db_id FROM user_prompts WHERE created_at_epoch >= ?)
         OR id IN (SELECT DISTINCT session_db_id FROM tool_uses WHERE created_at_epoch >= ?)
         OR memory_session_id IN (SELECT DISTINCT memory_session_id FROM observations WHERE created_at_epoch >= ?)`).all(sinceEpoch, sinceEpoch, sinceEpoch, sinceEpoch);
   if (!stored.length) return [];
   const sessions = withDerivedProjects(database, stored);
   const ids = [...new Set(sessions.map((session) => session.id))];
-  const prompts = queryInChunks(database, ids, (chunk) => `SELECT id, session_db_id, prompt_number, ${fullAsks ? "prompt_text" : "substr(prompt_text, 1, 1200) AS prompt_text"}, created_at_epoch
-    FROM user_prompts WHERE session_db_id IN (${placeholders(chunk)})`);
-  const writes = queryInChunks(database, ids, (chunk) => `SELECT session_db_id, tool_input, created_at_epoch FROM tool_uses
+  const promptsBySession = promptsOf(database, ids, { fullAsks });
+  const writes2 = queryInChunks(database, ids, (chunk) => `SELECT session_db_id, tool_input, created_at_epoch FROM tool_uses
     WHERE tool_name LIKE '%work_state_write%' AND session_db_id IN (${placeholders(chunk)})`);
   const observations = queryInChunks(database, ids, (chunk) => `SELECT s.id AS session_db_id, COUNT(*) AS count, MAX(o.created_at_epoch) AS last_epoch
     FROM observations o JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
@@ -5113,18 +5149,10 @@ function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, ful
   const toolActivity = queryInChunks(database, ids, (chunk) => `SELECT session_db_id, MAX(created_at_epoch) AS last_epoch FROM tool_uses
     WHERE session_db_id IN (${placeholders(chunk)}) GROUP BY session_db_id`);
   const lastToolUseBySession = new Map(toolActivity.map((row) => [row.session_db_id, row.last_epoch ?? 0]));
-  const promptsBySession = /* @__PURE__ */ new Map();
-  for (const prompt of prompts) {
-    if (!promptsBySession.has(prompt.session_db_id)) promptsBySession.set(prompt.session_db_id, []);
-    promptsBySession.get(prompt.session_db_id).push(prompt);
-  }
   const candidates = /* @__PURE__ */ new Map();
   for (const session of sessions) {
     const key = conversationKey(session);
-    const all = promptsBySession.get(session.id) ?? [];
-    const own2 = all.filter((prompt) => !excludedPromptIds?.has(prompt.id));
-    const openingRejected = all.some((prompt) => excludedPromptIds?.has(prompt.id) && (prompt.prompt_number === 1 || prompt.prompt_text === session.user_prompt));
-    const original = key ? originalFor(openingRejected ? { ...session, user_prompt: null } : session, own2) : null;
+    const { own: own2, original } = openingAsk(session, promptsBySession.get(session.id) ?? [], excludedPromptIds);
     if (!original) continue;
     own2.sort((a, b) => a.created_at_epoch - b.created_at_epoch || a.id - b.id);
     const lastPrompt = own2.at(-1)?.created_at_epoch ?? 0;
@@ -5147,7 +5175,7 @@ function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, ful
     });
   }
   const bySession = new Map([...candidates.values()].map((candidate) => [candidate.sessionDbId, candidate]));
-  for (const write of writes) {
+  for (const write of writes2) {
     const candidate = bySession.get(write.session_db_id);
     if (!candidate) continue;
     let input2;
@@ -5232,19 +5260,23 @@ function readGoals(database) {
   })).sort((a, b) => GOAL_KINDS.indexOf(a.kind) - GOAL_KINDS.indexOf(b.kind) || (a.rank ?? Infinity) - (b.rank ?? Infinity));
   return { summary: listState.human_summary ?? null, generatedAt: listState.generated_at ?? null, mapPath: listState.map_path ?? null, goals };
 }
-function readJson(path4, fallback) {
+function readBytes(path4) {
   try {
-    return JSON.parse(readFileSync9(path4, "utf8"));
+    return readFileSync9(path4);
   } catch (error62) {
-    if (error62.code === "ENOENT") return fallback;
+    if (error62.code === "ENOENT") return null;
     throw error62;
   }
 }
-function writeJsonAtomic(path4, value) {
-  const finish = beforeSharedFileWrite(path4, value);
-  const stored = finish && Object.hasOwn(finish, "value") ? finish.value : value;
-  writeJsonFileAtomic(path4, stored, { mode: 384 });
-  finish?.();
+function readJson(path4, fallback, readHashes = null, name = null) {
+  const bytes2 = readBytes(path4);
+  if (readHashes) readHashes[name] = bytesHash(bytes2);
+  return bytes2 === null ? fallback : JSON.parse(bytes2.toString("utf8"));
+}
+function writeJsonAtomic(path4, value, { readHash } = {}) {
+  const finish = beforeSharedFileWrite(path4, value, readHash === void 0 ? void 0 : { readHash });
+  if (finish) finish();
+  else writeJsonFileAtomic(path4, value, { mode: 384 });
 }
 function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = /* @__PURE__ */ new Map(), getProjectRoot = projectRoot } = {}) {
   if (!Array.isArray(decisions?.groups)) throw new TypeError("Decisions need a groups array.");
@@ -5564,7 +5596,8 @@ function readRefreshStatus(dir) {
   }
 }
 function readLedger(dir = LEDGER_DIR) {
-  const groups = readJson(join11(dir, "request-groups.json"), emptyGroups());
+  const readHashes = {};
+  const groups = readJson(join11(dir, "request-groups.json"), emptyGroups(), readHashes, "request-groups.json");
   const progress = {};
   let names = [];
   try {
@@ -5573,15 +5606,16 @@ function readLedger(dir = LEDGER_DIR) {
     if (error62.code !== "ENOENT") throw error62;
   }
   for (const name of names) {
-    const entry = readJson(join11(dir, "progress", name), null);
+    const entry = readJson(join11(dir, "progress", name), null, readHashes, `progress/${name}`);
     if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, title: groups.groups[entry.groupId].title };
   }
   return {
     groups,
     progress,
-    story: readJson(join11(dir, "story.json"), null),
+    story: readJson(join11(dir, "story.json"), null, readHashes, "story.json"),
     refresh: readRefreshStatus(dir),
-    agentWrittenPromptIds: new Set(readJson(join11(dir, AGENT_WRITTEN_PROMPTS_FILE), { promptIds: [] }).promptIds ?? [])
+    agentWrittenPromptIds: new Set(readJson(join11(dir, AGENT_WRITTEN_PROMPTS_FILE), { promptIds: [] }).promptIds ?? []),
+    readHashes
   };
 }
 function groupDetails(groupId, ledger, candidatesByKey) {
@@ -5786,23 +5820,29 @@ function validateFocusAnswer(answer, input2, ledger, { other = false } = {}) {
     ...other ? { otherPassHash: otherPassHash(ledger, [...listed.keys()].filter((anchor2) => !held.has(anchor2)).map((anchor2) => listed.get(anchor2).groupId), requestIndex) } : {}
   };
 }
-function requestsByKeptArea(ledger, focus2) {
-  const kept = new Map(focus2.focusAreas.filter((area) => area.status === "kept" && !area.mergedInto).map((area) => [area.focusAreaId, { area, groupIds: [] }]));
-  for (const [groupId, group] of Object.entries(ledger.groups.groups)) kept.get(focus2.focusAreaIdByAnchor.get(group.anchor))?.groupIds.push(groupId);
+function requestsByKeptArea(ledger, focus2, database) {
+  const shown = shownGroupIds(ledger, database);
+  const kept = new Map(focus2.focusAreas.filter((area) => area.status === "kept" && !area.mergedInto).map((area) => [area.focusAreaId, { area, groupIds: [], placedGroupIds: [] }]));
+  for (const [groupId, group] of Object.entries(ledger.groups.groups)) {
+    const entry = kept.get(focus2.focusAreaIdByAnchor.get(group.anchor));
+    if (!entry) continue;
+    entry.placedGroupIds.push(groupId);
+    if (shown.has(groupId)) entry.groupIds.push(groupId);
+  }
   return [...kept.values()];
 }
-function subFocusAreas(ledger, focus2) {
+function subFocusAreas(ledger, focus2, database) {
   const due = [], failed = [];
-  for (const entry of requestsByKeptArea(ledger, focus2)) {
+  for (const entry of requestsByKeptArea(ledger, focus2, database)) {
     if (entry.groupIds.length < SUB_FOCUS_AREA_MIN_REQUESTS) continue;
-    const hash3 = subFocusPassHash(ledger, entry.groupIds);
-    if (hash3 === focus2.subFocusPassHashes.get(entry.area.focusAreaId)) continue;
-    (hash3 === focus2.subFocusFailedHashes.get(entry.area.focusAreaId) ? failed : due).push(entry);
+    const hashes = [subFocusPassHash(ledger, entry.groupIds), subFocusPassHash(ledger, entry.placedGroupIds)];
+    if (hashes.includes(focus2.subFocusPassHashes.get(entry.area.focusAreaId))) continue;
+    (hashes.includes(focus2.subFocusFailedHashes.get(entry.area.focusAreaId)) ? failed : due).push(entry);
   }
   return { due, failed };
 }
-function subFocusInput(ledger, focus2, focusAreaId) {
-  const entry = requestsByKeptArea(ledger, focus2).find(({ area: area2 }) => area2.focusAreaId === focusAreaId);
+function subFocusInput(ledger, focus2, focusAreaId, database) {
+  const entry = requestsByKeptArea(ledger, focus2, database).find(({ area: area2 }) => area2.focusAreaId === focusAreaId);
   if (!entry) throw new TypeError(`${focusAreaId} is not a kept focus area.`);
   const { area, groupIds } = entry;
   const anchorOf = (groupId) => ledger.groups.groups[groupId].anchor;
@@ -5934,7 +5974,7 @@ function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), days = 14,
   const queued = focusDue(ledger, focus2, localDeviceId2, requests);
   const otherHash = otherPassHash(ledger, routerOther(ledger, focus2, new Set(queued)), requests);
   const otherChanged = otherHash !== null && otherHash !== focus2.otherPassHash;
-  const subFocus = subFocusAreas(ledger, focus2);
+  const subFocus = subFocusAreas(ledger, focus2, database);
   const subFocusDue = subFocus.due.length;
   return {
     due: due.length,
@@ -5964,8 +6004,8 @@ function option(args, name, fallback) {
 function openDatabase() {
   const path4 = process.env.CLAUDE_MEM_DB ?? join11(DATA_DIR2, "claude-mem.db");
   statSync6(path4);
-  const { Database: Database2 } = createRequire(typeof __filename === "string" ? __filename : import.meta.url)("bun:sqlite");
-  const database = new Database2(path4, { readonly: true, create: false });
+  const { Database: Database3 } = createRequire(typeof __filename === "string" ? __filename : import.meta.url)("bun:sqlite");
+  const database = new Database3(path4, { readonly: true, create: false });
   database.exec("PRAGMA busy_timeout = 1500");
   return database;
 }
@@ -6047,7 +6087,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   if (command2 === "apply") {
     const ledger = readLedger(dir);
     const next = applyDecisions(ledger.groups, readInput(args[0] ?? "-"), { database: db(), now, excludedPromptIds: ledger.agentWrittenPromptIds });
-    writeJsonAtomic(join11(dir, "request-groups.json"), next);
+    writeJsonAtomic(join11(dir, "request-groups.json"), next, { readHash: readHashOf(ledger, "request-groups.json") });
     return print2({ groups: Object.keys(next.groups).length, conversations: Object.keys(next.conversations).length });
   }
   if (command2 === "pending" || command2 === "show") {
@@ -6085,7 +6125,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     const previous = ledger.progress[reviewed.groupId];
     const unchanged = previous && JSON.stringify(storyFacts(previous)) === JSON.stringify(storyFacts(reviewed));
     const entry = { ...reviewed, checkedAt, changedAt: unchanged ? previous.changedAt ?? previous.checkedAt : checkedAt, readings: appendReading(ledger.progress[reviewed.groupId], { at: checkedAt, percent: reviewed.percent }) };
-    writeJsonAtomic(join11(dir, "progress", `${entry.groupId}.json`), entry);
+    writeJsonAtomic(join11(dir, "progress", `${entry.groupId}.json`), entry, { readHash: readHashOf(ledger, `progress/${entry.groupId}.json`) });
     return print2({
       recorded: entry.groupId,
       state: entry.state,
@@ -6097,7 +6137,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   }
   if (command2 === "title-input") return print2(titleInput(readLedger(dir), db(), { limit: option(args, "limit", TITLE_BATCH) }));
   if (command2 === "record-titles") {
-    const { groups } = readLedger(dir);
+    const ledger = readLedger(dir), { groups } = ledger;
     const answer = readInput(args[0] ?? "-");
     if (!Array.isArray(answer?.titles)) throw new TypeError("The answer needs a titles array.");
     let titled = 0;
@@ -6112,7 +6152,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     }
     if (titled) {
       groups.updatedAt = iso3(now);
-      writeJsonAtomic(join11(dir, "request-groups.json"), groups);
+      writeJsonAtomic(join11(dir, "request-groups.json"), groups, { readHash: readHashOf(ledger, "request-groups.json") });
     }
     return print2({ titled, kept: answer.titles.length - titled });
   }
@@ -6128,9 +6168,10 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   }
   if (command2 === "record-story") {
     const validated = validateStory(readInput(args[0] ?? "-"));
-    const fromOwnerGoals = (readLedger(dir).story?.preferences ?? []).filter((preference2) => preference2?.source === OWNER_GOALS_LIST);
+    const ledger = readLedger(dir);
+    const fromOwnerGoals = (ledger.story?.preferences ?? []).filter((preference2) => preference2?.source === OWNER_GOALS_LIST);
     const story = { ...validated, preferences: [...validated.preferences, ...fromOwnerGoals], writtenAt: iso3(now) };
-    writeJsonAtomic(join11(dir, "story.json"), story);
+    writeJsonAtomic(join11(dir, "story.json"), story, { readHash: readHashOf(ledger, "story.json") });
     return print2({ recorded: "story", preferences: story.preferences.length });
   }
   const focusQuestion = () => {
@@ -6150,21 +6191,21 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     const ledger = readLedger(dir), focus2 = readFocus(db(), { localDeviceId: requireDeviceId(localDeviceId2) });
     const focusAreaId = textOption(args, "area");
     if (command2 === "sub-focus-input") {
-      if (focusAreaId) return print2(subFocusInput(ledger, focus2, focusAreaId));
+      if (focusAreaId) return print2(subFocusInput(ledger, focus2, focusAreaId, db()));
       const listed = ({ area, groupIds }) => ({ focusAreaId: area.focusAreaId, name: area.name, requests: groupIds.length });
-      const { due, failed } = subFocusAreas(ledger, focus2);
+      const { due, failed } = subFocusAreas(ledger, focus2, db());
       return print2({ due: due.map(listed), failed: failed.map(listed) });
     }
     if (!saveFocus2) throw new Error("record-sub-focus saves through the claude-mem worker, and none was given.");
     if (!focusAreaId) throw new TypeError("record-sub-focus needs --area <focusAreaId>, the area sub-focus-input --area asked about.");
     const file2 = args.filter((arg, index) => !arg.startsWith("--") && args[index - 1] !== "--area").at(-1) ?? "-";
-    const body = validateSubFocusAnswer(readInput(file2), subFocusInput(ledger, focus2, focusAreaId));
+    const body = validateSubFocusAnswer(readInput(file2), subFocusInput(ledger, focus2, focusAreaId, db()));
     return Promise.resolve(saveFocus2(body)).then(() => print2(subFocusAnswerCounts(body)));
   }
   if (command2 === "refresh-needs") return print2(refreshNeeds({ dir, database: db(), now, days: option(args, "days", 14), localDeviceId: localDeviceId2 }));
   throw new TypeError("Usage: request-groups.mjs candidates|grouping-input|judge|apply|pending|show|record-progress|title-input|record-titles|story-input|record-story|focus-input|record-focus|sub-focus-input|record-sub-focus|refresh-needs (see file header).");
 }
-var DATA_DIR2, LEDGER_DIR, AGENT_WRITTEN_PROMPTS_FILE, DAY_MS2, GOALS_STALE_MS, MAX_CONVERSATIONS_PER_LINKING_LIST, CLOSED_STATES, PREFERENCE_KINDS, USAGE_LEVELS, VALUE_LEVELS, LINK_KINDS, MAX_READINGS, iso3, groupIdFor, emptyGroups, isIsoOrNull, textTarget, evidenceList, STORY_NARRATIVE_MAX, STORY_NARRATIVE_TARGET, STORY_RECAP_BUDGET, STORY_CHAPTER_MIN_BUDGET, STORY_CHARS_PER_WORD, STORY_REFUSAL_PARTS, CONVERSATIONS_PER_QUERY, records, otherPassHash, focusAreaRecord, AREA_NAME_MAX, AREA_SENTENCE_MAX, SUB_FOCUS_AREA_MIN_REQUESTS, subFocusPassHash, subFocusNameKey, requireDeviceId, GROUPING_BATCH, FOCUS_BATCH, TITLE_BATCH;
+var DATA_DIR2, LEDGER_DIR, AGENT_WRITTEN_PROMPTS_FILE, DAY_MS2, GOALS_STALE_MS, MAX_CONVERSATIONS_PER_LINKING_LIST, CLOSED_STATES, PREFERENCE_KINDS, USAGE_LEVELS, VALUE_LEVELS, LINK_KINDS, MAX_READINGS, iso3, groupIdFor, SESSION_COLUMNS, bytesHash, ledgerFileHash, emptyGroups, isIsoOrNull, textTarget, evidenceList, STORY_NARRATIVE_MAX, STORY_NARRATIVE_TARGET, STORY_RECAP_BUDGET, STORY_CHAPTER_MIN_BUDGET, STORY_CHARS_PER_WORD, STORY_REFUSAL_PARTS, readHashOf, CONVERSATIONS_PER_QUERY, records, otherPassHash, focusAreaRecord, AREA_NAME_MAX, AREA_SENTENCE_MAX, SUB_FOCUS_AREA_MIN_REQUESTS, subFocusPassHash, subFocusNameKey, requireDeviceId, GROUPING_BATCH, FOCUS_BATCH, TITLE_BATCH;
 var init_request_groups = __esm({
   "src/services/work-view/request-groups.mjs"() {
     "use strict";
@@ -6191,6 +6232,9 @@ var init_request_groups = __esm({
     MAX_READINGS = 20;
     iso3 = (epoch2) => Number.isFinite(epoch2) && epoch2 > 0 ? new Date(epoch2).toISOString() : null;
     groupIdFor = (anchorConversationKey) => `g_${createHash5("sha256").update(anchorConversationKey).digest("hex").slice(0, 12)}`;
+    SESSION_COLUMNS = "SELECT id, platform_source, content_session_id, project, user_prompt, started_at_epoch FROM sdk_sessions";
+    bytesHash = (bytes2) => bytes2 === null ? "missing" : createHash5("sha256").update(bytes2).digest("hex");
+    ledgerFileHash = (path4) => bytesHash(readBytes(path4));
     emptyGroups = () => ({ version: 1, updatedAt: null, conversations: {}, groups: {}, ignored: {} });
     isIsoOrNull = (value) => value === null || typeof value === "string" && Number.isFinite(Date.parse(value));
     textTarget = (max) => Math.floor(max * 0.75 / 10) * 10;
@@ -6201,6 +6245,7 @@ var init_request_groups = __esm({
     STORY_CHAPTER_MIN_BUDGET = 300;
     STORY_CHARS_PER_WORD = 6;
     STORY_REFUSAL_PARTS = 6;
+    readHashOf = (ledger, name) => ledger.readHashes[name] ?? bytesHash(null);
     CONVERSATIONS_PER_QUERY = 400;
     records = (database, ledger, groupIds, requests) => {
       const asks = openingAsks(database, ledger, groupIds.flatMap(requests.conversations));
@@ -6382,7 +6427,7 @@ function withHarnessAuth(init, auth) {
 init_paths();
 init_SettingsDefaultsManager();
 init_request_groups();
-import { Database } from "bun:sqlite";
+import { Database as Database2 } from "bun:sqlite";
 import { existsSync as existsSync13 } from "node:fs";
 
 // src/services/work-view/shared-ledger-adapter.mjs
@@ -6816,7 +6861,7 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
     }
     const describe3 = (fields) => fields.flatMap((field) => recordedField(item, [field]).map((record2) => ({ text: compactText(record2.value, 600), field, atEpoch: record2.atEpoch, sourceRefs: record2.sourceRef ? [record2.sourceRef] : [] })));
     const classifications = describe3(["classification", "category", "tags"]);
-    const notes = describe3(["post_ship", "after_ship"]);
+    const notes2 = describe3(["post_ship", "after_ship"]);
     const status = recordedField(item, ["request_status"])[0] ?? null;
     const complete = recordedField(item, ["request_complete"], (value) => typeof value === "boolean")[0] ?? null;
     const workProduct = Object.keys({ ...item.list.fields, ...item.fields }).filter(isWorkProductField).flatMap((field) => {
@@ -6833,7 +6878,7 @@ function buildAgentView(state, records2, { now = Date.now(), workLimit = 240, ac
       stageSource: stage,
       requestStatusSource: status,
       requestCompleteSource: complete,
-      afterShip: resources.length || classifications.length || notes.length ? { resources, classifications, notes } : null
+      afterShip: resources.length || classifications.length || notes2.length ? { resources, classifications, notes: notes2 } : null
     };
   }
   const promptsByKey = /* @__PURE__ */ new Map();
@@ -28071,6 +28116,7 @@ function workStateRowsRevision(db, { where = "1", syncRev = true } = {}) {
   }
 }
 var sharedRecordReaders = /* @__PURE__ */ new WeakMap();
+var writeMark = (db) => `${db.query("PRAGMA data_version").get().data_version}:${db.query("SELECT total_changes() AS changes").get().changes}`;
 function createSharedRecordReader(db, options) {
   let kept = null;
   const revisionOf = () => {
@@ -28081,11 +28127,15 @@ function createSharedRecordReader(db, options) {
       throw error62;
     }
   };
+  const reads = { db, deviceId: options.deviceId, validateValue: options.validateValue ?? null, reviewStack: options.reviewStack, lastInTransaction: null };
   const reader = () => {
     if (db.inTransaction) {
       const revision = revisionOf();
-      return kept && revision !== null && revision === kept.revision ? kept.state : readSharedRecords(db, options);
+      const state = kept && revision !== null && revision === kept.revision ? kept.state : readSharedRecords(db, options);
+      reads.lastInTransaction = { state, mark: writeMark(db) };
+      return state;
     }
+    reads.lastInTransaction = null;
     return db.transaction(() => {
       const revision = revisionOf();
       if (kept && revision !== null && revision === kept.revision) return kept.state;
@@ -28094,10 +28144,10 @@ function createSharedRecordReader(db, options) {
       return state;
     })();
   };
-  sharedRecordReaders.set(reader, { db, deviceId: options.deviceId, validateValue: options.validateValue ?? null, reviewStack: options.reviewStack });
+  sharedRecordReaders.set(reader, reads);
   return reader;
 }
-function publishSharedRecords(db, { deviceId, project, updates, now = Date.now(), validateValue, reader }) {
+function publishSharedRecords(db, { deviceId, project, updates, now = Date.now(), validateValue, reader, readState }) {
   sharedWriter(deviceId);
   if (reader !== void 0) {
     const reads = sharedRecordReaders.get(reader);
@@ -28108,11 +28158,17 @@ function publishSharedRecords(db, { deviceId, project, updates, now = Date.now()
       throw new TypeError("Shared My Work: the reader excludes review stack updates");
     }
   }
+  if (readState !== void 0) {
+    const reads = reader === void 0 ? null : sharedRecordReaders.get(reader);
+    const last = reads?.lastInTransaction;
+    if (!last || !db.inTransaction || readState !== last.state || writeMark(db) !== last.mark) throw new TypeError("Shared My Work: readState must be what this reader returned in the open transaction, with nothing written since");
+    reads.lastInTransaction = null;
+  }
   if (typeof project !== "string" || !project.trim() || project.length > 1024) throw new TypeError("Shared My Work: invalid project");
   if (!Array.isArray(updates) || updates.length > SHARED_WORK_MAX_UPDATES) throw new RangeError("Shared My Work: too many updates");
   if (!Number.isSafeInteger(now) || now < 0 || !Number.isFinite(new Date(now).getTime())) throw new TypeError("Shared My Work: invalid timestamp");
   return db.transaction(() => {
-    const state = reader ? reader() : readSharedRecords(db, { deviceId, validateValue, reviewStack: "metadata" });
+    const state = readState ?? (reader ? reader() : readSharedRecords(db, { deviceId, validateValue, reviewStack: "metadata" }));
     const batchId = randomUUID2();
     const entries = [], seen = /* @__PURE__ */ new Set();
     for (const update of updates) {
@@ -28156,6 +28212,16 @@ function publishSharedRecords(db, { deviceId, project, updates, now = Date.now()
 init_shared_records();
 init_CanonicalContent();
 init_redaction();
+
+// src/services/worker/db-init-retry.ts
+init_logger();
+function isTransientSqliteBusy(error62) {
+  if (typeof error62 !== "object" || error62 === null) return false;
+  const code = error62.code;
+  return typeof code === "string" && /^SQLITE_BUSY(_|$)/.test(code);
+}
+
+// src/services/work-view/shared-ledger-adapter.mjs
 var digest2 = (value) => createHash9("sha256").update(canonicalJson(value ?? null)).digest("hex");
 var MAX_FILE_BYTES = 8 * 1024 * 1024;
 var fixedFiles = ["request-groups.json", "story.json", "refresh.json", "agent-written-prompts.json"];
@@ -28178,18 +28244,37 @@ function observedFileHash(path4) {
     return `unparsed:${createHash9("sha256").update(readFileSync10(path4)).digest("hex")}`;
   }
 }
-function rawWrite(path4, value) {
+function writeTemporary(path4, value) {
   mkdirSync4(join12(path4, ".."), { recursive: true });
   const temp = `${path4}.${randomUUID3()}.shared.tmp`;
   try {
     writeFileSync3(temp, `${JSON.stringify(value, null, 2)}
 `, { mode: 384, flag: "wx" });
+  } catch (error62) {
+    removeTemporary(temp);
+    throw error62;
+  }
+  return temp;
+}
+function removeTemporary(temp) {
+  try {
+    unlinkSync2(temp);
+  } catch {
+  }
+}
+function rawWrite(path4, value) {
+  const temp = writeTemporary(path4, value);
+  try {
     renameSync3(temp, path4);
   } finally {
-    try {
-      unlinkSync2(temp);
-    } catch {
-    }
+    removeTemporary(temp);
+  }
+}
+function removeFile(path4) {
+  try {
+    unlinkSync2(path4);
+  } catch (error62) {
+    if (error62.code !== "ENOENT") throw error62;
   }
 }
 var SharedLedgerAdapter = class {
@@ -28304,58 +28389,129 @@ var SharedLedgerAdapter = class {
     }
     return buildSharedProjectionUpdates(this.db, { ledger, deviceId: this.deviceId }).filter((update) => kinds.includes(update.kind) && (kinds[0] !== "progress" || update.key === name.slice(9, -5)));
   }
-  /** Stage canonical rows and their recovery intent without touching files or notifying observers. */
-  stageFile(name, value, { resolveKeys = [], resolutionBaseline } = {}) {
+  /** The shared record keys a write may not overwrite without an explicit resolution: the conflicts `shared` holds. */
+  conflictedKeys(shared) {
+    const { diagnostics } = applySharedProjection(this.db, shared, { ledger: this.localLedger(), deviceId: this.deviceId });
+    return new Set(diagnostics.conflicts.flatMap((entry) => entry.kind === "group-membership" ? entry.groups.map((group) => sharedRecordKey("group", group)) : [sharedRecordKey(entry.kind, entry.key)]));
+  }
+  /**
+   * Stage canonical rows and their recovery intent without touching files or notifying observers.
+   * The shared records and their conflicts are read before the write lock is taken: a cold read of them took 3.9 s on
+   * the owner's Mac (2,015 records, 2026-11-27), and every other writer, the worker included, waits while this
+   * transaction holds the lock. Under the lock the reader only checks that they did not change (about 0.2 s there) and
+   * reads them again only when another writer changed them meanwhile. Inside a caller's transaction nothing is cached,
+   * so the read stays inside. IMMEDIATE takes the lock before the first read, so a busy database makes this wait up to
+   * the connection's busy_timeout: a deferred transaction that reads and then writes fails at once with
+   * SQLITE_BUSY_SNAPSHOT when another connection committed in between, and SQLite never runs the busy handler for it
+   * (the reason SyncApply.applyOps takes its lock the same way). A refusal names the file and that nothing was saved.
+   * readHash: the hash of the file the caller built `value` from (request-groups.mjs readHashOf). Under the lock the write
+   * is refused when the file no longer has it, or another write's intent is still pending: that writer's decision is
+   * committed and `value` was built without it. The wait for the lock made this window seconds long; without the check the
+   * older value replaced the newer one (an owner's Join saved while a CLI apply waited). Each base is the record's hash as
+   * this file last held it, so the base check alone cannot see a write that also updated the bases.
+   */
+  stageFile(name, value, { resolveKeys = [], resolutionBaseline, readHash } = {}) {
     if (!fileKinds(name).length) return null;
     value = redactJsonStrings(value);
     const updates = this.updatesForFile(name, value);
+    let read = this.db.inTransaction ? null : this.shared();
+    let conflicted = read && this.conflictedKeys(read);
     let changed = null;
-    this.db.transaction(() => {
-      const prior = this.state(name);
-      const shared = this.shared();
-      const diagnostics = applySharedProjection(this.db, shared, { ledger: this.localLedger(), deviceId: this.deviceId }).diagnostics;
-      const conflicted = new Set(diagnostics.conflicts.flatMap((entry) => entry.kind === "group-membership" ? entry.groups.map((group) => sharedRecordKey("group", group)) : [sharedRecordKey(entry.kind, entry.key)]));
-      const resolving = new Set(resolveKeys.map((key) => sharedRecordKey("group", key)));
-      if (resolving.size && name !== "request-groups.json") throw new TypeError("Only explicit grouping decisions can resolve group conflicts");
-      if (resolving.size) {
-        if (!resolutionBaseline) throw new TypeError("Explicit grouping resolution requires its canonical baseline");
-        const baseline = new Map(this.updatesForFile(name, resolutionBaseline).filter((update) => update.kind === "group").map((update) => [sharedRecordKey(update.kind, update.key), sharedValueHash(update.kind, update.key, update.value, update.deleted)]));
-        const desired = new Map(updates.filter((update) => update.kind === "group").map((update) => [sharedRecordKey(update.kind, update.key), sharedValueHash(update.kind, update.key, update.value, update.deleted)]));
-        for (const key of /* @__PURE__ */ new Set([...baseline.keys(), ...desired.keys()])) {
-          if (!resolving.has(key) && baseline.get(key) !== desired.get(key)) throw new Error("Shared My Work: resolution changed an unrelated group");
+    try {
+      this.db.transaction(() => {
+        const prior = this.state(name);
+        if (readHash !== void 0 && (prior.pending_json !== null || ledgerFileHash(join12(this.directory, name)) !== readHash)) {
+          throw new Error(`Shared My Work: ${name} changed since this command read it (another writer saved a newer version${prior.pending_json !== null ? ", which is still being written to the file" : ""}), so this write was not saved: no shared record and no file were written. Run the command again.`);
         }
-      }
-      const nextKeys = new Set(updates.map((update) => sharedRecordKey(update.kind, update.key)));
-      const changes = updates.flatMap((update) => {
-        const key = sharedRecordKey(update.kind, update.key);
-        if (resolving.size && update.kind === "group" && !resolving.has(key)) return [];
-        const existing = shared.records.get(key);
-        if (conflicted.has(key) && !resolving.has(key)) {
-          throw new Error("Shared My Work has a conflicting decision; retained the local file");
+        const shared = this.shared();
+        if (shared !== read) {
+          read = shared;
+          conflicted = this.conflictedKeys(shared);
         }
-        return [{ ...update, expectedHash: resolving.has(key) ? existing?.hash ?? null : prior.bases[key] ?? null }];
-      });
-      for (const key of /* @__PURE__ */ new Set([...prior.keys, ...resolving])) if (!nextKeys.has(key)) {
-        const existing = shared.records.get(key);
-        if (existing) {
-          if (resolving.size && existing.kind === "group" && !resolving.has(key)) continue;
+        const resolving = new Set(resolveKeys.map((key) => sharedRecordKey("group", key)));
+        if (resolving.size && name !== "request-groups.json") throw new TypeError("Only explicit grouping decisions can resolve group conflicts");
+        if (resolving.size) {
+          if (!resolutionBaseline) throw new TypeError("Explicit grouping resolution requires its canonical baseline");
+          const baseline = new Map(this.updatesForFile(name, resolutionBaseline).filter((update) => update.kind === "group").map((update) => [sharedRecordKey(update.kind, update.key), sharedValueHash(update.kind, update.key, update.value, update.deleted)]));
+          const desired = new Map(updates.filter((update) => update.kind === "group").map((update) => [sharedRecordKey(update.kind, update.key), sharedValueHash(update.kind, update.key, update.value, update.deleted)]));
+          for (const key of /* @__PURE__ */ new Set([...baseline.keys(), ...desired.keys()])) {
+            if (!resolving.has(key) && baseline.get(key) !== desired.get(key)) throw new Error("Shared My Work: resolution changed an unrelated group");
+          }
+        }
+        const nextKeys = new Set(updates.map((update) => sharedRecordKey(update.kind, update.key)));
+        const changes = updates.flatMap((update) => {
+          const key = sharedRecordKey(update.kind, update.key);
+          if (resolving.size && update.kind === "group" && !resolving.has(key)) return [];
+          const existing = shared.records.get(key);
           if (conflicted.has(key) && !resolving.has(key)) {
-            if (existing.deleted) continue;
             throw new Error("Shared My Work has a conflicting decision; retained the local file");
           }
-          changes.push({ kind: existing.kind, key: existing.key, deleted: true, expectedHash: resolving.has(key) ? existing.hash : prior.bases[key] ?? null });
+          return [{ ...update, expectedHash: resolving.has(key) ? existing?.hash ?? null : prior.bases[key] ?? null }];
+        });
+        for (const key of /* @__PURE__ */ new Set([...prior.keys, ...resolving])) if (!nextKeys.has(key)) {
+          const existing = shared.records.get(key);
+          if (existing) {
+            if (resolving.size && existing.kind === "group" && !resolving.has(key)) continue;
+            if (conflicted.has(key) && !resolving.has(key)) {
+              if (existing.deleted) continue;
+              throw new Error("Shared My Work has a conflicting decision; retained the local file");
+            }
+            changes.push({ kind: existing.kind, key: existing.key, deleted: true, expectedHash: resolving.has(key) ? existing.hash : prior.bases[key] ?? null });
+          }
         }
-      }
-      for (const change of changes) {
-        const key = sharedRecordKey(change.kind, change.key);
-        const existing = shared.records.get(key);
-        if (!Object.hasOwn(prior.bases, key) && existing && sharedValueHash(change.kind, change.key, change.value, change.deleted) === (existing.valueHash ?? existing.hash)) change.expectedHash = existing.hash;
-      }
-      const result = publishSharedRecords(this.db, { deviceId: this.deviceId, project: this.project, updates: changes, validateValue: isSharedProjectionValue, reader: this.sharedReader() });
-      this.remember(name, value, updates, this.shared(), true, value === null);
-      if (result.changed) changed = { rules: changes.some((change) => change.kind === "story") };
-    })();
+        for (const change of changes) {
+          const key = sharedRecordKey(change.kind, change.key);
+          const existing = shared.records.get(key);
+          if (!Object.hasOwn(prior.bases, key) && existing && sharedValueHash(change.kind, change.key, change.value, change.deleted) === (existing.valueHash ?? existing.hash)) change.expectedHash = existing.hash;
+        }
+        const result = publishSharedRecords(this.db, { deviceId: this.deviceId, project: this.project, updates: changes, validateValue: isSharedProjectionValue, reader: this.sharedReader(), readState: shared });
+        this.remember(name, value, updates, this.shared(), true, value === null);
+        if (result.changed) changed = { rules: changes.some((change) => change.kind === "story") };
+      }).immediate();
+    } catch (error62) {
+      if (!isTransientSqliteBusy(error62)) throw error62;
+      throw Object.assign(new Error(`Shared My Work: another writer held the claude-mem database for longer than ${this.busyTimeoutMs()} ms (its busy_timeout), so ${name} was not saved: no shared record and no file were written. Run the command again.`, { cause: error62 }), { code: error62.code });
+    }
     return { name, value, updates, changed, notified: false };
+  }
+  /** How long this connection waits for another writer's lock (PRAGMA busy_timeout), for the refusal's wording. */
+  busyTimeoutMs() {
+    return this.db.prepare("PRAGMA busy_timeout").get()?.timeout ?? 0;
+  }
+  /**
+   * After stageFile committed: put the file in place and record it as written, in one IMMEDIATE transaction, and only
+   * while the recovery intent is still this write's. The rename is under the lock because two writers of one file rename
+   * in either order otherwise: when the older write's rename landed last, the newer one had already recorded its hash, so
+   * the reconciler read the older file as a new local edit and published it over the newer decision. The bytes go to a
+   * temp file before the lock, so the lock covers one rename and one UPDATE. A later writer's intent is never cleared:
+   * this write's temp file is removed, and that writer puts its own value in place. writeFile false (the reconciler's
+   * import of a file that already holds the value) only records it. The bases and keys stay as stageFile recorded them
+   * against the records its own publish left, which are what this file holds, so no shared record is read here.
+   * The decision is already durable when this runs, so it never throws: when the database stays busy past busy_timeout,
+   * or the temp file or the rename fails, nothing is renamed, the intent stays pending and the reconciler writes the file
+   * (finishPendingFile), as after a crash between the commit and the rename. 'pending' and its reason are returned
+   * instead, so a caller never repeats a decision that was saved.
+   */
+  finishWrite(stage, { writeFile = true } = {}) {
+    let temporary = null;
+    try {
+      const value = redactJsonStrings(stage.value);
+      const path4 = join12(this.directory, stage.name);
+      if (writeFile && value !== null) temporary = writeTemporary(path4, value);
+      this.db.transaction(() => {
+        if (this.state(stage.name).pending_json !== JSON.stringify(value)) return;
+        if (writeFile) {
+          if (temporary) renameSync3(temporary, path4);
+          else removeFile(path4);
+        }
+        this.db.prepare("UPDATE my_work_file_state SET observed_hash = ?, pending_json = NULL, pending_delete = 0 WHERE name = ?").run(digest2(value), stage.name);
+      }).immediate();
+      return { materialization: "complete" };
+    } catch (error62) {
+      return { materialization: "pending", reason: isTransientSqliteBusy(error62) ? `another writer held the claude-mem database for longer than ${this.busyTimeoutMs()} ms` : String(error62?.message ?? error62) };
+    } finally {
+      if (temporary) removeTemporary(temporary);
+    }
   }
   notifyCommitted(stage) {
     if (this.db.inTransaction) throw new Error("Shared My Work: the outer transaction has not committed");
@@ -28434,19 +28590,18 @@ var SharedLedgerAdapter = class {
       return pending;
     }).immediate();
   }
-  /** Called before an external writer replaces its file; finalization follows rename. */
+  /** Called when a writer replaces its file: commits the shared records, and returns the finish that writes the file
+   * (finishWrite). Its `value` is the redacted value the file will hold. */
   beforeWrite(name, value, options) {
     if (this.db.inTransaction) throw new Error("Shared My Work: stage file writes until the outer transaction commits");
     const stage = this.stageFile(name, value, options);
     if (!stage) return null;
     this.notifyCommitted(stage);
-    return Object.assign(() => this.remember(name, stage.value, stage.updates, this.shared(), false), { value: stage.value });
+    return Object.assign((finishOptions) => this.finishWrite(stage, finishOptions), { value: stage.value });
   }
   saveFile(name, value, options) {
     if (!fileKinds(name).length) throw new TypeError("Unsupported shared My Work file");
-    const finish = this.beforeWrite(name, value, options);
-    rawWrite(join12(this.directory, name), finish && Object.hasOwn(finish, "value") ? finish.value : value);
-    finish?.();
+    return this.beforeWrite(name, value, options)();
   }
   publish(updates) {
     let changed = 0;
@@ -28497,6 +28652,7 @@ var SharedLedgerAdapter = class {
     const signature = this.signature(captureActivity, dataVersion);
     if (signature === this.lastSignature && this.lastDiagnostic) return this.lastDiagnostic;
     this.errors = [];
+    let finishPending = false;
     const names = [.../* @__PURE__ */ new Set([...fixedFiles, ...this.db.prepare("SELECT name FROM my_work_file_state").all().map((row) => row.name)])];
     try {
       names.push(...readdirSync2(join12(this.directory, "progress")).filter((name) => /^g_[a-f0-9]{12}\.json$/.test(name)).map((name) => `progress/${name}`));
@@ -28505,14 +28661,14 @@ var SharedLedgerAdapter = class {
     }
     for (const name of names) {
       try {
-        let current = this.state(name).pending_json !== null ? this.finishPendingFile(name) : load(join12(this.directory, name));
+        const current = this.state(name).pending_json !== null ? this.finishPendingFile(name) : load(join12(this.directory, name));
         if ((current !== void 0 || this.state(name).observed_hash !== null) && digest2(current) !== this.state(name).observed_hash) {
           const finish = this.beforeWrite(name, current ?? null);
-          if (finish && Object.hasOwn(finish, "value") && digest2(current) !== digest2(finish.value)) {
-            rawWrite(join12(this.directory, name), finish.value);
-            current = finish.value;
+          const finished = finish?.({ writeFile: digest2(current) !== digest2(finish.value) });
+          if (finished?.materialization === "pending") {
+            finishPending = true;
+            this.errors.push({ file: name, message: `Saved; recording the local file is pending: ${finished.reason}` });
           }
-          finish?.();
         }
       } catch (error62) {
         this.errors.push({ file: name, message: String(error62.message) });
@@ -28595,7 +28751,7 @@ var SharedLedgerAdapter = class {
       this.storyHash = storyHash;
       this.sharedRevision = final.revision;
     }
-    this.lastSignature = projectionSuperseded || activityPublishFailed ? null : this.signature(captureActivity, dataVersion);
+    this.lastSignature = projectionSuperseded || activityPublishFailed || finishPending ? null : this.signature(captureActivity, dataVersion);
     const diagnostics = applySharedProjection(this.db, final, { ledger, deviceId: this.deviceId }).diagnostics;
     this.lastDiagnostic = { ...diagnostics, files: this.errors };
     return this.lastDiagnostic;
@@ -28617,24 +28773,37 @@ function validIdentity(value) {
   }
   return value;
 }
+function recordedIdentities(db, settingsPath, configuredId, pinned) {
+  const settingsId = SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID;
+  const identities = new Set([pinned, configuredId, settingsId].filter((value) => Boolean(value)).map(validIdentity));
+  try {
+    const writers2 = db.query(`SELECT DISTINCT json_extract(fields, '$.writer') AS writer FROM work_state_entries
+      WHERE origin_device_id IS NULL AND ${sharedWorkListSql("list_name")} AND json_valid(fields)`).all();
+    for (const { writer } of writers2) {
+      if (typeof writer !== "string") throw new Error("Native shared work has an invalid device identity");
+      identities.add(validIdentity(writer));
+    }
+  } catch (error62) {
+    if (!/no such (table|column)/i.test(String(error62.message))) throw error62;
+  }
+  if (identities.size > 1) throw new Error("Local device identity conflicts with saved work; reconnect or restore the original identity before writing");
+  return { settingsId, identity: [...identities][0] };
+}
+var pinnedIdentity = (db) => db.query("SELECT device_id FROM local_work_view_identity WHERE singleton=1").get()?.device_id;
 function ensureLocalDeviceIdentity(db, settingsPath, configuredId = "") {
+  const confirmed = db.transaction(() => {
+    if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'local_work_view_identity'").get()) return null;
+    const pinned = pinnedIdentity(db);
+    if (!pinned) return null;
+    const { settingsId, identity } = recordedIdentities(db, settingsPath, configuredId, pinned);
+    return settingsId === pinned && identity === pinned ? pinned : null;
+  })();
+  if (confirmed) return confirmed;
   return db.transaction(() => {
     db.exec("CREATE TABLE IF NOT EXISTS local_work_view_identity (singleton INTEGER PRIMARY KEY CHECK(singleton=1), device_id TEXT NOT NULL)");
-    const pinned = db.query("SELECT device_id FROM local_work_view_identity WHERE singleton=1").get()?.device_id;
-    const settingsId = SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID;
-    const identities = new Set([pinned, configuredId, settingsId].filter((value) => Boolean(value)).map(validIdentity));
-    try {
-      const writers2 = db.query(`SELECT DISTINCT json_extract(fields, '$.writer') AS writer FROM work_state_entries
-        WHERE origin_device_id IS NULL AND ${sharedWorkListSql("list_name")} AND json_valid(fields)`).all();
-      for (const { writer } of writers2) {
-        if (typeof writer !== "string") throw new Error("Native shared work has an invalid device identity");
-        identities.add(validIdentity(writer));
-      }
-    } catch (error62) {
-      if (!/no such (table|column)/i.test(String(error62.message))) throw error62;
-    }
-    if (identities.size > 1) throw new Error("Local device identity conflicts with saved work; reconnect or restore the original identity before writing");
-    const deviceId = [...identities][0] ?? randomUUID4();
+    const pinned = pinnedIdentity(db);
+    const { settingsId, identity } = recordedIdentities(db, settingsPath, configuredId, pinned);
+    const deviceId = identity ?? randomUUID4();
     if (settingsId !== deviceId) {
       const result = updateSettingsDocument(settingsPath, { CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: deviceId }, SettingsDefaultsManager.getAllDefaults());
       if (result.status === "refused") {
@@ -28650,6 +28819,11 @@ function ensureLocalDeviceIdentity(db, settingsPath, configuredId = "") {
     return deviceId;
   }).immediate();
 }
+
+// src/services/sqlite/connection.ts
+init_logger();
+import { Database } from "bun:sqlite";
+var SQLITE_BUSY_TIMEOUT_MS = 5e3;
 
 // src/services/work-view/request-groups-cli.mjs
 async function saveFocus(body) {
@@ -28669,13 +28843,45 @@ var settings = SettingsDefaultsManager.loadFromFile(join13(resolveDataDir(), "se
 var localDeviceId = settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID ?? "";
 var sharedDatabase = null;
 var stopSharedWriter = null;
+var writes = [];
 var command = process.argv[2];
 var writesLedger = ["apply", "record-progress", "record-titles", "record-story"].includes(command) || command === "judge" && process.argv.includes("--apply");
-if (settings.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === "true" && writesLedger && existsSync13(join13(resolveDataDir(), "claude-mem.db"))) {
-  sharedDatabase = new Database(join13(resolveDataDir(), "claude-mem.db"), { readwrite: true, create: false });
-  localDeviceId = ensureLocalDeviceIdentity(sharedDatabase, join13(resolveDataDir(), "settings.json"), localDeviceId);
-  const adapter = new SharedLedgerAdapter(sharedDatabase, { directory: join13(resolveDataDir(), "work-view"), deviceId: localDeviceId });
-  stopSharedWriter = registerSharedFileWriter(join13(resolveDataDir(), "work-view"), (name, value) => adapter.beforeWrite(name, value));
+function openSharedWriter() {
+  sharedDatabase = new Database2(join13(resolveDataDir(), "claude-mem.db"), { readwrite: true, create: false });
+  sharedDatabase.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+  let adapter;
+  try {
+    localDeviceId = ensureLocalDeviceIdentity(sharedDatabase, join13(resolveDataDir(), "settings.json"), localDeviceId);
+    adapter = new SharedLedgerAdapter(sharedDatabase, { directory: join13(resolveDataDir(), "work-view"), deviceId: localDeviceId });
+  } catch (error62) {
+    if (!isTransientSqliteBusy(error62)) throw error62;
+    throw new Error(`Another writer held the claude-mem database for longer than ${SQLITE_BUSY_TIMEOUT_MS} ms while this command prepared its shared write (device identity and file-state table), so nothing was saved. Run the command again.`, { cause: error62 });
+  }
+  stopSharedWriter = registerSharedFileWriter(join13(resolveDataDir(), "work-view"), (name, value, options) => {
+    let finish;
+    try {
+      finish = adapter.beforeWrite(name, value, options);
+    } catch (error62) {
+      writes.push({ name, saved: false });
+      throw error62;
+    }
+    return finish && (() => {
+      const finished = finish();
+      writes.push({ name, saved: true, ...finished });
+      return finished;
+    });
+  });
+}
+function savedNotes(attempts, failed) {
+  const saved = attempts.filter((write) => write.saved), left = saved.filter((write) => write.materialization === "pending");
+  const names = (list2) => [...new Set(list2.map((write) => write.name))].join(", ");
+  const notes2 = [];
+  if (left.length) notes2.push(`Saved ${names(left)}; writing or recording the file is left for the claude-mem worker to finish (${[...new Set(left.map((write) => write.reason))].join("; ")}).`);
+  if (failed && saved.length) {
+    const refused = attempts.filter((write) => !write.saved);
+    notes2.push(`Saved before the failure: ${names(saved)} (${saved.length} ${saved.length === 1 ? "write" : "writes"}). Not saved: ${refused.length ? names(refused) : "what the command had not written yet"}. What was saved stays saved; run the command again for the rest.`);
+  } else if (left.length) notes2.push("Nothing needs to run again.");
+  return notes2.join("\n");
 }
 var output2 = "";
 var print = (value) => {
@@ -28683,6 +28889,7 @@ var print = (value) => {
 `;
 };
 try {
+  if (settings.CLAUDE_MEM_WORK_VIEW_SHARED_STATE === "true" && writesLedger && existsSync13(join13(resolveDataDir(), "claude-mem.db"))) openSharedWriter();
   await runCli(process.argv.slice(2), { saveFocus, localDeviceId, print });
 } catch (error62) {
   console.error(error62.message);
@@ -28691,4 +28898,6 @@ try {
   stopSharedWriter?.();
   sharedDatabase?.close();
 }
+var notes = savedNotes(writes, process.exitCode === 1);
+if (notes) console.error(notes);
 if (output2) await new Promise((resolve4, reject) => process.stdout.write(output2, (error62) => error62 ? reject(error62) : resolve4()));

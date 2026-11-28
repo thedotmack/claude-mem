@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, mkdirSync, renameSync, writeFileSync, unlinkSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { readLedger } from './request-groups.mjs';
+import { ledgerFileHash, readLedger } from './request-groups.mjs';
 import { activitySignature, buildAgentView, readAgentRecords } from './agent-view.mjs';
 import { reduceWorkState } from './work-state-reduce.mjs';
 import { buildSharedProjectionUpdates, applySharedProjection, decorateSharedView, isSharedProjectionValue } from './shared-projection.mjs';
@@ -9,6 +9,7 @@ import { createSharedRecordReader, publishSharedRecords } from './shared-record-
 import { sharedRecordKey, sharedValueHash, sharedWorkListSql } from './shared-records.mjs';
 import { canonicalJson } from '../sync/CanonicalContent.js';
 import { redactJsonStrings } from '../../utils/redaction.js';
+import { isTransientSqliteBusy } from '../worker/db-init-retry.js';
 
 const digest = value => createHash('sha256').update(canonicalJson(value ?? null)).digest('hex');
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -39,14 +40,23 @@ function observedFileHash(path) {
   }
 }
 
-function rawWrite(path, value) {
+/** Write `value` to a new temp file beside `path` and return the temp file's path; the caller renames or removes it. */
+function writeTemporary(path, value) {
   mkdirSync(join(path, '..'), { recursive: true });
   const temp = `${path}.${randomUUID()}.shared.tmp`;
-  try {
-    writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
-    renameSync(temp, path);
-  } finally { try { unlinkSync(temp); } catch { /* Renamed or never created. */ } }
+  try { writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' }); }
+  catch (error) { removeTemporary(temp); throw error; }
+  return temp;
 }
+
+function removeTemporary(temp) { try { unlinkSync(temp); } catch { /* Renamed or never created. */ } }
+
+function rawWrite(path, value) {
+  const temp = writeTemporary(path, value);
+  try { renameSync(temp, path); } finally { removeTemporary(temp); }
+}
+
+function removeFile(path) { try { unlinkSync(path); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
 
 /**
  * Local files are compatibility caches. Their observed/base hashes and pending
@@ -156,18 +166,43 @@ export class SharedLedgerAdapter {
       .filter(update => kinds.includes(update.kind) && (kinds[0] !== 'progress' || update.key === name.slice(9, -5)));
   }
 
-  /** Stage canonical rows and their recovery intent without touching files or notifying observers. */
-  stageFile(name, value, { resolveKeys = [], resolutionBaseline } = {}) {
+  /** The shared record keys a write may not overwrite without an explicit resolution: the conflicts `shared` holds. */
+  conflictedKeys(shared) {
+    const { diagnostics } = applySharedProjection(this.db, shared, { ledger: this.localLedger(), deviceId: this.deviceId });
+    return new Set(diagnostics.conflicts.flatMap(entry => entry.kind === 'group-membership'
+      ? entry.groups.map(group => sharedRecordKey('group', group)) : [sharedRecordKey(entry.kind, entry.key)]));
+  }
+
+  /**
+   * Stage canonical rows and their recovery intent without touching files or notifying observers.
+   * The shared records and their conflicts are read before the write lock is taken: a cold read of them took 3.9 s on
+   * the owner's Mac (2,015 records, 2026-11-27), and every other writer, the worker included, waits while this
+   * transaction holds the lock. Under the lock the reader only checks that they did not change (about 0.2 s there) and
+   * reads them again only when another writer changed them meanwhile. Inside a caller's transaction nothing is cached,
+   * so the read stays inside. IMMEDIATE takes the lock before the first read, so a busy database makes this wait up to
+   * the connection's busy_timeout: a deferred transaction that reads and then writes fails at once with
+   * SQLITE_BUSY_SNAPSHOT when another connection committed in between, and SQLite never runs the busy handler for it
+   * (the reason SyncApply.applyOps takes its lock the same way). A refusal names the file and that nothing was saved.
+   * readHash: the hash of the file the caller built `value` from (request-groups.mjs readHashOf). Under the lock the write
+   * is refused when the file no longer has it, or another write's intent is still pending: that writer's decision is
+   * committed and `value` was built without it. The wait for the lock made this window seconds long; without the check the
+   * older value replaced the newer one (an owner's Join saved while a CLI apply waited). Each base is the record's hash as
+   * this file last held it, so the base check alone cannot see a write that also updated the bases.
+   */
+  stageFile(name, value, { resolveKeys = [], resolutionBaseline, readHash } = {}) {
     if (!fileKinds(name).length) return null;
     value = redactJsonStrings(value);
     const updates = this.updatesForFile(name, value);
+    let read = this.db.inTransaction ? null : this.shared();
+    let conflicted = read && this.conflictedKeys(read);
     let changed = null;
-    this.db.transaction(() => {
+    try { this.db.transaction(() => {
       const prior = this.state(name);
+      if (readHash !== undefined && (prior.pending_json !== null || ledgerFileHash(join(this.directory, name)) !== readHash)) {
+        throw new Error(`Shared My Work: ${name} changed since this command read it (another writer saved a newer version${prior.pending_json !== null ? ', which is still being written to the file' : ''}), so this write was not saved: no shared record and no file were written. Run the command again.`);
+      }
       const shared = this.shared();
-      const diagnostics = applySharedProjection(this.db, shared, { ledger: this.localLedger(), deviceId: this.deviceId }).diagnostics;
-      const conflicted = new Set(diagnostics.conflicts.flatMap(entry => entry.kind === 'group-membership'
-        ? entry.groups.map(group => sharedRecordKey('group', group)) : [sharedRecordKey(entry.kind, entry.key)]));
+      if (shared !== read) { read = shared; conflicted = this.conflictedKeys(shared); }
       const resolving = new Set(resolveKeys.map(key => sharedRecordKey('group', key)));
       if (resolving.size && name !== 'request-groups.json') throw new TypeError('Only explicit grouping decisions can resolve group conflicts');
       if (resolving.size) {
@@ -209,11 +244,52 @@ export class SharedLedgerAdapter {
         if (!Object.hasOwn(prior.bases, key) && existing
           && sharedValueHash(change.kind, change.key, change.value, change.deleted) === (existing.valueHash ?? existing.hash)) change.expectedHash = existing.hash;
       }
-      const result = publishSharedRecords(this.db, { deviceId: this.deviceId, project: this.project, updates: changes, validateValue: isSharedProjectionValue, reader: this.sharedReader() });
+      const result = publishSharedRecords(this.db, { deviceId: this.deviceId, project: this.project, updates: changes, validateValue: isSharedProjectionValue, reader: this.sharedReader(), readState: shared });
       this.remember(name, value, updates, this.shared(), true, value === null);
       if (result.changed) changed = { rules: changes.some(change => change.kind === 'story') };
-    })();
+    }).immediate(); }
+    catch (error) {
+      if (!isTransientSqliteBusy(error)) throw error;
+      throw Object.assign(new Error(`Shared My Work: another writer held the claude-mem database for longer than ${this.busyTimeoutMs()} ms (its busy_timeout), so ${name} was not saved: no shared record and no file were written. Run the command again.`, { cause: error }), { code: error.code });
+    }
     return { name, value, updates, changed, notified: false };
+  }
+
+  /** How long this connection waits for another writer's lock (PRAGMA busy_timeout), for the refusal's wording. */
+  busyTimeoutMs() {
+    return this.db.prepare('PRAGMA busy_timeout').get()?.timeout ?? 0;
+  }
+
+  /**
+   * After stageFile committed: put the file in place and record it as written, in one IMMEDIATE transaction, and only
+   * while the recovery intent is still this write's. The rename is under the lock because two writers of one file rename
+   * in either order otherwise: when the older write's rename landed last, the newer one had already recorded its hash, so
+   * the reconciler read the older file as a new local edit and published it over the newer decision. The bytes go to a
+   * temp file before the lock, so the lock covers one rename and one UPDATE. A later writer's intent is never cleared:
+   * this write's temp file is removed, and that writer puts its own value in place. writeFile false (the reconciler's
+   * import of a file that already holds the value) only records it. The bases and keys stay as stageFile recorded them
+   * against the records its own publish left, which are what this file holds, so no shared record is read here.
+   * The decision is already durable when this runs, so it never throws: when the database stays busy past busy_timeout,
+   * or the temp file or the rename fails, nothing is renamed, the intent stays pending and the reconciler writes the file
+   * (finishPendingFile), as after a crash between the commit and the rename. 'pending' and its reason are returned
+   * instead, so a caller never repeats a decision that was saved.
+   */
+  finishWrite(stage, { writeFile = true } = {}) {
+    let temporary = null;
+    try {
+      const value = redactJsonStrings(stage.value);
+      const path = join(this.directory, stage.name);
+      if (writeFile && value !== null) temporary = writeTemporary(path, value);
+      this.db.transaction(() => {
+        if (this.state(stage.name).pending_json !== JSON.stringify(value)) return;
+        if (writeFile) { if (temporary) renameSync(temporary, path); else removeFile(path); }
+        this.db.prepare('UPDATE my_work_file_state SET observed_hash = ?, pending_json = NULL, pending_delete = 0 WHERE name = ?').run(digest(value), stage.name);
+      }).immediate();
+      return { materialization: 'complete' };
+    } catch (error) {
+      return { materialization: 'pending', reason: isTransientSqliteBusy(error)
+        ? `another writer held the claude-mem database for longer than ${this.busyTimeoutMs()} ms` : String(error?.message ?? error) };
+    } finally { if (temporary) removeTemporary(temporary); }
   }
 
   notifyCommitted(stage) {
@@ -291,20 +367,19 @@ export class SharedLedgerAdapter {
     }).immediate();
   }
 
-  /** Called before an external writer replaces its file; finalization follows rename. */
+  /** Called when a writer replaces its file: commits the shared records, and returns the finish that writes the file
+   * (finishWrite). Its `value` is the redacted value the file will hold. */
   beforeWrite(name, value, options) {
     if (this.db.inTransaction) throw new Error('Shared My Work: stage file writes until the outer transaction commits');
     const stage = this.stageFile(name, value, options);
     if (!stage) return null;
     this.notifyCommitted(stage);
-    return Object.assign(() => this.remember(name, stage.value, stage.updates, this.shared(), false), { value: stage.value });
+    return Object.assign((finishOptions) => this.finishWrite(stage, finishOptions), { value: stage.value });
   }
 
   saveFile(name, value, options) {
     if (!fileKinds(name).length) throw new TypeError('Unsupported shared My Work file');
-    const finish = this.beforeWrite(name, value, options);
-    rawWrite(join(this.directory, name), finish && Object.hasOwn(finish, 'value') ? finish.value : value);
-    finish?.();
+    return this.beforeWrite(name, value, options)();
   }
 
   publish(updates) {
@@ -356,19 +431,23 @@ export class SharedLedgerAdapter {
     const signature = this.signature(captureActivity, dataVersion);
     if (signature === this.lastSignature && this.lastDiagnostic) return this.lastDiagnostic;
     this.errors = [];
+    // A finish left pending (finishWrite) changes nothing this pass's signature sees once the busy writer rolls back.
+    let finishPending = false;
     const names = [...new Set([...fixedFiles, ...this.db.prepare('SELECT name FROM my_work_file_state').all().map(row => row.name)])];
     try { names.push(...readdirSync(join(this.directory, 'progress')).filter(name => /^g_[a-f0-9]{12}\.json$/.test(name)).map(name => `progress/${name}`)); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     for (const name of names) {
       try {
-        let current = this.state(name).pending_json !== null ? this.finishPendingFile(name) : load(join(this.directory, name));
+        const current = this.state(name).pending_json !== null ? this.finishPendingFile(name) : load(join(this.directory, name));
         if ((current !== undefined || this.state(name).observed_hash !== null) && digest(current) !== this.state(name).observed_hash) {
           const finish = this.beforeWrite(name, current ?? null);
-          if (finish && Object.hasOwn(finish, 'value') && digest(current) !== digest(finish.value)) {
-            rawWrite(join(this.directory, name), finish.value);
-            current = finish.value;
+          // The file is rewritten only when redaction changed the value it holds.
+          const finished = finish?.({ writeFile: digest(current) !== digest(finish.value) });
+          // Saved, with the file's record left pending for the next pass: reported like any file this pass did not finish.
+          if (finished?.materialization === 'pending') {
+            finishPending = true;
+            this.errors.push({ file: name, message: `Saved; recording the local file is pending: ${finished.reason}` });
           }
-          finish?.();
         }
       } catch (error) { this.errors.push({ file: name, message: String(error.message) }); }
     }
@@ -457,8 +536,8 @@ export class SharedLedgerAdapter {
     }
     // Keep the database version from before capture. A concurrent connection
     // may have committed after our snapshot and still needs the next pass.
-    // A skipped projection also has newer records left to materialize.
-    this.lastSignature = projectionSuperseded || activityPublishFailed ? null : this.signature(captureActivity, dataVersion);
+    // A skipped projection also has newer records left to materialize, and a pending finish a receipt to finish.
+    this.lastSignature = projectionSuperseded || activityPublishFailed || finishPending ? null : this.signature(captureActivity, dataVersion);
     const diagnostics = applySharedProjection(this.db, final, { ledger, deviceId: this.deviceId }).diagnostics;
     this.lastDiagnostic = { ...diagnostics, files: this.errors };
     return this.lastDiagnostic;

@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { appendReading, applyGroupDecisions, groupIdFor, hasPlaceholderTitle, ledgerSignature, linkBackwards, MAX_READINGS, placeholderTitleFromAsk, readCandidates, readGoals, readLedger, refreshNeeds, runCli, storyChaptersToMerge, storyParts, textTarget, trimStoryPreferences, validateProgress, validateStory, validateSubFocusAnswer, validateTitleAnswer } from '../../src/services/work-view/request-groups.mjs';
+import { AGENT_WRITTEN_PROMPTS_FILE, appendReading, applyGroupDecisions, groupIdFor, hasPlaceholderTitle, ledgerSignature, linkBackwards, MAX_READINGS, placeholderTitleFromAsk, readCandidates, readGoals, readLedger, refreshNeeds, runCli, shownGroupIds, storyChaptersToMerge, storyParts, textTarget, trimStoryPreferences, validateProgress, validateStory, validateSubFocusAnswer, validateTitleAnswer } from '../../src/services/work-view/request-groups.mjs';
 import { readFocus, readFocusAreas } from '../../src/services/work-view/data-source.mjs';
 import { focusAreaRowFields, placementRowFields, routerFocusRows, subFocusPlacementRowFields, type RouterFocusBody } from '../../src/services/work-view/my-focus.mjs';
 import { buildHumanRequests } from '../../src/services/work-view/request-projection.mjs';
+import { applySharedProjection } from '../../src/services/work-view/shared-projection.mjs';
 import { scratchDir } from '../helpers/scratch-dir.js';
 
 const ledgerDir = () => scratchDir('request-groups-test');
@@ -874,6 +876,24 @@ describe('sub focuses', () => {
     return { database, focus, run, write };
   }
 
+  /** The ledger requests My Work serves, built the way the read worker builds them: the agent-written exclusions applied
+   * (applySharedProjection), then buildHumanRequests over the given agents' work. */
+  function servedGroupIds(database: Database, dir: string, agents: any[] = []) {
+    const records = {
+      sessions: database.prepare('SELECT id, project, platform_source, content_session_id, memory_session_id, user_prompt, started_at_epoch FROM sdk_sessions').all(),
+      prompts: database.prepare('SELECT id, session_db_id, prompt_number, prompt_text, created_at_epoch FROM user_prompts').all(),
+    };
+    const projected = applySharedProjection(database, null, { ledger: readLedger(dir), records });
+    return new Set(buildHumanRequests({ agents, recentActivity: [] }, projected.records, { ledger: projected.ledger, localFiles: false }).humanRequests.map((request: any) => request.groupId).filter(Boolean));
+  }
+  /** The setup scan judges these conversations' prompts agent-written (the whole list, replacing any earlier one). */
+  function excludeAsAgentWritten(database: Database, dir: string, ...sessions: string[]) {
+    const promptOf = (session: string) => (database.prepare('SELECT p.id FROM user_prompts p JOIN sdk_sessions s ON s.id = p.session_db_id WHERE s.content_session_id = ?').get(session) as { id: number }).id;
+    writeFileSync(join(dir, AGENT_WRITTEN_PROMPTS_FILE), JSON.stringify({ promptIds: sessions.map(promptOf) }));
+  }
+  /** A pass hash as it was recorded before passes counted only shown requests: over every request placed in the area. */
+  const hashOverPlaced = (sessions: string[]) => createHash('sha256').update(JSON.stringify(sessions.map(key).sort())).digest('hex').slice(0, 16);
+
   it('the validator refuses unknown ids and double membership, and ungroups a group of one', async () => {
     const dir = ledgerDir();
     try {
@@ -938,6 +958,107 @@ describe('sub focuses', () => {
       expect(run(['sub-focus-input']).due).toEqual([{ focusAreaId: 'fa_releases', name: 'Releases', requests: 6 }]);
       expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' }).subFocusDue).toBe(1);
       expect(() => run(['sub-focus-input', '--area', 'fa_nope'])).toThrow(/not a kept focus area/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('the step counts only the requests My Work shows: one whose every ask is agent-written is never asked about', async () => {
+    const dir = ledgerDir();
+    try {
+      const { database, run } = await releases(dir);
+      const served = () => servedGroupIds(database, dir);
+      const exclude = (...sessions: string[]) => excludeAsAgentWritten(database, dir, ...sessions);
+      expect(shownGroupIds(readLedger(dir), database)).toEqual(served());
+      const before = run(['sub-focus-input', '--area', 'fa_releases']);
+      // The setup scan judged e's only ask agent-written after e was grouped: My Work shows no card for it.
+      exclude('e');
+      expect(served().has(groupIdFor(key('e')))).toBe(false);
+      expect(shownGroupIds(readLedger(dir), database)).toEqual(served());
+      expect(run(['sub-focus-input'])).toEqual({ due: [{ focusAreaId: 'fa_releases', name: 'Releases', requests: 4 }], failed: [] });
+      const after = run(['sub-focus-input', '--area', 'fa_releases']);
+      expect(after.requests.map((request: any) => request.anchor)).toEqual([key('a'), key('b'), key('c'), key('d')]);
+      // The pass looks at a different set, so it records a different hash.
+      expect(after.passHash).not.toBe(before.passHash);
+      // An answer naming the hidden request is refused: it was not asked about.
+      expect(() => validateSubFocusAnswer({ groups: [], newGroups: [{ name: 'Announcement images', anchors: [key('d'), key('e')] }], ungrouped: [key('a'), key('b'), key('c')] }, after)).toThrow(/not asked about/);
+      // A request whose conversation is not recorded on this computer still shows, from the first ask the ledger stored.
+      database.prepare("DELETE FROM user_prompts WHERE session_db_id = (SELECT id FROM sdk_sessions WHERE content_session_id = 'c')").run();
+      database.prepare("DELETE FROM sdk_sessions WHERE content_session_id = 'c'").run();
+      expect(served().has(groupIdFor(key('c')))).toBe(true);
+      expect(shownGroupIds(readLedger(dir), database)).toEqual(served());
+      // Three shown requests cannot make two groups of two: the area is not asked, though the ledger places five in it.
+      exclude('d', 'e');
+      expect(shownGroupIds(readLedger(dir), database)).toEqual(served());
+      expect(run(['sub-focus-input']).due).toEqual([]);
+      expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' }).subFocusDue).toBe(0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('shownGroupIds counts two kinds of request My Work shows no card for: asks carrying explicit request ids, and another root\'s only ask', async () => {
+    const dir = ledgerDir();
+    try {
+      const { database } = await releases(dir);
+      expect(shownGroupIds(readLedger(dir), database)).toEqual(servedGroupIds(database, dir));
+      // Explicit request ids: an agent recorded a's work with a request_id. My Work files it under an explicit-request
+      // card and makes no card for the request a anchors; shownGroupIds reads no work-state, so it counts that request.
+      const agents = [{ id: 'agent-a', label: 'Agent', sessionId: 1, work: [{ id: 'work-a', requestId: 'release-cards', requestText: 'Build the release cards', lastUpdateEpoch: NOW, sourceRefs: [] }], activity: [] }];
+      expect(servedGroupIds(database, dir, agents).has(groupIdFor(key('a')))).toBe(false);
+      expect(shownGroupIds(readLedger(dir), database).has(groupIdFor(key('a')))).toBe(true);
+      // Another root: a request with no stored root, whose anchor x (repo/tree) has no ask left and whose only asking
+      // member y is in another root. My Work turns y away from the request and gives y a card of its own.
+      database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(7, 'claude', 'x', 'm7', 'repo/tree', 'Plan the docs site', NOW - DAY);
+      database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(8, 'claude', 'y', 'm8', 'other/site', 'Write the docs landing page', NOW - DAY);
+      for (const [id, ask] of [[7, 'Plan the docs site'], [8, 'Write the docs landing page']] as const) database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(id, 1, ask, NOW - DAY);
+      const ledger = JSON.parse(readFileSync(join(dir, 'request-groups.json'), 'utf8'));
+      const docs = groupIdFor(key('x'));
+      ledger.groups[docs] = { title: 'Docs site', anchor: key('x'), links: [] };
+      ledger.conversations[key('x')] = docs;
+      ledger.conversations[key('y')] = docs;
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify(ledger));
+      excludeAsAgentWritten(database, dir, 'x');
+      expect(servedGroupIds(database, dir).has(docs)).toBe(false);
+      expect(shownGroupIds(readLedger(dir), database).has(docs)).toBe(true);
+      // Every other request is counted alike.
+      const shown = shownGroupIds(readLedger(dir), database);
+      shown.delete(docs);
+      expect(shown).toEqual(servedGroupIds(database, dir));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('an upgrade alone never asks an area again: a hash recorded over every placed request still names an answered set', async () => {
+    const dir = ledgerDir();
+    try {
+      const { database, focus, run, write } = await releases(dir);
+      // Answered while all five requests showed: the pass hash then covers every placed request, as before passes
+      // counted only shown ones.
+      expect(run(['sub-focus-input', '--area', 'fa_releases']).passHash).toBe(hashOverPlaced(RELEASES));
+      await run(['record-sub-focus', '--area', 'fa_releases', write('s.json', { groups: [], newGroups: [{ name: 'Announcement images', anchors: [key('d'), key('e')] }], ungrouped: [key('a'), key('b'), key('c')] })]);
+      // e has no card any more, so the pass would now count four requests and name another hash. Nothing was placed in
+      // the area or moved out, so it is not asked again: no paid question for an upgrade or a rescan alone.
+      excludeAsAgentWritten(database, dir, 'e');
+      expect(run(['sub-focus-input', '--area', 'fa_releases']).passHash).not.toBe(hashOverPlaced(RELEASES));
+      expect(run(['sub-focus-input'])).toEqual({ due: [], failed: [] });
+      expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' })).toMatchObject({ subFocusDue: 0, subFocusFailed: 0 });
+      // A request moved into the area changes its set: it is asked, about the requests that show.
+      focus.insert(placementRowFields({ anchorConversationKey: key('f'), focusAreaId: 'fa_releases', placedBy: 'owner', evidence: 'Moved by you in My Work.' }));
+      expect(run(['sub-focus-input'])).toEqual({ due: [{ focusAreaId: 'fa_releases', name: 'Releases', requests: 5 }], failed: [] });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('an upgrade alone never turns a failed pass into a due one: a failed hash over every placed request still names its set', async () => {
+    const dir = ledgerDir();
+    try {
+      const { database, focus, run } = await releases(dir);
+      const releasesArea = { focusAreaId: 'fa_releases', name: 'Releases', requests: 4 };
+      // The last pass failed while all five showed (refresh-task.ts records the hash it asked about).
+      await focus.save({ placements: [], proposals: [], subFocus: { focusAreaId: 'fa_releases', newSubFocuses: [], placements: [], passHash: null, failedPassHash: hashOverPlaced(RELEASES) } });
+      excludeAsAgentWritten(database, dir, 'e');
+      // Still the failed set: no scheduled refresh pays for the same question again; the owner's Refresh asks it.
+      expect(run(['sub-focus-input'])).toEqual({ due: [], failed: [releasesArea] });
+      expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' })).toMatchObject({ subFocusDue: 0, subFocusFailed: 1 });
+      // A request moved into the area is a new set: due again.
+      focus.insert(placementRowFields({ anchorConversationKey: key('f'), focusAreaId: 'fa_releases', placedBy: 'owner', evidence: 'Moved by you in My Work.' }));
+      expect(run(['sub-focus-input'])).toEqual({ due: [{ ...releasesArea, requests: 5 }], failed: [] });
+      expect(refreshNeeds({ dir, database, now: NOW, localDeviceId: '' })).toMatchObject({ subFocusDue: 1, subFocusFailed: 0 });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
