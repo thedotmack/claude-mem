@@ -105,7 +105,8 @@ replay to your real worker.
   without a name is written as "Phone ending 0001", so a full number is never
   stored by accident.
 - **Edits, unsends and tapbacks** change the window that is still open. A
-  change to a message that was already handed over is not sent again.
+  withdrawn tapback removes that person's matching reaction from the pending
+  window. A change to a message that was already handed over is not sent again.
 - **Photos and files** appear as `[photo]` or `[file: menu.pdf]`. Their
   contents are not read.
 - **Direct chats are ignored.** Pass `--include-direct` to observe one-to-one

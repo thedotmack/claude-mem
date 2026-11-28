@@ -90,8 +90,8 @@ describe('ChatDbSource', () => {
     fake.message({ chat: GROUP, guid: 'l1', at: T0 + 10 * MIN, from: BEN, left: true });
 
     const events = src.poll();
-    expect(events.map(event => event.type)).toEqual(['message', 'message', 'message', 'message', 'reaction', 'reaction', 'renamed', 'membership', 'membership', 'membership']);
-    const [m1, m2, m3, m4, t1, t2, r1, j1, j2, l1] = events as Array<ObserverEvent & Record<string, unknown>>;
+    expect(events.map(event => event.type)).toEqual(['message', 'message', 'message', 'message', 'reaction', 'reaction', 'reaction', 'renamed', 'membership', 'membership', 'membership']);
+    const [m1, m2, m3, m4, t1, t2, t3, r1, j1, j2, l1] = events as Array<ObserverEvent & Record<string, unknown>>;
     expect(m1).toMatchObject({ chatGuid: GROUP, messageGuid: 'm1', sender: ANA, isFromMe: false, text: 'Cabin is $1,200 for the weekend' });
     expect(m1!.occurredAt).toEqual(new Date(T0));
     expect(m2).toMatchObject({ isFromMe: true, sender: undefined, text: 'I can cover half' });
@@ -99,6 +99,7 @@ describe('ChatDbSource', () => {
     expect(m4).toMatchObject({ text: '', attachments: ['photo'] });
     expect(t1).toMatchObject({ messageGuid: 'm1', reaction: 'love', sender: BEN });
     expect(t2).toMatchObject({ messageGuid: 'm2', reaction: '🔥' });
+    expect(t3).toMatchObject({ messageGuid: 'm2', reaction: 'love', removed: true, targetPartIndex: 0 });
     expect(r1).toMatchObject({ displayName: 'Tahoe 2027' });
     expect(j1).toMatchObject({ change: 'added', person: CAL, isFromMe: true });
     expect(j2).toMatchObject({ change: 'removed', person: BEN, sender: ANA });
