@@ -150,6 +150,14 @@ export const FILE_ONLY_SETTING_KEYS = new Set([
   'CLAUDE_MEM_CHROMA_UVX_PATH',
   'CLAUDE_MEM_DATA_DIR',
   'CLAUDE_MEM_WORKER_HOST',
+  // The port is a bind-time setting: the running worker binds once at startup
+  // and never rebinds. If a save over HTTP switched it, short-lived hook
+  // processes would resolve the new port, find nothing listening, and
+  // ensureWorkerAliveOnce() would spawn a SECOND worker on the same
+  // CLAUDE_MEM_DATA_DIR — two processes writing one SQLite database and
+  // Chroma index, while the open viewer still talks to the old port. Same
+  // boundary as CLAUDE_MEM_WORKER_HOST: edit settings.json, restart the worker.
+  'CLAUDE_MEM_WORKER_PORT',
   'CLAUDE_MEM_AUTO_UPDATE',
   'CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL',
   'CLAUDE_MEM_OPENROUTER_BASE_URL',
@@ -312,7 +320,6 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_MODEL',
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
       'CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES',
-      'CLAUDE_MEM_WORKER_PORT',
       'CLAUDE_MEM_PROVIDER',
       'CLAUDE_MEM_PROVIDER_BY_SOURCE',
       'CLAUDE_MEM_OBSERVER_ENABLED',

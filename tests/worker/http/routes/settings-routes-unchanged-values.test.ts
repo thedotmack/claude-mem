@@ -240,6 +240,7 @@ const FILE_ONLY_VALUES: Record<string, [string, string]> = {
   CLAUDE_MEM_CHROMA_UVX_PATH: ['C:\\Python313\\Scripts\\uvx.exe', '/untrusted/bin/uvx'],
   CLAUDE_MEM_DATA_DIR: ['/home/owner/.claude-mem', '/untrusted/data'],
   CLAUDE_MEM_WORKER_HOST: ['127.0.0.1', '0.0.0.0'],
+  CLAUDE_MEM_WORKER_PORT: ['37742', '39000'],
   CLAUDE_MEM_AUTO_UPDATE: ['false', 'true'],
   CLAUDE_MEM_AUTO_UPDATE_PROMOTED_RELEASE_URL: ['https://updates.example/stored.json', 'https://updates.example/posted.json'],
   CLAUDE_MEM_WORKER_INGEST_TOKEN: ['stored-ingest-token', 'replacement-ingest-token'],

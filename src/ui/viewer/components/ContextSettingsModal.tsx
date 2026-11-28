@@ -992,15 +992,21 @@ export function ContextSettingsModal({
                     placeholder={t('Auto-detect (set via settings.json or env)')} />
                 )}
               </FormField>
-              <NumberField
+              <FormField
                 label={t('Worker Port')}
-                help={t('Port for the background worker service')}
-                setting="CLAUDE_MEM_WORKER_PORT"
-                // Empty puts the saved port back, never a default: the viewer's 37700 is not this install's port (the worker adds a
-                // per-install offset, getDefaultWorkerPort), and an empty port must never reach settings.json.
-                value={formState.CLAUDE_MEM_WORKER_PORT || settings.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT}
-                onChange={value => updateSetting('CLAUDE_MEM_WORKER_PORT', value || settings.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT)}
-              />
+                help={<>
+                  <p>{t('Port for the background worker service. File/env only — edit ~/.claude-mem/settings.json or set CLAUDE_MEM_WORKER_PORT in the environment, then restart the worker.')}</p>
+                  <p>{t('Read-only here. Set')} <code>CLAUDE_MEM_WORKER_PORT</code> {t('in')} <code>~/.claude-mem/settings.json</code> {t('or the environment.')}</p>
+                </>}
+              >
+                {control => (
+                  // The saved value only: the viewer's 37700 is not this install's port (the worker
+                  // adds a per-install offset, getDefaultWorkerPort), so an unstored port shows the
+                  // placeholder instead of a number that was never bound.
+                  <ReadOnlyInput control={control} value={settings.CLAUDE_MEM_WORKER_PORT || ''}
+                    placeholder={t('Derived per install (set via settings.json or env)')} />
+                )}
+              </FormField>
             </>)}
           </fieldset>
 
