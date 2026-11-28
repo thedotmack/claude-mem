@@ -4,7 +4,7 @@ import { clockDay, displayTime } from '@/lib/display-time'
 // and "…" menu, the combined progress of the reviewed requests in it, what shipped, and the owner's words and sharing
 // folded to one line each. The asks nothing is working on yet (NotStartedAsks) follow the page's main card, which leads
 // with what needs the owner (components/focus-main-card.tsx).
-import { useId, useState, type MouseEvent, type ReactNode } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import { AlignLeftIcon, ArrowDownIcon, ArrowUpIcon, CheckIcon, ChevronDownIcon, CircleIcon, CopyIcon, LightbulbIcon, Link2Icon, MergeIcon, MoreHorizontalIcon, PencilIcon, XIcon } from 'lucide-react'
 import { interpolate, useI18n } from '@/lib/i18n'
 import { InlineCitationQuote } from '@/components/ai-elements/inline-citation'
@@ -19,7 +19,8 @@ import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { requestTitle, type FocusArea, type FocusAsk, type LiveState, type Quote, type Request } from '@/data'
 import { useStore, useWorkModel } from '@/store'
-import { writeRoute } from '@/store/slices/view-slice'
+import { placeLinkPress, usePageHref } from '@/lib/place-link'
+import { myWorkPlace } from '../../../app-places'
 import { FocusArtwork } from './focus-artwork'
 import { formatPromptDay, formatPromptTime, promptDayKey, shipDayKey } from '@/lib/prompt-time'
 import { navWordIn } from '../../../../services/work-view/nav-words.mjs'
@@ -70,31 +71,18 @@ function statusOf(latestAt: string | null, requests: Request[]): AreaStatus {
 }
 
 /**
- * A link to another place in My Work: a real address (it opens in a new tab, its link can be copied), and a plain
- * press moves there in the page, without a reload.
- */
-function placeLinkPress(go: () => void) {
-  return (event: MouseEvent<HTMLAnchorElement>) => {
-    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
-    event.preventDefault()
-    go()
-  }
-}
-/** The address of a place in My Work, from the page's own address (its `source` and `theme` are kept). */
-const placeHref = (place: Parameters<typeof writeRoute>[1]) => writeRoute(new URL(window.location.href), place).href
-
-/**
- * Where this page is (page-03 M: a breadcrumb, built on the shared Breadcrumb): the focus overview on the home page,
- * one press back (it was reachable only from the rail), then this area. The overview opens with every area shown.
+ * Where this page is (page-03 M: a breadcrumb, built on the shared Breadcrumb): Focus areas, one press back, then this
+ * area. Focus areas opens with every area shown; the crumb names it as the bar does (src/ui/app-places.ts).
  */
 function FocusBreadcrumb({ current }: { current: string }) {
   const { t } = useI18n()
-  const toOverview = () => useStore.getState().goToHome('focus-areas')
+  const toFocusAreas = () => useStore.getState().goToPage('focus')
+  const href = usePageHref('focus')
   return (
     <Breadcrumb>
       <BreadcrumbList>
         <BreadcrumbItem>
-          <BreadcrumbLink href={placeHref({ section: 'work', focusChoice: null, openRequest: null, homeAnchor: 'focus-areas' })} onClick={placeLinkPress(toOverview)}>{t('Focus overview')}</BreadcrumbLink>
+          <BreadcrumbLink href={href} onClick={placeLinkPress(toFocusAreas)}>{t(myWorkPlace('focus').label)}</BreadcrumbLink>
         </BreadcrumbItem>
         <BreadcrumbSeparator />
         <BreadcrumbItem><BreadcrumbPage>{current}</BreadcrumbPage></BreadcrumbItem>
@@ -353,7 +341,7 @@ export function NotStartedAsks({ asks }: { asks: FocusAsk[] }) {
 function AreaMenu({ area, changes, onEdit, onShare }: { area: FocusArea; changes: FocusChanges; onEdit: (edit: AreaEdit) => void; onShare: () => void }) {
   const { t } = useI18n()
   const { focusAreas, requests } = useWorkModel()
-  // The owner's order covers kept areas only (the worker refuses anything else), all of them at once, as the rail shows them.
+  // The owner's order covers kept areas only (the worker refuses anything else), all of them at once, as the focus area board shows them.
   const order = focusAreas.filter((entry) => entry.status === 'kept' && !entry.mergedInto).map((entry) => entry.id)
   const at = order.indexOf(area.id)
   const swap = (other: number) => { const next = [...order]; [next[at], next[other]] = [next[other], next[at]]; changes.apply({ action: 'reorder', focusAreaIds: next }) }
@@ -491,12 +479,13 @@ function SuggestedAreasNotice() {
   const { t } = useI18n()
   const { focusAreas } = useWorkModel()
   const suggested = focusAreas.filter((area) => area.status === 'suggested' && !area.mergedInto).length
-  const toSuggested = () => useStore.getState().selectFocus({ kind: 'suggested' })
+  const toSuggested = () => useStore.getState().goToPage('suggested')
+  const href = usePageHref('suggested')
   return (
     <p data-suggested-notice="" className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-control-edge/55 bg-surface/60 px-3 py-2 text-sm">
       <LightbulbIcon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
       <span className="min-w-0 flex-1 basis-64">{t('A refresh suggests a new area when several of these belong together.')}</span>
-      <a href={placeHref({ section: 'suggested', focusChoice: null, openRequest: null, homeAnchor: null })} onClick={placeLinkPress(toSuggested)}
+      <a href={href} onClick={placeLinkPress(toSuggested)}
         className={cn(buttonVariants({ variant: 'link', size: 'sm' }), 'h-auto md:not-pointer-coarse:min-h-6 px-0')}>
         {suggested === 0 ? t('See suggested areas') : suggested === 1 ? t('See 1 suggested area') : interpolate(t('See {count} suggested areas'), { count: suggested })}
       </a>

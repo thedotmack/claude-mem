@@ -237,7 +237,7 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
     ...['ok', 'error', 'excluded', 'disabled', 'unknown'].map(outcome => `${source}_${operation}_${outcome}_count`),
   ])),
   // work_view_opened / work_view_switched — which My Work viewer page is on
-  // screen, as the viewer's own closed page ids (setup | work | rules | suggested | past-focus).
+  // screen, as the viewer's own closed page ids (WORK_VIEW_USAGE_VIEWS in src/shared/work-view-pages.ts).
   // Never a request title, prompt, observation, file path, or search text.
   'view',
   'previous_view',

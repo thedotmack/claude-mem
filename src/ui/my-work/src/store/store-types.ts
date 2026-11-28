@@ -3,13 +3,12 @@
 import type { FocusChange, Request } from '../data.ts'
 import type { OwnerRule, RuleChange } from '../data-rules.ts'
 import type { ThemeChoice } from '../lib/theme.ts'
-import type { HomeAnchor } from './home-anchor.ts'
 import type { ConnectionStatus } from '../live/connection-status.ts'
 import type { ReviewResult } from '../live/review-response.ts'
 import type { RuleDecision, SavedRuleDecision } from '../live/rule-actions.ts'
 import type { RequestChange } from '../live/update-queue.ts'
 import type { UsageReport } from '../live/usage.ts'
-import type { WORK_VIEW_NAV_PAGES, WORK_VIEW_SECTIONS } from '../../../../shared/work-view-pages.ts'
+import type { WORK_VIEW_SECTIONS } from '../../../../shared/work-view-pages.ts'
 import type { ConversationContinuationSource, RuleSaveResult, SuggestionSaveResult, WorkDataSource, WorkModel } from '../live/work-data-source.ts'
 
 // ---------- Work: the active source's model ----------
@@ -75,15 +74,20 @@ export interface WorkSlice {
 
 /** `setup` is the install funnel (`?setup=1`): a full page outside the nav that becomes My Work when it completes. */
 export type Page = 'setup' | 'app'
-export type NavPage = typeof WORK_VIEW_NAV_PAGES[number]
-/** What the main column shows: a page, or one of the focus views the rail opens. */
+/** What the main column shows: one of the bar's places, or a page reached from one (src/shared/work-view-pages.ts). */
 export type Section = typeof WORK_VIEW_SECTIONS[number]
 export type WorkListView = 'cards' | 'list' | 'agents' | 'team'
 export type WorkFilter = 'all' | 'needs-you' | 'working' | 'shipped' | 'closed'
 export type WorkSort = 'attention' | 'started' | 'progress'
 export type FocusArtwork = 'full' | 'compact' | 'off'
 export interface Workspace { mode: 'home' | 'web'; team: boolean; connected: boolean }
-export type FocusSelection = { kind: 'area'; focusAreaId: string } | { kind: 'suggested' } | { kind: 'past-focus' } | null
+
+/**
+ * Where the window scrolls once the page has drawn the place the person went to (App.tsx, lib/scroll-ask.ts), one ask
+ * per move: a new page from its top, Back, Forward and a reload where the person left that history entry, and Requests
+ * and Focus areas at their boards on the home page until they have pages of their own.
+ */
+export type ScrollTarget = { to: 'top' } | { to: 'element'; elementId: string } | { to: 'position'; y: number }
 
 /**
  * The open request drawer, by id so it always shows the current record. `fromLiveFeed` tells "left the feed" (close)
@@ -105,14 +109,8 @@ export interface ViewState {
   /** The area My Work is filtered to (an area id or Other); null shows every request. */
   focusChoice: string | null
   openRequest: OpenRequest | null
-  /** The place on the home page the address names (`/#all-requests`), or null. Only with section work and no area. */
-  homeAnchor: HomeAnchor | null
-  /**
-   * The person's last ask to go to a home anchor; each new ask (a new `sequence`) scrolls there once (App.tsx), and an
-   * ask for `focus-areas` shows every area on the board. Cleared when they leave home or go to its top, so a board
-   * drawn later never acts on an old ask.
-   */
-  homeAnchorRequest: { anchor: HomeAnchor; sequence: number } | null
+  /** The last move's scroll, once its page has drawn; each move asks with a new `sequence` (App.tsx runs it once). */
+  scrollAsk: { sequence: number; target: ScrollTarget } | null
   /** Sample mode's place and TeamBrain switches. Outside sample mode the place comes from the source. */
   workspace: Workspace
   showSpec: boolean
@@ -132,16 +130,16 @@ export interface ViewState {
 
 export interface ViewSlice {
   view: ViewState
-  goToPage: (page: NavPage) => void
+  /** Shows a page from its top (Requests and Focus areas at their boards on the home page, for now). */
+  goToPage: (page: Section) => void
   goToFocus: (focusAreaId: string) => void
-  /** The home page, scrolled to `anchor` (and its address `/#anchor`), or to its top when null. */
-  goToHome: (anchor: HomeAnchor | null) => void
-  selectFocus: (selection: FocusSelection) => void
   /** Opens a request's drawer; `{ reply: true }` opens it on its reply box (Reply on a card or the summary, G2). */
   openRequestDrawer: (request: Request, options?: { reply?: boolean }) => void
   closeRequestDrawer: () => void
   /** Keeps the drawer on the current record; closes it when its request left the feed. Runs on every model. */
   reconcileOpenRequest: () => void
+  /** An area's address whose area the work does not show becomes the home page's address. Runs on every model. */
+  reconcileFocusChoice: () => void
   /** Back/Forward: show what the URL now says. */
   showUrl: () => void
   startSetup: () => void
@@ -235,10 +233,16 @@ export type BoundStore = WorkSlice & ViewSlice & RulesSlice & FocusSlice
 /** What the store reads from and writes to outside itself: the browser in the app, fakes in tests. */
 export interface StoreEnvironment {
   href: () => string
+  /** A new history entry for `url`, or with `replace` the same entry at `url`. */
   writeUrl: (url: URL, replace: boolean) => void
   storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null
   /** Usage counts describe real local work only; the sample fixtures are not usage. */
   reportsUsage: boolean
   sendUsage: (report: UsageReport | null) => void
   scrollToTop: () => void
+  /**
+   * Where the person last left the history entry now shown scrolled, or null when that is not known: read when the
+   * store starts (a reload) and after Back or Forward. The browser's is in index.ts.
+   */
+  savedScrollY: () => number | null
 }

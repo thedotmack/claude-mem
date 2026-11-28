@@ -11,6 +11,7 @@ import { resolve } from 'node:path';
 
 const INDEX_CSS = readFileSync(resolve(import.meta.dir, '../../../src/ui/my-work/src/index.css'), 'utf8');
 const BITS_SOURCE = readFileSync(resolve(import.meta.dir, '../../../src/ui/my-work/src/components/bits.tsx'), 'utf8');
+const APP_BAR_SOURCE = readFileSync(resolve(import.meta.dir, '../../../src/ui/my-work/src/components/app-bar.tsx'), 'utf8');
 
 /** The custom properties declared in the block that opens a line with `selector {`. */
 function readThemeBlock(selector: string): Record<string, string> {
@@ -92,6 +93,18 @@ function stateColourFamilies(): string[] {
 
 const STATES = stateColourFamilies();
 
+/**
+ * The colour of the edge that marks the bar's place shown, read from components/app-bar.tsx PlaceLink
+ * (`aria-[current=page]:border-b-<colour>`): the mark that is not colour alone, so this test follows the code.
+ */
+function activePlaceMarkColour(): string {
+  const found = [...APP_BAR_SOURCE.matchAll(/aria-\[current=page\]:border-b-([a-z][\w-]*)/g)].map(([, colour]) => colour);
+  if (found.length !== 1) throw new Error(`app-bar.tsx should mark the place shown with one aria-[current=page]:border-b-<colour>; found ${JSON.stringify(found)}`);
+  return found[0];
+}
+
+const ACTIVE_PLACE_MARK = activePlaceMarkColour();
+
 describe('My Work colour tokens meet rule 7 and G12', () => {
   for (const theme of Object.keys(THEMES) as ThemeName[]) {
     describe(`${theme} theme`, () => {
@@ -139,6 +152,15 @@ describe('My Work colour tokens meet rule 7 and G12', () => {
         for (const surface of ['background', 'card', 'popover', 'muted']) {
           expectAtLeast(theme, linkText, [`--${surface}`, tokenRgb(theme, surface)], 4.5, 'link button text');
         }
+      });
+
+      it('the bar\'s place shown: its words ≥4.5:1 on its fill and on the bar, and its edge mark ≥3:1 against both (design pass Phase 3)', () => {
+        expectAtLeast(theme, 'place-active-foreground', ['--place-active', tokenRgb(theme, 'place-active')], 4.5, 'active place words');
+        expectAtLeast(theme, 'place-active-foreground', ['--card (the bar)', tokenRgb(theme, 'card')], 4.5, 'active place words on the bar');
+        // The fill alone is 1.2:1 to 1.3:1 on the bar, and the words' green 1.04:1 to 1.19:1 against the other places'
+        // grey: the edge along the place's foot is what tells it apart (WCAG 1.4.1 and 1.4.11).
+        expectAtLeast(theme, ACTIVE_PLACE_MARK, ['--place-active (its fill)', tokenRgb(theme, 'place-active')], 3, 'active place edge');
+        expectAtLeast(theme, ACTIVE_PLACE_MARK, ['--card (the bar)', tokenRgb(theme, 'card')], 3, 'active place edge');
       });
 
       it('each state word is ≥4.5:1 on its own badge surface (D b3 K61)', () => {

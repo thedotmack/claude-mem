@@ -1,6 +1,6 @@
 import { useId, useMemo, useState } from 'react'
 import { ArrowRightIcon, ChevronDownIcon, ChevronRightIcon, SearchIcon } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -9,7 +9,9 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useI18n, interpolate } from '@/lib/i18n'
 import { formatPromptDay } from '@/lib/prompt-time'
 import { displayTime } from '@/lib/display-time'
+import { placeLinkPress, usePageHref } from '@/lib/place-link'
 import { cn } from '@/lib/utils'
+import { useStore } from '@/store'
 import { needsYou, type FocusArea, type Request } from '@/data'
 import { focusOverview, needsOwnerFirst, type FocusOverviewRow } from '@/live/focus-overview'
 import { nextStepShown } from '@/live/to-work-model'
@@ -124,16 +126,30 @@ function AreaCard({ row, index, artwork, incomplete, workLoading, onOpenArea, on
   )
 }
 
-/** The same saved areas in setup and My Work. Reading this view never starts inference. */
+/**
+ * Past focus, the areas marked done: a quiet link on the board's header until the design pass gives Focus areas its
+ * tabs (Phase 7 makes Past focus one of them and deletes this link). Without it nothing in the app led there.
+ */
+function PastFocusLink() {
+  const { t } = useI18n()
+  const href = usePageHref('past-focus')
+  return (
+    <a href={href} onClick={placeLinkPress(() => useStore.getState().goToPage('past-focus'))} className={cn(buttonVariants({ variant: 'link', size: 'sm' }), 'px-0')}>
+      {t('Past focus')}<ArrowRightIcon aria-hidden="true" />
+    </a>
+  )
+}
+
+/** My Work's saved areas on the home page board. Reading this view never starts inference. */
 export function FocusOverview({ areas, requests, loading = false, workLoading = false, incomplete = false, emptyMessage, discovering = false, onOpenArea, onOpenRequest, artwork = 'full', onArtworkChange, anchorId, expandAllOn = 0 }: {
   areas: readonly FocusArea[]; requests: readonly Request[]; loading?: boolean; discovering?: boolean
   workLoading?: boolean; incomplete?: boolean; emptyMessage?: string
   onOpenArea?: (id: string) => void; onOpenRequest?: (request: Request) => void
   /** Display density only. The setup screen has no store, so it shows full artwork without the control. */
   artwork?: ArtworkDensity; onArtworkChange?: (artwork: ArtworkDensity) => void
-  /** The board's address on the page (My Work: `focus-areas`); setup passes none. */
+  /** The board's place on the page (My Work: `focus-areas`, where the bar's Focus areas scrolls). */
   anchorId?: string
-  /** Each new value shows every area (a link to `/#focus-areas`); 0 leaves the choice to the person. */
+  /** Each new value shows every area (each press of the bar's Focus areas); 0 leaves the choice to the person. */
   expandAllOn?: number
 }) {
   const { t } = useI18n()
@@ -141,9 +157,9 @@ export function FocusOverview({ areas, requests, loading = false, workLoading = 
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [showAll, setShowAll] = useState(expandAllOn > 0)
   const [query, setQuery] = useState('')
-  // A later link to the whole board ("All N" in the rail or the chip row, the bottom bar's Focus) opens it again after
-  // the person folded it back, and ends a search: it promises every area, and a typed search had kept showing only the
-  // matches. Set while rendering: React's way to follow a prop without an extra paint.
+  // A later press of the bar's Focus areas (while it opens this board) opens it again after the person folded it back,
+  // and ends a search: it promises every area, and a typed search had kept showing only the matches. Set while
+  // rendering: React's way to follow a prop without an extra paint.
   const [expandedFor, setExpandedFor] = useState(expandAllOn)
   if (expandAllOn !== expandedFor) {
     setExpandedFor(expandAllOn)
@@ -168,6 +184,7 @@ export function FocusOverview({ areas, requests, loading = false, workLoading = 
           <p>{discovering ? t('The things you keep coming back to, with the work behind them.') : t('What you’re working toward, across your agents and conversations.')}</p>
         </div>
         <div className="focus-overview-controls">
+          {onOpenArea && <PastFocusLink />}
           {onArtworkChange && (
             <div className="flex items-center gap-2">
               <span aria-hidden="true" className="text-xs text-muted-foreground">{t('Artwork')}</span>

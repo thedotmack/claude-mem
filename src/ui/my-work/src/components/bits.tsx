@@ -1,8 +1,7 @@
 import { clockTime, clockTimeOrDay, displayTime, recordedTimeWords } from '@/lib/display-time'
 import { sentenceWith } from '@/lib/sentence-with'
 import { useState, type HTMLAttributes, type KeyboardEvent, type ReactNode, type Ref } from 'react'
-import { motion, useReducedMotion } from 'motion/react'
-import { BotIcon, CheckIcon, CircleDashedIcon, ClockIcon, CloudAlertIcon, CloudIcon, ExternalLinkIcon, FocusIcon, HistoryIcon, LaptopIcon, MessageSquareIcon, RefreshCwIcon, Share2Icon, StarIcon, UserIcon } from 'lucide-react'
+import { BotIcon, CheckIcon, CircleDashedIcon, ClockIcon, CloudAlertIcon, CloudIcon, ExternalLinkIcon, FocusIcon, LaptopIcon, MessageSquareIcon, RefreshCwIcon, Share2Icon, StarIcon, UserIcon } from 'lucide-react'
 import { interpolate, useI18n } from '@/lib/i18n'
 import { Alert, AlertAction, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -16,7 +15,7 @@ import { useGitHubStarCount } from '@/lib/use-github-star-count'
 import { tabStopAfter, tabStops } from '@/lib/tab-order'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { isSampleHref, measuredEstimate, RefreshNotStartedError, SAMPLE_DEVICES, type AgentTool, type Device, type LiveState, type NextStepMissing, type Request, type Run, type SkillRun } from '@/data'
+import { isSampleHref, measuredEstimate, RefreshNotStartedError, SAMPLE_DEVICES, type AgentTool, type LiveState, type NextStepMissing, type Request, type Run, type SkillRun } from '@/data'
 import { agentById, deviceById, useConnection, useStore, useWorkModel, useWorkspace } from '@/store'
 import type { AutoRefresh } from '@/live/work-data-source'
 import { pageStartsRefresh, refreshRecordKey, shownRefreshLine, type RefreshLineState, type RefreshPressAnswer } from '@/live/refresh-line'
@@ -34,37 +33,7 @@ import { agentRoleWords, deviceName } from '@/lib/agent-words'
 import { nextStepWords } from '@/live/next-step-words'
 import { AgentMark } from './brand'
 
-/**
- * How a selected item shows besides its fill (c-bits-active-pill): an edge ≥3:1 against the page (rule 7; the fill
- * alone told selected from not by 1.53–1.9:1), and in the rail an orange bar at its left edge as well. `fill` is for a
- * control that draws its own ≥3:1 chosen edge already (the View switch's toggle items, D b22). The bar is the accent
- * text colour, ≥4.8:1 on the accent fill in both themes.
- */
-const ACTIVE_PILL_LOOK = {
-  fill: 'bg-accent',
-  outline: 'border border-control-edge bg-accent',
-  rail: 'border border-control-edge bg-accent before:absolute before:inset-y-1.5 before:left-0 before:w-[3px] before:rounded-full before:bg-accent-foreground',
-} as const
-
-/**
- * The slide between choices. The review measured a 0.3 bounce over 0.6 s, long for a switch the owner flips many times
- * an hour (c-bits-active-pill F spring-physics); 0.25 s with no bounce is the subtle transition of the UI UX Pro Max
- * design system for this product (Motion 2/10, 200–250 ms; the review's skill-output/design-system-from-first-run.md).
- */
-const ACTIVE_PILL_SLIDE = { type: 'spring', bounce: 0, duration: 0.25 } as const
-
-/**
- * The sliding highlight behind the active choice in a nav or toggle group (the `layoutId` pattern from aceternity/tabs).
- * Render it inside the active item only; the item needs `relative` and its content `relative` to sit above it.
- * Each group passes its own `layoutId` so pills never jump between groups. Under reduced motion it moves at once,
- * here in the component and not only through the app's MotionConfig (plan rule 8).
- */
-export function ActivePill({ layoutId, className, look = 'fill' }: { layoutId: string; className?: string; look?: keyof typeof ACTIVE_PILL_LOOK }) {
-  const reduceMotion = useReducedMotion()
-  return <motion.span layoutId={layoutId} transition={reduceMotion ? { duration: 0 } : ACTIVE_PILL_SLIDE} className={cn('absolute inset-0 rounded-[inherit]', ACTIVE_PILL_LOOK[look], className)} />
-}
-
-/** How many requests in a rail entry need the person, as words in a quiet pill (c-shell-focus-nav: was an orange dot). */
+/** How many requests need the person, as words in a quiet pill (c-shell-focus-nav: was an orange dot). */
 export function NeedsYouPill({ count, className }: { count: number; className?: string }) {
   const { t } = useI18n()
   if (count === 0) return null
@@ -461,9 +430,10 @@ export function ProductLink({ href, children, className, ref, ...props }: { href
 }
 
 /**
- * The header's controls share one look (c-shell-resizable-navbar): an outlined button with the ≥3:1 control edge
- * (was 1.34:1), 34px tall on the 17px desktop root, the mockup's 32px look, and 44px on touch through the Button's own
- * touch rule; quiet text, so nothing in the bar outshines the page.
+ * The look the old header's small controls shared, kept by the three still built that way: LiveIndicator, GitHubStars
+ * and FeedbackLink. None is drawn in the bar since the design pass Phase 3 (its "…" menu holds the star count and
+ * feedback; Phase 4 replaces LiveIndicator with the Machine and sync page). An outlined button with the ≥3:1 control
+ * edge, 32px tall, and 44px on touch through the Button's own touch rule; quiet text.
  */
 const HEADER_CONTROL_CLASS_NAME = 'h-8 gap-1.5 px-2.5 text-xs font-normal text-muted-foreground'
 
@@ -540,7 +510,9 @@ function tabOutOfPanel(event: KeyboardEvent<HTMLDivElement>) {
  * plain rows, this computer, the cloud copy and sharing, times in the reader's clock, and the full sentences folded
  * under Details. Sample mode demonstrates the placement. The feed reads "Live" only while SSE messages keep arriving
  * (getConnectionStatus), never from an HTTP read. Nothing moves: a pinging dot on every page was one of the many
- * moving things rule 8 counts.
+ * moving things rule 8 counts. No screen draws it since the design pass Phase 3 took it out of the bar, so it carries
+ * no requirement tags (R6.1 and R6.4 are met by the change ticker, R8.1 by the app, App.tsx); Phase 4 moves its words
+ * to the Machine and sync page and deletes it.
  */
 export function LiveIndicator() {
   const { t } = useI18n()
@@ -562,7 +534,7 @@ export function LiveIndicator() {
   const announcement = chip ? [t(chip.words), problemLabel].filter(Boolean).join('. ') : t('Live')
   const servedFromCloud = isServedFromCloud(window.location.hostname)
   return (
-    <Req ids={['R6.1', 'R6.4', 'R8.1']}>
+    <>
       <Popover>
         <PopoverTrigger asChild>
           <Button variant="outline" size="sm" data-connection-state={demonstration ? 'demonstration' : connection.state} data-live-chip={problem ?? 'live'}
@@ -610,60 +582,7 @@ export function LiveIndicator() {
       </Popover>
       {/* The chip's words are read out when they change (Keep: role="status" on the changing text). */}
       <span role="status" className="sr-only" data-sync-state={demonstration ? undefined : sync?.state}>{announcement}</span>
-    </Req>
-  )
-}
-
-/** Where the cloud-sync docs explain adding a machine (docs/public/cloud-sync.mdx, "Requirements and setup"). */
-const CLOUD_SYNC_GUIDE_URL = 'https://docs.claude-mem.ai/cloud-sync'
-/** The command those docs give for connecting a machine to cloud sync. */
-const CONNECT_MACHINE_COMMAND = 'npx claude-mem install'
-
-/**
- * Which machines are reporting and how fresh each one is (§13.6, c-bits-device-freshness). This computer's freshness
- * is the live feed's. Opens on click, tap or Enter (G10; it was a button that did nothing, its card hover-only). Each
- * machine has a dot, a word and a time in the reader's clock; the Live sentence is not repeated here.
- */
-export function DeviceFreshness({ className }: { className?: string }) {
-  const { t } = useI18n()
-  const { sourceKind, devices } = useWorkModel()
-  const connection = useConnection()
-  const sample = sourceKind === 'sample'
-  const reportingNow = (device: Device) => sample || device.syncedMinutesAgo !== 0 ? device.online : connection.isLive
-  const countWord = devices.length === 1 ? t('machine') : t('machines')
-  return (
-    <Req ids={['R13.8', 'R13.2']}>
-      <Popover>
-        <PopoverTrigger asChild>
-          <Button variant="outline" size="sm" className={cn(HEADER_CONTROL_CLASS_NAME, className)}>
-            <LaptopIcon aria-hidden="true" />
-            <span className="tabular">{devices.length}</span>
-            {/* A phone and the floating pill show the icon and the number; the word is still read out. */}
-            <span className="max-sm:sr-only [.header-pill_&]:sr-only">{countWord}</span>
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent align="end" onOpenAutoFocus={focusPanelOnOpen} onKeyDown={tabOutOfPanel} className="w-80 gap-3">
-          <p className="text-sm font-medium">{t('Machines reporting into this view')}</p>
-          <dl className="grid gap-2.5 text-xs">
-            {devices.map((device) => (
-              <StatusRow key={device.id} title={deviceName(device, t)} mark={<span className={cn(STATUS_DOT_CLASS_NAME, reportingNow(device) ? 'bg-shipped-foreground' : 'bg-idle-foreground')} />}>
-                {device.syncedMinutesAgo !== 0 ? interpolate(t('synced {minutes} min ago'), { minutes: device.syncedMinutesAgo })
-                  : sample ? t('this machine')
-                    : <>{t(connection.label)}{connection.lastSuccessfulCheckAt && <> · {sentenceWith(t('checked {time}'), 'time', <LocalTime iso={connection.lastSuccessfulCheckAt} />)}</>}</>}
-              </StatusRow>
-            ))}
-          </dl>
-          {devices.length === 1 && (
-            <p className="border-t pt-3 text-xs text-muted-foreground">
-              {sentenceWith(t('To see another machine’s work here, run {command} on it and choose CMEM Pro.'), 'command', <code className="font-mono text-foreground">{CONNECT_MACHINE_COMMAND}</code>)}{' '}
-              <a href={CLOUD_SYNC_GUIDE_URL} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-foreground underline underline-offset-4 hover:decoration-2">
-                {t('Cloud sync guide')}<ExternalLinkIcon aria-hidden="true" className="size-3" />
-              </a>
-            </p>
-          )}
-        </PopoverContent>
-      </Popover>
-    </Req>
+    </>
   )
 }
 
@@ -719,31 +638,6 @@ export function FeedbackLink() {
         <ExternalLinkIcon aria-hidden="true" className="size-3" />
       </a>
     </Button>
-  )
-}
-
-/** The previous memory viewer, still served by the worker. */
-export const CLASSIC_VIEWER_PATH = '/viewer'
-
-/**
- * The classic viewer: the door to the memory feed, an outlined button with an icon (c-bits-classic-viewer-link; it was
- * a 17px text link). From 768px up it sits in the bar; on a phone it is a row in the "…" menu (header-menu.tsx). What it
- * opens is in a tooltip, which shows on keyboard focus as well as hover (G10; it was a native title, hover only).
- */
-export function ClassicViewerLink({ className }: { className?: string }) {
-  const { t } = useI18n()
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button asChild variant="outline" size="sm" className={cn(HEADER_CONTROL_CLASS_NAME, 'hidden text-foreground md:inline-flex', className)}>
-          <a href={CLASSIC_VIEWER_PATH}>
-            <HistoryIcon aria-hidden="true" />
-            {t('Classic viewer')}
-          </a>
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>{t('Open the previous memory viewer')}</TooltipContent>
-    </Tooltip>
   )
 }
 

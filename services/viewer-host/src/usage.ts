@@ -14,7 +14,15 @@ export const VIEWER_ANON_COOKIE = 'cmem_viewer_anon';
 /** Same publishable token as src/services/telemetry/common.ts TELEMETRY_PUBLIC_KEY. */
 export const FALLBACK_POSTHOG_KEY = 'phc_BKJAeNbpj932N9qEiU6qhutZEiu6LLfRpXfTbLM9MLaG';
 const DEFAULT_POSTHOG_HOST = 'https://us.i.posthog.com';
-const VIEWS = new Set(['setup', 'work', 'rules', 'suggested', 'past-focus']);
+/**
+ * The views a hosted usage event may name: My Work's WORK_VIEW_USAGE_VIEWS (src/shared/work-view-pages.ts), typed again
+ * here because this image carries only services/viewer-host/src (Dockerfile), not src/shared.
+ * tests/work-view/hosted-usage-views.test.ts fails when the two lists differ.
+ */
+export const HOSTED_USAGE_VIEWS = [
+  'setup', 'work', 'focus', 'requests', 'review-stack', 'rules', 'suggested', 'past-focus', 'build-story', 'workspace', 'machine', 'find',
+] as const;
+const VIEWS = new Set<string>(HOSTED_USAGE_VIEWS);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface PostHogCapture {

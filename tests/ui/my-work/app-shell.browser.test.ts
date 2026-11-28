@@ -9,22 +9,25 @@ import {
   type DevToolsPage, type OwnedChrome,
 } from '../../helpers/chrome-devtools';
 import { THEME_PRE_PAINT_SCRIPT } from '../../../src/ui/my-work/src/lib/theme-pre-paint';
+import { MEMORY_PLACE, MY_WORK_PLACES } from '../../../src/ui/app-places';
 
 failOnCiWithoutChrome('CI requires Chrome for the My Work shell regressions.');
 
 /**
- * The app shell (Phase 2 of the pro-max-v16 plan), on the real App with the sample source, the app's real stylesheet,
- * its Geist font and the pre-paint theme script the build puts in index.html:
- * - G6: the bar holds Live, the machine count, Classic viewer and one "…" menu, and nothing sticks out of the pill;
- * - G10 and the keyboard: Tab reaches the Live chip and the machine count, Enter opens each, Escape closes it and
- *   returns focus; the menu opens with Enter, moves with the arrows, closes with Escape and returns focus;
- * - G8: Theme in the menu changes <html> and is saved, System follows the operating system, setup stays light, and a
- *   `?theme=` address lasts the visit without being saved;
- * - phones: every header control and menu row is at least 44px on a coarse pointer, the page is exactly 390 wide,
- *   the page ends above the pinned bottom bar, and no focused control sits under the bar or the header;
- * - the Phase 2 fix round: rail rows 38–54px and "All N" at least 24px; rail names at 768–1023px; Account & billing on
- *   the cloud viewer; names that contain their visible words in every language; focus kept after Hide banner, after
- *   Try again and when Tab leaves the Live or machines panel; the pill, the strip and the bottom bar under reduced motion.
+ * The app shell (My Work design pass, Phase 3: one look and one bar), on the real App with the sample source, the
+ * app's real stylesheet, its Geist font and the pre-paint theme script the build puts in index.html:
+ * - the bar: the brain mark, the five places in order (src/ui/app-places.ts), Memory and one "…" menu; the active
+ *   place is marked; a press moves to the place's page; nothing runs past the window at 1440 or at 768;
+ * - the bar draws on the loading and failed screens too, its places and Memory working, and Try again keeps focus;
+ * - the menu opens with Enter, moves with the arrows, closes with Escape and returns focus;
+ * - G8: Theme in the menu changes <html> and is saved, System follows the OS, setup stays light, and a `?theme=`
+ *   address lasts the visit without being saved;
+ * - phones: the places are the bottom bar, every bar control and menu row is at least 44px on a coarse pointer, the
+ *   page is exactly 390 wide, the page ends above the pinned bottom bar, and no focused control sits under the bars;
+ * - the places not shown are muted, the one shown green with an edge along its foot (not colour alone);
+ * - Back, Forward and a reload land where the page was left scrolled (the app restores it: scrollRestoration manual);
+ *   Account & billing on the cloud viewer; names that contain their visible words in every language; the sample
+ *   strip under reduced motion.
  */
 // `text` makes Chrome send the key's character too, which is what activates a native button on Enter.
 const KEYS = {
@@ -110,8 +113,6 @@ beforeAll(async () => {
     import React from './src/ui/my-work/node_modules/react';
     import { createRoot } from './src/ui/my-work/node_modules/react-dom/client';
     import App from './src/ui/my-work/src/App';
-    import { Notch } from './src/ui/my-work/src/components/aceternity/notch';
-    import { NavBody } from './src/ui/my-work/src/components/aceternity/resizable-navbar';
     import { setLocale } from './src/ui/my-work/src/lib/i18n';
     import { useStore } from './src/ui/my-work/src/store';
     window.React = React;
@@ -129,6 +130,15 @@ beforeAll(async () => {
       : realFetch(input, init);
     // \`&fail-reads=N\`: the first N reads of the work fail as an unreachable worker's do, then the sample answers.
     const failReads = Number(new URLSearchParams(location.search).get('fail-reads') ?? 0);
+    // \`&hold-reads=1\`: the first read never answers, so the page stays on its loading screen.
+    if (new URLSearchParams(location.search).get('hold-reads') === '1') {
+      const startWorkSource = useStore.getState().startWorkSource;
+      useStore.setState({ startWorkSource: (source) => {
+        const holding = Object.create(source);
+        holding.loadWorkModel = () => new Promise(() => {});
+        return startWorkSource(holding);
+      } });
+    }
     if (failReads > 0) {
       const startWorkSource = useStore.getState().startWorkSource;
       let failed = 0;
@@ -138,26 +148,29 @@ beforeAll(async () => {
         return startWorkSource(failing);
       } });
     }
+    // \`&areas=many\`: every model carries a second copy of each kept area, so the focus area board has more areas than
+    // it shows at first (FOCUS_OVERVIEW_FIRST_AREAS) and its Show all / Show priority areas fold.
+    if (new URLSearchParams(location.search).get('areas') === 'many') {
+      const withMoreAreas = (model) => ({ ...model, focusAreas: [...model.focusAreas, ...model.focusAreas.filter((area) => area.status === 'kept')
+        .map((area) => ({ ...area, id: area.id + '-again', name: area.name + ' again', subFocuses: [] }))] });
+      const startWorkSource = useStore.getState().startWorkSource;
+      useStore.setState({ startWorkSource: (source) => {
+        const more = Object.create(source);
+        more.loadWorkModel = () => source.loadWorkModel().then(withMoreAreas);
+        more.subscribeToLiveUpdates = (onModel, onConnection) => source.subscribeToLiveUpdates((model) => onModel(withMoreAreas(model)), onConnection);
+        return startWorkSource(more);
+      } });
+    }
     window.store = useStore;
     window.setLocale = setLocale;
     createRoot(document.getElementById('root')).render(<App />);
-    // The bottom bar's and the header pill's own reduced-motion checks, outside the App's MotionConfig (which makes
-    // positions and sizes instant by itself): a bar that would fade and blur in, and a bar that would spring to a pill.
-    window.mountNotchProbe = () => {
-      const probe = document.body.appendChild(document.createElement('div'));
-      createRoot(probe).render(<Notch reveal pinned position="bottom" items={[{ id: 'probe', label: 'Probe', options: [{ id: 'probe', label: 'Probe' }] }]} />);
-    };
-    window.mountNavBodyProbe = () => {
-      const probe = document.body.appendChild(document.createElement('div'));
-      probe.style.cssText = 'position: fixed; top: 0; left: 0; width: 1440px;';
-      const root = createRoot(probe);
-      const draw = (visible) => root.render(<NavBody visible={visible}><span>Probe</span></NavBody>);
-      draw(false);
-      window.navBodyProbe = { bar: () => probe.firstElementChild, toPill: () => draw(true) };
-    };
-    // Ready once the loaded header is drawn, or the failed-read screen (a fixture opened with fail-reads).
+    // Ready once the bar is drawn over a page that is not reading (the loaded page or the failed read), or over the
+    // loading screen when the fixture holds the read (hold-reads).
+    const holding = new URLSearchParams(location.search).get('hold-reads') === '1';
     (function waitForShell() {
-      if (document.querySelector('[data-slot="work-shell"] header [data-live-chip], [role="alert"]')) document.fonts.ready.then(() => fetch('/fixture-ready'));
+      const bar = document.querySelector('[data-slot="app-bar"]');
+      const reading = document.querySelector('main [aria-busy="true"]');
+      if (bar && (holding ? reading : document.querySelector('main') && !reading)) document.fonts.ready.then(() => fetch('/fixture-ready'));
       else requestAnimationFrame(waitForShell);
     })();
     const visible = (element) => { const box = element.getBoundingClientRect(); return box.width > 0 && box.height > 0 && getComputedStyle(element).visibility !== 'hidden'; };
@@ -167,14 +180,23 @@ beforeAll(async () => {
     window.describeFocus = () => {
       const element = document.activeElement;
       return element ? { name: nameOf(element).slice(0, 60), role: element.getAttribute('role'), tag: element.tagName.toLowerCase(),
-        chip: element.getAttribute('data-live-chip'), expanded: element.getAttribute('aria-expanded'), inMenu: !!element.closest('[role="menu"]') } : null;
+        expanded: element.getAttribute('aria-expanded'), inMenu: !!element.closest('[role="menu"]'), inBar: !!element.closest('[data-slot="app-bar"]') } : null;
     };
-    const header = () => document.querySelector('[data-slot="work-shell"] header');
-    window.headerControls = () => [...header().querySelectorAll('button, a[href], select, input')].filter(visible)
-      .map((element) => ({ name: nameOf(element).slice(0, 40), height: element.getBoundingClientRect().height, width: element.getBoundingClientRect().width }));
-    window.popoverText = () => document.querySelector('[data-slot="popover-content"]')?.textContent ?? null;
-    // The sample-data strip above the header (G7): its switch items, Use my data and its close.
-    const strip = () => document.querySelector('[data-slot="work-shell"] > header')?.previousElementSibling;
+    const controlsIn = (root) => root ? [...root.querySelectorAll('button, a[href], select, input')].filter(visible)
+      .map((element) => ({ name: nameOf(element).slice(0, 40), height: element.getBoundingClientRect().height, width: element.getBoundingClientRect().width, current: element.getAttribute('aria-current') })) : null;
+    window.headerControls = () => controlsIn(document.querySelector('[data-slot="app-bar"]'));
+    // How each place in a bar draws, beside the colours its tokens name in this theme: the muted words, the green of
+    // the place shown. An element's computed colour, so a class the merge dropped shows up here.
+    window.placeLooks = (slot) => {
+      const tokenColour = (token) => { const probe = document.createElement('span'); probe.style.color = 'var(' + token + ')'; document.body.append(probe); const colour = getComputedStyle(probe).color; probe.remove(); return colour; };
+      const nav = document.querySelector('[data-slot="' + slot + '"]');
+      return { muted: tokenColour('--muted-foreground'), green: tokenColour('--place-active-foreground'),
+        places: [...(nav.matches('nav') ? nav : nav.querySelector('nav')).querySelectorAll('a[href]')].map((link) => { const style = getComputedStyle(link);
+          return { name: nameOf(link), color: style.color, edge: style.borderBottomWidth + ' ' + style.borderBottomColor }; }) };
+    };
+    window.bottomBarControls = () => controlsIn(document.querySelector('[data-slot="bottom-bar"]'));
+    // The sample-data strip above the bar (G7): its switch items, Use my data and its close.
+    const strip = () => document.querySelector('[data-slot="app-bar"]')?.previousElementSibling;
     window.stripControls = () => {
       const element = strip();
       return element ? [...element.querySelectorAll('button, a[href]')].filter(visible).map((control) => ({ name: nameOf(control).slice(0, 40), height: control.getBoundingClientRect().height, width: control.getBoundingClientRect().width })) : null;
@@ -192,7 +214,7 @@ beforeAll(async () => {
         still = moving ? 0 : still + 1;
         if (still >= 2) return resolve(true);
         // The slide ends 0.3s after load and the spring in well under a second (2026-11-17); 8s covers a runner several
-        // times slower, as headerAtRest's does.
+        // times slower.
         if (performance.now() - started > 8000) return reject(new Error('the sample strip did not come to rest in 8s'));
         requestAnimationFrame(check);
       })();
@@ -203,27 +225,7 @@ beforeAll(async () => {
       return menu ? { rows: [...menu.querySelectorAll('[role^="menuitem"]')].filter(visible).map((row) => ({ name: nameOf(row).slice(0, 40), role: row.getAttribute('role'), height: row.offsetHeight, checked: row.getAttribute('aria-checked') })) } : null;
     };
     // Tab from the top of the page. A blurred element stays the starting point of the next Tab, so the shell itself
-    // takes focus first (not as a stop of its own: tabindex -1). The failed-read screen has no shell: its body does.
-    // The header slides between the bar and the floating pill with a spring (aceternity/resizable-navbar.tsx: y 20px and
-    // its width; stiffness 200, damping 50). Resolves once its whole-pixel box has stayed put for eight frames in a row:
-    // simulated from those constants and motion's default rest thresholds (2026-11-16), the box holds still for at most
-    // 7 frames while the spring still crawls sub-pixel at its end (the 390px pill at 60 fps; 3 frames on the 1440px bar,
-    // 1 at 15 fps), so eight still frames only happen once motion has stopped it.
-    window.headerAtRest = () => new Promise((resolve, reject) => {
-      const started = performance.now();
-      let last = '', still = 0;
-      (function check() {
-        const box = document.querySelector('[data-slot="work-shell"] header > * > *')?.getBoundingClientRect();
-        const now = box ? [box.top, box.bottom, box.left, box.right].map(Math.round).join(',') : '';
-        still = now === last ? still + 1 : 0;
-        last = now;
-        if (still >= 8) return resolve(true);
-        // The spring settles in under a second here (2026-11-16); 8s covers a runner several times slower (the test
-        // held with the CPU slowed 4×, Emulation.setCPUThrottlingRate).
-        if (performance.now() - started > 8000) return reject(new Error('the header did not come to rest in 8s'));
-        requestAnimationFrame(check);
-      })();
-    });
+    // takes focus first (not as a stop of its own: tabindex -1).
     window.focusPageStart = () => {
       const shell = document.querySelector('[data-slot="work-shell"]') ?? document.body;
       shell.tabIndex = -1;
@@ -236,24 +238,11 @@ beforeAll(async () => {
       if (!row) throw new Error('no menu row ' + name);
       row.click();
     };
-    // How far anything in the floating pill reaches past the pill's own box, in px (0 when it all fits).
-    window.pillOverhang = () => {
-      const pill = document.querySelector('.header-pill');
-      if (!pill) return null;
-      const box = pill.getBoundingClientRect();
-      let overhang = 0;
-      for (const element of pill.querySelectorAll('*')) {
-        const inner = element.getBoundingClientRect();
-        if (inner.width === 0 || getComputedStyle(element).position === 'absolute') continue;
-        overhang = Math.max(overhang, box.left - inner.left, inner.right - box.right);
-      }
-      return { overhang: Math.round(overhang * 10) / 10, width: box.width, controls: [...pill.querySelectorAll('button, a[href]')].filter(visible).map(nameOf) };
-    };
     window.isDark = () => document.documentElement.classList.contains('dark');
     window.savedTheme = () => JSON.parse(localStorage.getItem('claude-mem:my-work:preferences') ?? '{}').state?.theme ?? null;
     // The pinned bottom bar's edges, and where the page's own content ends.
     window.bottomBar = () => {
-      const bar = document.querySelector('nav[aria-label="Pages"].md\\\\:hidden .pointer-events-auto');
+      const bar = document.querySelector('[data-slot="bottom-bar"]');
       const main = document.querySelector('main');
       return bar && main ? { barTop: bar.getBoundingClientRect().top, barBottom: bar.getBoundingClientRect().bottom, contentBottom: main.getBoundingClientRect().bottom, viewport: innerHeight } : null;
     };
@@ -287,12 +276,11 @@ async function desktop() {
 }
 
 /**
- * Tabs from the top of the page until `match` is focused. With sample data the menu button is the 8th stop (skip link,
- * the strip's switch, Use my data, Hide banner, Live, machines, Classic viewer, More); 12 leaves room without letting a
- * missed control tab through the whole page. The rail's last row on the cloud viewer is the 12th at 900px, so that
- * test passes 16.
+ * Tabs from the top of the page until `match` is focused. With sample data the menu button is the 13th stop (skip link,
+ * the strip's two switch items, Use my data, Hide banner, the brand, five places, Memory, More); 16 leaves room without
+ * letting a missed control tab through the whole page.
  */
-async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
+async function tabTo(match: (focus: any) => boolean, what: string, limit = 16) {
   await page!.evaluate('window.focusPageStart()');
   const seen: string[] = [];
   for (let step = 0; step < limit; step++) {
@@ -304,55 +292,141 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
   throw new Error(`Tab never reached ${what}; stops: ${seen.join(' | ')}`);
 }
 
-(chromeExecutablePath ? it : it.skip)('G6: the bar holds Live, the machine count, Classic viewer and one menu, and nothing sticks out of the pill', async () => {
+/** The bar's places, the words each shows, in order (src/ui/app-places.ts), and the one marked as the page shown. */
+const PLACES = MY_WORK_PLACES.map((place) => place.label);
+const PHONE_PLACES = MY_WORK_PLACES.map((place) => place.shortLabel);
+const MEMORY = MEMORY_PLACE.label;
+const currentPlace = (controls: { name: string; current: string | null }[]) => controls.filter((control) => control.current === 'page').map((control) => control.name);
+
+/** Presses a place in the top bar (or the bottom bar with `phone`) the way a person does: a plain left click. */
+async function pressPlace(name: string, { phone = false } = {}) {
+  await page!.evaluate(`[...document.querySelectorAll('[data-slot="${phone ? 'bottom-bar' : 'app-bar'}"] a[href]')].find((link) => link.textContent.trim() === ${JSON.stringify(name)}).click()`);
+  await page!.settle();
+}
+
+(chromeExecutablePath ? it : it.skip)('the bar holds the brand, the five places in order, Memory and one menu; the place shown is marked and each press moves there', async () => {
   await openShell();
   try {
     await desktop();
-    const controls: { name: string; height: number }[] = await page!.evaluate('window.headerControls()');
-    expect(controls.map((control) => control.name.replace(/[\d.,]+\s*/g, '').trim())).toEqual(['Live', 'machines', 'Classic viewer', 'More']);
-    // Desktop: at least WCAG 2.5.8's 24px, at the mockup's 32px look (34px at the 17px root).
-    for (const control of controls) expect(control.height).toBeGreaterThanOrEqual(24);
-    await page!.evaluate('window.scrollTo(0, 1500)');
-    await waitFor('document.querySelector(".header-pill")', 'the floating pill');
-    // The pill's width springs to its size; its contents are measured once its box has held still for 10 frames.
-    await waitFor(`(() => { const pill = document.querySelector('.header-pill').getBoundingClientRect(); const key = pill.left + ',' + pill.width;
-      window.pillStill = window.pillKey === key ? (window.pillStill ?? 0) + 1 : 0; window.pillKey = key; return window.pillStill >= 10; })()`, 'the pill to settle');
-    const pill = await page!.evaluate('window.pillOverhang()');
-    // Boxes sit on fractional pixels at the 17px root; 0.5px is under one device pixel at this scale, so any overhang
-    // a person could see fails.
-    expect(pill.overhang).toBeLessThanOrEqual(0.5);
-    // The pill moves Classic viewer into the menu and says how many need you.
-    expect(pill.controls.some((name: string) => name.includes('Classic viewer'))).toBe(false);
+    const controls: { name: string; height: number; current: string | null }[] = await page!.evaluate('window.headerControls()');
+    expect(controls.map((control) => control.name)).toEqual(['claude-mem', ...PLACES, MEMORY, 'More']);
+    expect(currentPlace(controls)).toEqual(['My Work']);
+    // Every control in the bar is 44px tall (Codex's nav links and icon button), the brand's 34px mark aside.
+    expect(controls.filter((control) => control.name !== 'claude-mem' && control.height < 44)).toEqual([]);
+    // Memory is another page, at its own address.
+    expect(await page!.evaluate(`document.querySelector('[data-slot="app-bar"] a[href="${MEMORY_PLACE.address}"]').textContent.trim()`)).toBe(MEMORY);
+    // The places not shown draw in the muted words and the one shown in green, with a green edge along its foot, in
+    // both themes (cn() once took the place's font size for a colour and dropped the muted one: full ink).
+    for (const theme of ['light', 'dark']) {
+      await page!.evaluate(`window.store.getState().setTheme(${JSON.stringify(theme)})`);
+      // The places' colours ease to the new theme (transition-colors); they are read once that has finished.
+      await waitFor(`window.isDark() === ${theme === 'dark'} && [...document.querySelectorAll('[data-slot="app-bar"] nav a')].every((link) => link.getAnimations().length === 0)`, `the ${theme} theme drawn`);
+      const looks: { muted: string; green: string; places: { name: string; color: string; edge: string }[] } = await page!.evaluate(`window.placeLooks('app-bar')`);
+      expect(looks.muted).not.toBe(looks.green);
+      expect(looks.places).toEqual(PLACES.map((name) => name === PLACES[0]
+        ? { name, color: looks.green, edge: `2px ${looks.green}` } : { name, color: looks.muted, edge: '2px rgba(0, 0, 0, 0)' }));
+    }
+    await page!.evaluate(`window.store.getState().setTheme('system')`);
+    await page!.settle();
+    // Nothing runs past the window, at the desktop width and at the narrowest width that has the top bar's places,
+    // measured once the sample strip has come to rest (its close button springs in past its own size).
+    await page!.evaluate('window.stripAtRest()');
+    expect(pageFitsTheWindow(await page!.evaluate(PAGE_WIDTHS), 1440)).toMatchObject(FITS_THE_WINDOW);
+    await pressPlace('My Rules');
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'rules' && document.querySelector('main h1')?.textContent === 'My Rules'`, 'My Rules');
+    expect(currentPlace(await page!.evaluate('window.headerControls()'))).toEqual(['My Rules']);
+    // Focus areas opens the home page at its focus area board until it has a page of its own (design pass Phase 7).
+    await pressPlace('Focus areas');
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'focus' && document.getElementById('focus-areas')`, 'Focus areas');
+    await waitFor(`Math.abs(document.getElementById('focus-areas').getBoundingClientRect().top - 82) <= 2`, 'the focus area board at the top, under the bar');
+    expect(currentPlace(await page!.evaluate('window.headerControls()'))).toEqual(['Focus areas']);
+    // Past focus, where areas marked done go, has a quiet link on the board until Focus areas has its tabs (Phase 7).
+    const pastFocus = `[...document.querySelectorAll('#focus-areas a[href]')].find((link) => link.textContent.trim() === 'Past focus')`;
+    expect(await page!.evaluate(`[new URL(${pastFocus}.href).searchParams.get('view'), new URL(${pastFocus}.href).searchParams.get('source')]`)).toEqual(['past-focus', 'sample']);
+    await page!.evaluate(`${pastFocus}.click()`);
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'past-focus' && document.querySelector('main h1')?.textContent === 'Past focus'`, 'Past focus');
+    expect(currentPlace(await page!.evaluate('window.headerControls()'))).toEqual(['Focus areas']);
+    // A focus area's page sits under Focus areas; its own header names it, so the page's h1 is for screen readers.
+    await page!.evaluate(`window.store.getState().goToFocus(window.store.getState().work.load.model.focusAreas[0].id)`);
+    await page!.settle();
+    expect(currentPlace(await page!.evaluate('window.headerControls()'))).toEqual(['Focus areas']);
+    expect(await page!.evaluate(`document.querySelector('main h1').classList.contains('sr-only')`)).toBe(true);
+    // The brand goes home.
+    await page!.evaluate(`document.querySelector('[data-slot="app-bar"] a[href]').click()`);
+    await waitFor(`!new URLSearchParams(location.search).get('view') && !new URLSearchParams(location.search).get('focus')`, 'home');
+    expect(currentPlace(await page!.evaluate('window.headerControls()'))).toEqual(['My Work']);
+    // 768px: the five places and Memory's mark still fit in the bar, and Memory keeps its name for screen readers.
+    await page!.send('Emulation.setDeviceMetricsOverride', { width: 768, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page!.settle();
+    expect((await page!.evaluate('window.headerControls()')).map((control: { name: string }) => control.name)).toEqual(['claude-mem', ...PLACES, MEMORY, 'More']);
+    expect((await accessibleText(`document.querySelector('[data-slot="app-bar"] a[href="${MEMORY_PLACE.address}"]')`)).name).toBe(MEMORY);
+    expect(pageFitsTheWindow(await page!.evaluate(PAGE_WIDTHS), 768)).toMatchObject(FITS_THE_WINDOW);
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }
-  // 1–2s here (2026-11-16); 30s for a slow CI runner.
+  // About 3s here (2026-11-27); 30s for a slow CI runner.
 }, 30_000);
 
-(chromeExecutablePath ? it : it.skip)('the Live chip and the machine count open by keyboard, close with Escape and give focus back', async () => {
-  await openShell();
+(chromeExecutablePath ? it : it.skip)('each press of Focus areas shows every area, also after the person folded the board back to its first areas', async () => {
+  await openShell({ query: '&areas=many' });
   try {
     await desktop();
-    const skip = await tabTo(() => true, 'the first stop');
-    expect(skip.name).toBe('Skip to content');
-    const chip = await tabTo((focus) => focus.chip !== null, 'the Live chip');
-    expect(chip.expanded).toBe('false');
-    await press('Enter');
-    await waitFor('window.popoverText()', 'the Live popover');
-    expect(await page!.evaluate('window.popoverText()')).toContain('Connection');
-    await press('Escape');
-    await waitFor('!window.popoverText()', 'the Live popover to close');
-    expect((await focused()).chip).not.toBeNull();
-    await press('Tab');
-    const machines = await focused();
-    expect(machines.name).toContain('machines');
-    await press('Enter');
-    await waitFor('window.popoverText()?.includes("Machines reporting")', 'the machines popover');
-    await press('Escape');
-    await waitFor('!window.popoverText()', 'the machines popover to close');
-    expect((await focused()).name).toContain('machines');
+    await pressPlace('Focus areas');
+    const toggle = `[...document.querySelectorAll('#focus-areas button[aria-expanded]')].find((button) => /^Show (all|priority)/.test(button.textContent.trim()))`;
+    await waitFor(`${toggle}?.getAttribute('aria-expanded') === 'true'`, 'every area shown');
+    await page!.evaluate(`${toggle}.click()`);
+    await waitFor(`${toggle}.getAttribute('aria-expanded') === 'false'`, 'the board folded to its first areas');
+    // The page shown is Focus areas already; pressing it again is the person asking for every area again.
+    await pressPlace('Focus areas');
+    await waitFor(`${toggle}.getAttribute('aria-expanded') === 'true'`, 'every area shown again');
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }
-  // 1–2s here (2026-11-16); 30s for a slow CI runner.
+  // 1–2s here (2026-11-27); 30s for a slow CI runner.
+}, 30_000);
+
+(chromeExecutablePath ? it : it.skip)('the bar draws on the loading screen and its places work there; the content area is kept, not shaped like navigation', async () => {
+  await openShell({ query: '&hold-reads=1' });
+  try {
+    await desktop();
+    const controls = await page!.evaluate('window.headerControls()');
+    expect(controls.map((control: { name: string }) => control.name)).toEqual(['claude-mem', ...PLACES, MEMORY, 'More']);
+    expect(currentPlace(controls)).toEqual(['My Work']);
+    expect(await page!.evaluate(`[document.querySelector('main h1').textContent, document.querySelector('main [role="status"]').textContent]`)).toEqual(['My Work', 'Reading local work…']);
+    // The placeholders sit in the page's content area only.
+    expect(await page!.evaluate(`document.querySelectorAll('[data-slot="skeleton"]').length > 0 && [...document.querySelectorAll('[data-slot="skeleton"]')].every((shape) => shape.closest('main'))`)).toBe(true);
+    // A place pressed while the work is read: the address and the bar move, and the screen keeps reading.
+    await pressPlace('My Rules');
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'rules' && document.querySelector('main h1')?.textContent === 'My Rules'`, 'My Rules while reading');
+    expect(currentPlace(await page!.evaluate('window.headerControls()'))).toEqual(['My Rules']);
+    expect(await page!.evaluate(`!!document.querySelector('main [aria-busy="true"]')`)).toBe(true);
+    // The "…" menu opens there too: it reads no work model.
+    await tabTo((focus) => focus.name === 'More', 'the menu button');
+    await press('Enter');
+    await waitFor('window.menu()', 'the menu on the loading screen');
+    await press('Escape');
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeShell(); }
+  // 1–2s here (2026-11-27); 30s for a slow CI runner.
+}, 30_000);
+
+(chromeExecutablePath ? it : it.skip)('the failed screen keeps the bar, names what did not answer and offers Try again, Memory and the technical details', async () => {
+  await openShell({ query: '&fail-reads=1' });
+  try {
+    await desktop();
+    expect((await page!.evaluate('window.headerControls()')).map((control: { name: string }) => control.name)).toEqual(['claude-mem', ...PLACES, MEMORY, 'More']);
+    const alert = await page!.evaluate(`(() => { const alert = document.querySelector('[role="alert"]'); return {
+      heading: alert.querySelector('h2').textContent, text: alert.querySelector('p').textContent,
+      actions: [...alert.querySelectorAll('button, a[href]')].map((control) => [control.textContent.trim(), control.getAttribute('href')]) } })()`);
+    expect(alert).toEqual({
+      heading: 'Local work couldn’t load',
+      text: 'The worker on this computer didn’t answer. It may be restarting.',
+      actions: [['Try again', null], ['Open Memory', '/viewer'], ['Technical details', null]],
+    });
+    // The raw cause is one press away, folded.
+    await page!.evaluate(`[...document.querySelectorAll('[role="alert"] button')].find((button) => button.textContent.trim() === 'Technical details').click()`);
+    await waitFor(`document.querySelector('[role="alert"]').textContent.includes('Failed to fetch')`, 'the cause under Technical details');
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeShell(); }
+  // 1–2s here (2026-11-27); 30s for a slow CI runner.
 }, 30_000);
 
 (chromeExecutablePath ? it : it.skip)('the "…" menu opens with Enter, moves with the arrows, closes with Escape and returns focus', async () => {
@@ -380,8 +454,8 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
       expect(names.some((name: string) => name.startsWith(expected))).toBe(true);
     }
     expect(names.find((name: string) => name.startsWith('Star on GitHub'))).toContain('117.5K');
-    // Classic viewer is in the bar at this width, so not in the menu.
-    expect(names.some((name: string) => name.startsWith('Classic viewer'))).toBe(false);
+    // Memory is in the bar at this width, so not in the menu; Account & billing is for the cloud viewer only.
+    expect(names.some((name: string) => name.startsWith(MEMORY) || name.startsWith('Account & billing'))).toBe(false);
     // Desktop rows are at least 40px (D b9 M 191).
     for (const row of menu.rows) expect(row.height).toBeGreaterThanOrEqual(40);
     await press('Escape');
@@ -426,6 +500,9 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
     await page!.settle();
     // The address's theme draws the page, the pre-paint script and the app alike.
     expect(await page!.evaluate('window.isDark()')).toBe(true);
+    // The bar's links carry it while it lasts, so a place opened in a new tab keeps the visit's theme.
+    const linkThemes = `[...document.querySelectorAll('[data-slot="app-bar"] a[href]')].filter((link) => link.getAttribute('href') !== ${JSON.stringify(MEMORY_PLACE.address)}).map((link) => new URL(link.href).searchParams.get('theme'))`;
+    expect(new Set(await page!.evaluate(linkThemes))).toEqual(new Set(['dark']));
     // persist saves the preferences on every change; an unrelated one saves them without the address's theme.
     await page!.evaluate("window.store.getState().setFilter('working')");
     await page!.settle();
@@ -439,6 +516,8 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
     await waitFor('!window.menu()', 'the menu to close');
     await page!.settle();
     expect(await page!.evaluate('[window.isDark(), window.savedTheme(), new URL(location.href).searchParams.has("theme")]')).toEqual([false, 'light', false]);
+    // ...and stop carrying it once it no longer sets the visit's theme (a new tab or a copied link would force dark).
+    expect(new Set(await page!.evaluate(linkThemes))).toEqual(new Set([null]));
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }
   // 1–2s here (2026-11-16); 30s for a slow CI runner.
@@ -477,7 +556,7 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
   // 1–2s here (2026-11-16); 30s for a slow CI runner.
 }, 30_000);
 
-(chromeExecutablePath ? it : it.skip)('on a touch phone: 44px controls, a page exactly 390 wide, and nothing focused under the bars', async () => {
+(chromeExecutablePath ? it : it.skip)('on a touch phone: the places are the bottom bar, 44px controls, a page exactly 390 wide, and nothing focused under the bars', async () => {
   await openShell();
   try {
     await page!.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
@@ -488,21 +567,34 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
     // Nothing scrolls sideways, at the width named: the window is that wide, the page that wide or a classic scrollbar
     // narrower (Linux CI draws a 15px one; a touch phone none), and nothing runs past it.
     expect(pageFitsTheWindow(await page!.evaluate(PAGE_WIDTHS), 390, { touch: true })).toMatchObject(FITS_THE_WINDOW);
+    // The top keeps the brand and the menu, which holds Memory; the places are the bottom bar.
     const controls: { name: string; height: number; width: number }[] = await page!.evaluate('window.headerControls()');
+    expect(controls.map((control) => control.name)).toEqual(['claude-mem', 'More']);
     expect(controls.filter((control) => control.height < 44 || control.width < 44)).toEqual([]);
+    const places: { name: string; height: number; width: number; current: string | null }[] = await page!.evaluate('window.bottomBarControls()');
+    expect(places.map((place) => place.name)).toEqual(PHONE_PLACES);
+    expect(currentPlace(places)).toEqual(['My Work']);
+    expect(places.filter((place) => place.height < 44 || place.width < 44)).toEqual([]);
+    // The bottom bar marks the place shown the same way: muted words for the others, green words and edge for it.
+    const looks: { muted: string; green: string; places: { name: string; color: string; edge: string }[] } = await page!.evaluate(`window.placeLooks('bottom-bar')`);
+    expect(looks.places).toEqual(PHONE_PLACES.map((name) => name === PHONE_PLACES[0]
+      ? { name, color: looks.green, edge: `2px ${looks.green}` } : { name, color: looks.muted, edge: '2px rgba(0, 0, 0, 0)' }));
+    await pressPlace('Review', { phone: true });
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'review-stack'`, 'Review Stack from the bottom bar');
+    expect(currentPlace(await page!.evaluate('window.bottomBarControls()'))).toEqual(['Review']);
+    await pressPlace('My Work', { phone: true });
+    await waitFor(`!new URLSearchParams(location.search).get('view')`, 'home from the bottom bar');
     // G7: with sample data the strip says so, and its controls are 44px on touch too, measured at rest (stripAtRest).
     await page!.evaluate('window.stripAtRest()');
     const strip: { name: string; height: number; width: number }[] = await page!.evaluate('window.stripControls()');
     // (The switch items' "· localhost:37777" and "· cmem.ai" are drawn from 768px up only.)
     expect(strip.map((control) => control.name.split('·')[0].trim())).toEqual(['At home', 'On the go', 'Use my data', 'Hide banner']);
     expect(strip.filter((control) => control.height < 44 || control.width < 44)).toEqual([]);
-    // The phone bar: Live, the machine count with its icon and number, and the menu, which holds Classic viewer.
-    expect(controls.map((control) => control.name.replace(/[\d.,]+\s*/g, '').trim())).toEqual(['Live', 'machines', 'More']);
     await tabTo((focus) => focus.name === 'More', 'the menu button');
     await press('Enter');
     await waitFor('window.menu()', 'the menu');
     const menu = await page!.evaluate('window.menu()');
-    expect(menu.rows.some((row: { name: string }) => row.name.startsWith('Classic viewer'))).toBe(true);
+    expect(menu.rows.some((row: { name: string }) => row.name.startsWith(MEMORY))).toBe(true);
     expect(menu.rows.filter((row: { height: number }) => row.height < 44)).toEqual([]);
     // Every language is a row of the menu itself at this width, wholly on the screen (a side menu opened 18px past the
     // left edge and cut the first letters of each name).
@@ -512,7 +604,7 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
     expect(languages.filter((language) => language.left < 0 || language.right > 390)).toEqual([]);
     await page!.evaluate(`document.querySelector('[role="menuitemradio"][lang="pt-BR"]').click()`);
     await waitFor('!window.menu()', 'the menu to close');
-    await waitFor(`document.documentElement.lang === 'pt-BR' && document.querySelector('nav[aria-label="Páginas"]')`, 'the navigation in Brazilian Portuguese');
+    await waitFor(`document.documentElement.lang === 'pt-BR' && document.querySelector('[data-slot="bottom-bar"][aria-label="Páginas"]')`, 'the navigation in Brazilian Portuguese');
     await page!.evaluate("window.setLocale('en')");
     await page!.settle();
     // The page ends above the pinned bottom bar.
@@ -520,35 +612,25 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
     await page!.settle();
     const bar = await page!.evaluate('window.bottomBar()');
     expect(bar.contentBottom).toBeLessThanOrEqual(bar.barTop);
-    // Pinned to the bottom edge (c-shell-notch M; it floated 17px above it): within 1px, under one device pixel here.
+    // Pinned to the bottom edge: within 1px, under one device pixel here.
     expect(Math.abs(bar.barBottom - bar.viewport)).toBeLessThanOrEqual(1);
-    // Chips are Buttons, so the Button's own touch rule makes each 44px here; the page sets 34px (plan rule 6).
-    const chips: { name: string; height: number }[] = await page!.evaluate(`window.visibleIn('nav[aria-label="My focus"] button').map((chip) => ({ name: chip.textContent.trim().slice(0, 40), height: chip.getBoundingClientRect().height }))`);
-    expect(chips.length).toBeGreaterThan(2);
-    expect(chips.filter((chip) => chip.height < 44)).toEqual([]);
-    // Tab through the page: no stop lands under the header or the bottom bar (scroll padding, index.css). The jump back to
-    // the top turns the pill back into the bar; it is measured at rest, as a person sees it (Linux CI read the first
-    // chip while the header was still sliding back).
+    // Tab through the page: no stop lands under the bar or the bottom bar (scroll padding, index.css).
     await page!.evaluate('window.focusPageStart()');
-    await page!.evaluate('window.headerAtRest()');
     const stops: number = await page!.evaluate('document.querySelectorAll("a[href], button, input, select, textarea, [tabindex]:not([tabindex=\\"-1\\"])").length');
     const hidden: unknown[] = [];
     for (let index = 0; index < stops; index++) {
       await press('Tab');
-      const measure = `(() => {
+      const found = await page!.evaluate(`(() => {
         const element = document.activeElement;
-        // Only page content counts: the header, the bottom bar, the sample strip and the skip link are the fixed and
-        // sticky chrome the content scrolls under, drawn on top on purpose.
+        // Only page content counts: the bars, the sample strip and the skip link are the fixed and sticky chrome the
+        // content scrolls under, drawn on top on purpose.
         const inChrome = (node) => { for (let at = node; at && at !== document.body; at = at.parentElement) { const position = getComputedStyle(at).position; if (position === 'fixed' || position === 'sticky') return true; } return false; };
         if (!element || element === document.body || inChrome(element) || element.closest('[data-radix-popper-content-wrapper]')) return null;
         const box = element.getBoundingClientRect();
-        const header = document.querySelector('[data-slot="work-shell"] header > * > *').getBoundingClientRect();
-        const bar = document.querySelector('nav[aria-label="Pages"].md\\\\:hidden .pointer-events-auto').getBoundingClientRect();
+        const header = document.querySelector('[data-slot="app-bar"]').getBoundingClientRect();
+        const bar = document.querySelector('[data-slot="bottom-bar"]').getBoundingClientRect();
         return box.height > 0 && (box.top < header.bottom - 1 || box.bottom > bar.top + 1) ? { name: (element.getAttribute('aria-label') || element.textContent || '').trim().slice(0, 40), top: Math.round(box.top), bottom: Math.round(box.bottom), headerBottom: Math.round(header.bottom), barTop: Math.round(bar.top) } : null;
-      })()`;
-      let found = await page!.evaluate(measure);
-      // A stop whose focus scrolled the page can catch the header mid-slide (bar to pill or back): read it again at rest.
-      if (found) { await page!.evaluate('window.headerAtRest()'); found = await page!.evaluate(measure); }
+      })()`);
       if (found) hidden.push(found);
     }
     expect(hidden).toEqual([]);
@@ -558,81 +640,83 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
   // About 2s here with its ~110 Tab stops (2026-11-16); 90s for a slow CI runner.
 }, 90_000);
 
-(chromeExecutablePath ? it : it.skip)('rail rows are 38–54px and "All N" at least 24px; at 768–1023px the rail page buttons keep their names', async () => {
+(chromeExecutablePath ? it : it.skip)('Back, Forward and a reload land where the person left each page scrolled, restored by the app, not the browser', async () => {
   await openShell();
   try {
     await desktop();
-    const rail: { name: string; variant: string; height: number }[] = await page!.evaluate(`window.visibleIn('nav[aria-label="Pages"] button')
-      .map((button) => ({ name: button.textContent.trim().slice(0, 40), variant: button.dataset.variant, height: button.getBoundingClientRect().height }))`);
-    // c-shell-focus-nav Keep: every row (areas, Other, suggested, Focus overview, the pages, Past focus) 38–54px.
-    const rows = rail.filter((button) => button.variant === 'bare');
-    expect(rows.length).toBeGreaterThanOrEqual(6);
-    expect(rows.filter((row) => row.height < 38 || row.height > 54)).toEqual([]);
-    // Plan rule 6 on desktop: "All N" is at least 24px tall (it was 19px).
-    const allAreas = rail.filter((button) => button.variant === 'link');
-    expect(allAreas.map((button) => button.name)).toEqual([expect.stringMatching(/^All \d+$/)]);
-    expect(allAreas[0].height).toBeGreaterThanOrEqual(24);
-    // The icon-only rail: each page button is still named by its page (WCAG 4.1.2), not by its tile alone.
-    await page!.send('Emulation.setDeviceMetricsOverride', { width: 900, height: 900, deviceScaleFactor: 1, mobile: false });
-    await page!.settle();
-    const pageButtons: number = await page!.evaluate(`window.visibleIn('nav[aria-label="Pages"] button').length`);
-    const names: string[] = [];
-    for (let index = 0; index < pageButtons; index++) {
-      names.push((await accessibleText(`window.visibleIn('nav[aria-label="Pages"] button')[${index}]`)).name);
-    }
-    expect(names.map((name) => name.replace(/\s*\d+ needs? you$/, ''))).toEqual(['My Work', 'Review Stack', 'My Rules']);
-    for (const height of await page!.evaluate(`window.visibleIn('nav[aria-label="Pages"] button').map((button) => button.getBoundingClientRect().height)`)) {
-      expect(height).toBeGreaterThanOrEqual(44);
-    }
+    // The app restores positions itself, once the page is drawn; the browser's own restore is off.
+    expect(await page!.evaluate('history.scrollRestoration')).toBe('manual');
+    await page!.evaluate('window.scrollTo(0, 1200)');
+    await waitFor('Math.round(scrollY) === 1200', 'the home page scrolled');
+    await pressPlace('My Rules');
+    await waitFor(`document.querySelector('main h1')?.textContent === 'My Rules' && scrollY === 0`, 'My Rules from its top');
+    await page!.evaluate('history.back()');
+    await waitFor(`!new URLSearchParams(location.search).get('view') && document.getElementById('all-requests') && Math.abs(scrollY - 1200) <= 1`, 'home at 1200px again');
+    // Requests opens at its board; the person scrolls on past it, goes Back home, then Forward: Requests comes back where
+    // it was left, not at its board (the entry left by Back keeps its own position).
+    await pressPlace('Requests');
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'requests' && Math.abs(document.getElementById('all-requests').getBoundingClientRect().top - 82) <= 2`, 'Requests at its board');
+    const atBoard: number = await page!.evaluate('Math.round(scrollY)');
+    const past: number = await page!.evaluate(`Math.min(Math.round(scrollY) + 600, document.documentElement.scrollHeight - innerHeight)`);
+    expect(past - atBoard).toBeGreaterThan(300);
+    await page!.evaluate(`window.scrollTo(0, ${past})`);
+    await waitFor(`Math.round(scrollY) === ${past}`, 'Requests scrolled past its board');
+    await page!.evaluate('history.back()');
+    await waitFor(`!new URLSearchParams(location.search).get('view') && Math.abs(scrollY - 1200) <= 1`, 'home at 1200px after Back');
+    await page!.evaluate('history.forward()');
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'requests' && Math.abs(scrollY - ${past}) <= 1`, 'Requests where it was left, after Forward');
+    // A reload opens that entry where it was left too, once the work has been read again, and stays there while the
+    // page settles: the focus area board above it draws taller for a frame (about 3,300px, then 670px here), and the
+    // browser's scroll anchoring moved the window up by that much until the app held it at the position.
+    const ready = new Promise<void>((resolveReady) => { markReady = resolveReady; });
+    await page!.send('Page.reload', {});
+    // The reload draws the whole App again in about a second here (2026-11-27); 20s is for a cold CI runner.
+    await withTimeout(ready, 20_000, 'the shell did not draw again after the reload');
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'requests' && Math.abs(scrollY - ${past}) <= 1`, 'Requests where it was left, after a reload');
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }
-  // 1–2s here (2026-11-16); 30s for a slow CI runner.
+  // 2–3s here (2026-11-27); 30s for a slow CI runner.
 }, 30_000);
 
-(chromeExecutablePath ? it : it.skip)('on the cloud viewer, Account & billing is a named, translated rail row, 44px on touch and where only its tile shows', async () => {
+(chromeExecutablePath ? it : it.skip)('on the cloud viewer, Account & billing is a named, translated row of the "…" menu; on this computer it is not there', async () => {
   await openShell({ hostname: CLOUD_HOSTNAME });
   try {
-    await page!.send('Emulation.setDeviceMetricsOverride', { width: 900, height: 900, deviceScaleFactor: 1, mobile: false });
-    await page!.settle();
-    const row = `document.querySelector('nav[aria-label="Pages"] a[href="https://cmem.ai/account"]')`;
-    expect(await page!.evaluate(`${row}.hasAttribute('title')`)).toBe(false);
-    expect((await accessibleText(row)).name).toBe('Account & billing');
-    expect(await page!.evaluate(`${row}.getBoundingClientRect().height`)).toBeGreaterThanOrEqual(44);
-    // Where only the tile shows, its tooltip names it on keyboard focus too (G10), not on hover only.
-    await tabTo((focus) => focus.name.startsWith('Account & billing'), 'Account & billing', 16);
-    await waitFor(`document.querySelector('[data-slot="tooltip-content"]')?.textContent === 'Account & billing'`, 'its tooltip on focus');
-    // Wide: its words show; on touch the row is 44px or more (the Button's touch rule).
     await desktop();
-    expect(await page!.evaluate(`[...${row}.querySelectorAll('span')].filter((span) => getComputedStyle(span).display !== 'none' && !span.classList.contains('sr-only') && span.textContent.trim()).map((span) => span.textContent)`)).toEqual(['Account & billing']);
-    expect(await page!.evaluate(`${row}.getBoundingClientRect().height`)).toBeGreaterThanOrEqual(24);
-    await page!.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
-    await page!.settle();
-    expect(await page!.evaluate("matchMedia('(pointer: coarse)').matches")).toBe(true);
-    expect(await page!.evaluate(`${row}.getBoundingClientRect().height`)).toBeGreaterThanOrEqual(44);
-    await page!.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+    await tabTo((focus) => focus.name === 'More', 'the menu button');
+    await press('Enter');
+    await waitFor('window.menu()', 'the menu');
+    const row = `document.querySelector('[role="menu"] a[href="https://cmem.ai/account"]')`;
+    expect((await accessibleText(row)).name).toBe('Account & billing');
+    expect(await page!.evaluate(`${row}.offsetHeight`)).toBeGreaterThanOrEqual(40);
+    await press('Escape');
+    await waitFor('!window.menu()', 'the menu to close');
     // Rule 4: through t(), in the reader's language.
     await page!.evaluate("window.setLocale('fr')");
     await page!.settle();
+    await page!.evaluate(`document.querySelector('[data-slot="app-bar"] button[aria-haspopup="menu"]').focus()`);
+    await press('Enter');
+    await waitFor('window.menu()', 'the menu in French');
     expect((await accessibleText(row)).name).toBe('Compte et facturation');
+    await press('Escape');
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }
-  // 2–3s here (2026-11-16); 30s for a slow CI runner.
+  // 2–3s here (2026-11-27); 30s for a slow CI runner.
 }, 30_000);
 
-(chromeExecutablePath ? it : it.skip)('"All N" and the menu\'s feedback row are named by their visible words in every language (label in name)', async () => {
+(chromeExecutablePath ? it : it.skip)('the bar\'s places and the menu\'s feedback row are named by their visible words in every language (label in name)', async () => {
   await openShell();
   try {
     for (const locale of LOCALES) {
       await desktop();
       await page!.evaluate(`window.setLocale(${JSON.stringify(locale)})`);
       await page!.settle();
-      // Found by place, not by their translated labels: the rail is the one sticky nav, the chip row the nav in main.
-      const railAll = `window.visibleIn('nav.sticky button[data-variant="link"]')[0]`;
-      const rail = await accessibleText(railAll);
-      expect({ locale, name: rail.name }).toEqual({ locale, name: await page!.evaluate(`${railAll}.textContent.trim()`) });
-      // Where it leads is read after the name.
-      expect(rail.description).toMatch(/\d/);
-      await page!.evaluate("document.querySelector('[data-slot=\"work-shell\"] header button[aria-haspopup=\"menu\"]').focus()");
+      const places: number = await page!.evaluate(`document.querySelectorAll('[data-slot="app-bar"] nav a[href]').length`);
+      expect(places).toBe(PLACES.length);
+      for (let index = 0; index < places; index++) {
+        const link = `document.querySelectorAll('[data-slot="app-bar"] nav a[href]')[${index}]`;
+        expect({ locale, name: (await accessibleText(link)).name }).toEqual({ locale, name: await page!.evaluate(`${link}.textContent.trim()`) });
+      }
+      await page!.evaluate(`document.querySelector('[data-slot="app-bar"] button[aria-haspopup="menu"]').focus()`);
       await press('Enter');
       await waitFor('window.menu()', `the menu in ${locale}`);
       const feedback = `document.querySelector('[role="menu"] a[href*="my-work-feedback"]')`;
@@ -642,48 +726,32 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
       expect(row.description.length).toBeGreaterThan(words.length);
       await press('Escape');
       await waitFor('!window.menu()', 'the menu to close');
-      // The chip row's "All N" (phones and the icon-only rail).
-      await page!.send('Emulation.setDeviceMetricsOverride', { width: 900, height: 900, deviceScaleFactor: 1, mobile: false });
-      await page!.settle();
-      const chipAll = `window.visibleIn('main nav button').at(-1)`;
-      expect({ locale, name: (await accessibleText(chipAll)).name }).toEqual({ locale, name: await page!.evaluate(`${chipAll}.textContent.trim()`) });
     }
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }
   // About 3s here for five languages (2026-11-16); 45s for a slow CI runner.
 }, 45_000);
 
-(chromeExecutablePath ? it : it.skip)('focus stays on the page when Tab leaves the Live or machines panel, and after Hide banner', async () => {
+(chromeExecutablePath ? it : it.skip)('Tab reaches the skip link, then the bar in order; Hide banner hands focus on to the bar', async () => {
   await openShell();
   try {
     await desktop();
-    // Shift+Tab from the Live panel goes back to the chip, the panel still open; Escape then closes it.
-    await tabTo((focus) => focus.chip !== null, 'the Live chip');
-    await press('Enter');
-    await waitFor('window.popoverText()', 'the Live popover');
-    await press('Tab', { shift: true });
-    await page!.settle();
-    expect((await focused()).chip).not.toBeNull();
-    expect(await page!.evaluate('!!window.popoverText()')).toBe(true);
-    await press('Escape');
-    await waitFor('!window.popoverText()', 'the Live popover to close');
-    // Tab past the panel's end goes on to the stop after the chip (the machines), and the panel closes.
-    await press('Enter');
-    await waitFor('window.popoverText()', 'the Live popover again');
-    await press('Tab');
-    await waitFor('!window.popoverText()', 'the Live popover to close as focus leaves it');
-    expect((await focused()).name).toContain('machines');
-    // The same from the machines panel: on to Classic viewer.
-    await press('Enter');
-    await waitFor('window.popoverText()?.includes("Machines reporting")', 'the machines popover');
-    await press('Tab');
-    await waitFor('!window.popoverText()', 'the machines popover to close as focus leaves it');
-    expect((await focused()).name).toBe('Classic viewer');
-    // Hide banner: the strip leaves the page and focus goes on to the header's first control.
+    const skip = await tabTo(() => true, 'the first stop');
+    expect(skip.name).toBe('Skip to content');
+    // The bar's stops in the order it draws them, after the sample strip's.
+    const order: string[] = [];
+    await tabTo((focus) => focus.name === 'claude-mem', 'the brand');
+    for (let step = 0; step < PLACES.length + 2; step++) {
+      await press('Tab');
+      order.push((await focused()).name);
+    }
+    expect(order).toEqual([...PLACES, MEMORY, 'More']);
+    // Hide banner: the strip leaves the page and focus goes on to the bar's first control.
     await tabTo((focus) => focus.name === 'Hide banner', 'Hide banner');
     await press('Enter');
     await waitFor('window.stripControls()?.length === 0', 'the strip to leave');
-    expect((await focused()).chip).not.toBeNull();
+    const next = await focused();
+    expect([next.name, next.inBar]).toEqual(['claude-mem', true]);
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }
   // 1–2s here (2026-11-16); 30s for a slow CI runner.
@@ -698,14 +766,14 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
     await press('Enter');
     await waitFor(`document.querySelector('[role="alert"]') && document.activeElement?.textContent === 'Try again'`, 'the second failed screen with focus on Try again');
     await press('Enter');
-    await waitFor(`document.querySelector('[data-slot="work-shell"] header [data-live-chip]')`, 'the loaded page');
+    await waitFor(`document.getElementById('all-requests')`, 'the loaded page');
     await waitFor(`document.activeElement?.id === 'main-content'`, 'focus on the main content');
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }
   // 1–2s here (2026-11-16); 30s for a slow CI runner.
 }, 30_000);
 
-(chromeExecutablePath ? it : it.skip)('under reduced motion the pill, the sample strip and the bottom bar change at once (plan rule 8)', async () => {
+(chromeExecutablePath ? it : it.skip)('under reduced motion the sample strip changes at once and the bar stays put (plan rule 8)', async () => {
   await openShell();
   try {
     await desktop();
@@ -718,53 +786,24 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 12) {
     expect(await page!.evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches")).toBe(true);
     await page!.evaluate('window.scrollTo(0, 0)');
     await page!.settle();
-    // Every frame for 20 frames after the scroll (about 330ms, longer than the strip's 0.3s fade; the pill's spring takes
-    // longer still): the bar is the full bar or the 800px pill and the strip is shown or gone, never in between.
+    // Every frame for 20 frames after the scroll (about 330ms, longer than the strip's 0.3s fade): the strip is shown
+    // or gone, never in between, and the bar keeps its size at the top of the window.
     const scrolled = await page!.evaluate(`new Promise((resolve) => {
-      const strip = document.querySelector('[data-slot="work-shell"] > header').previousElementSibling;
-      const bar = document.querySelector('[data-slot="work-shell"] header h1').parentElement;
-      const widths = new Set(), opacities = new Set();
+      const strip = document.querySelector('[data-slot="app-bar"]').previousElementSibling;
+      const bar = document.querySelector('[data-slot="app-bar"]');
+      const boxes = new Set(), opacities = new Set();
       let frames = 0;
       window.scrollTo(0, 1500);
       (function sample() {
-        widths.add(Math.round(bar.getBoundingClientRect().width));
+        const box = bar.getBoundingClientRect();
+        boxes.add([Math.round(box.width), Math.round(box.height)].join('x'));
         opacities.add(getComputedStyle(strip).opacity);
         if (++frames < 20) requestAnimationFrame(sample);
-        else resolve({ widths: [...widths].sort((a, b) => a - b), opacities: [...opacities].sort(), pill: !!document.querySelector('.header-pill'), pageWidth: document.documentElement.clientWidth });
+        else resolve({ boxes: [...boxes], opacities: [...opacities].sort(), top: Math.round(bar.getBoundingClientRect().top), pageWidth: document.documentElement.clientWidth });
       })();
     })`);
-    // The full bar is as wide as the page's layout width: 1440 here, 1425 where Chrome draws a 15px classic scrollbar
-    // (Linux CI), so the page's own clientWidth is the measure, not the window's 1440.
     const { pageWidth, ...seen } = scrolled;
-    expect(seen).toEqual({ widths: [800, pageWidth], opacities: ['0', '1'], pill: true });
-    // The bottom bar, mounted outside the App's MotionConfig: no fade and blur in.
-    const bar = await page!.evaluate(`new Promise((resolve) => {
-      window.mountNotchProbe();
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        const shell = document.body.lastElementChild.querySelector('.pointer-events-auto');
-        resolve({ opacity: getComputedStyle(shell).opacity, filter: getComputedStyle(shell).filter });
-      }));
-    })`);
-    expect(bar.opacity).toBe('1');
-    expect(['none', 'blur(0px)']).toContain(bar.filter);
-    // The header bar on its own, outside the App's MotionConfig: it turns into the 800px pill at once.
-    await page!.evaluate('window.mountNavBodyProbe()');
-    await page!.settle();
-    const probe = await page!.evaluate(`new Promise((resolve) => {
-      const width = () => Math.round(window.navBodyProbe.bar().getBoundingClientRect().width);
-      const start = width();
-      const widths = new Set();
-      let frames = 0;
-      window.navBodyProbe.toPill();
-      (function sample() {
-        widths.add(width());
-        if (++frames < 20) requestAnimationFrame(sample);
-        else resolve({ start, widths: [...widths].sort((a, b) => a - b), last: width() });
-      })();
-    })`);
-    // The kit's own bar is at most 1360px wide (its max-w-7xl at the 17px root); the App's is 1440px.
-    expect(probe.start).toBe(1360);
-    expect({ last: probe.last, widths: probe.widths }).toEqual({ last: 800, widths: [800, 1360] });
+    expect(seen).toEqual({ boxes: [`${pageWidth}x72`], opacities: ['0', '1'], top: 0 });
     await page!.send('Emulation.setEmulatedMedia', { features: [] });
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }

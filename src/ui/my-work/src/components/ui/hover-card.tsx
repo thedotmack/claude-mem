@@ -1,5 +1,5 @@
 import * as React from "react"
-import { cn } from "cn"
+import { cn } from "@/lib/utils"
 import { HoverCard as HoverCardPrimitive } from "radix-ui"
 import { useControllableState } from "@radix-ui/react-use-controllable-state"
 import { TRIGGER_FOCUS_RING_CLASS_NAME, useFloatingTrigger } from "./interaction-behavior"

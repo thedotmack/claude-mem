@@ -1,8 +1,9 @@
-// The header's one "…" menu (decision G6): everything the bar no longer shows, one click away at every width.
-// Team view, Language, Theme, the classic viewer when the bar has no room for it, Feedback, Star on GitHub, and a
-// Developer group. A self-contained piece, so another header layout can mount it as it is.
+// The bar's one "…" menu (decision G6): everything the bar does not show, one click away at every width.
+// Team view, Language, Theme, Memory where the bar has no room for it, Account & billing on the cloud viewer, Feedback,
+// Star on GitHub, and a Developer group. It reads no work model, so the bar draws it on the loading and failed screens
+// too (design pass Phase 3).
 import { useId, useState, type ReactNode } from 'react'
-import { ExternalLinkIcon, GlobeIcon, HistoryIcon, MessageSquareIcon, MonitorIcon, MoonIcon, MoreHorizontalIcon, StarIcon, SunIcon, UsersIcon, type LucideIcon } from 'lucide-react'
+import { CreditCardIcon, ExternalLinkIcon, GlobeIcon, LibraryIcon, MessageSquareIcon, MonitorIcon, MoonIcon, MoreHorizontalIcon, StarIcon, SunIcon, UsersIcon, type LucideIcon } from 'lucide-react'
 import { interpolate, LOCALE_NAMES, LOCALES, useI18n } from '@/lib/i18n'
 import { isThemeChoice, THEME_CHOICES, type ThemeChoice } from '@/lib/theme'
 import { Button } from '@/components/ui/button'
@@ -11,14 +12,15 @@ import {
   DropdownMenuPortal, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuSub,
   DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { useStore, useWorkModel, useWorkspace } from '@/store'
+import { useStore, useWorkspace } from '@/store'
 import { themeChoiceInUse } from '@/store/slices/view-slice'
 import { TEAMBRAIN_START_URL } from '../../../viewer/constants/promo'
 import { useGitHubStarCount } from '@/lib/use-github-star-count'
 import { useMatchesMedia } from '@/lib/use-media'
-import { CLASSIC_VIEWER_PATH, CLAUDE_MEM_REPO_URL, MY_WORK_FEEDBACK_URL, StarCount } from './bits'
+import { isServedFromCloud } from '@/live/served-from'
+import { MEMORY_PLACE } from '../../../app-places'
+import { CLAUDE_MEM_REPO_URL, MY_WORK_FEEDBACK_URL, StarCount } from './bits'
 
 /** Each theme choice's words and icon. "Light mode", not "Light": the catalogs already give "Light" another meaning. */
 const THEME_CHOICE_LOOK: Record<ThemeChoice, { words: string; icon: LucideIcon }> = {
@@ -46,14 +48,15 @@ function ExternalRow({ icon: Icon, children, trailing }: { icon: LucideIcon; chi
   )
 }
 
-/**
- * `classicViewerInBar`: the bar shows the classic viewer button (768px and wider, at the top of the page), so the menu
- * leaves its row out there. On a phone and in the floating pill the row is here instead.
- */
-export function HeaderMenu({ classicViewerInBar }: { classicViewerInBar: boolean }) {
+/** Billing, cancel, card and synced devices live on cmem.ai; viewer accounts land here and have no other way there. */
+const ACCOUNT_AND_BILLING_URL = 'https://cmem.ai/account'
+
+/** The bar shows Memory from 768px up (components/app-bar.tsx), so the menu's Memory row is for phones. */
+export function HeaderMenu() {
   const { t, locale, setLocale } = useI18n()
   const { team } = useWorkspace()
-  const { people } = useWorkModel()
+  // How many people the board shows, once the work has loaded; before that the bar's menu still opens.
+  const peopleCount = useStore((state) => state.work.load.state === 'loaded' ? state.work.load.model.people.length : null)
   // The theme the page draws: a `?theme=` address for this visit, else the person's saved choice (G8).
   const theme = useStore((state) => themeChoiceInUse(state.view))
   const showSpec = useStore((state) => state.view.showSpec)
@@ -65,9 +68,9 @@ export function HeaderMenu({ classicViewerInBar }: { classicViewerInBar: boolean
   // The feedback row is named by its visible words (label in name); the longer phrase stays as its description.
   const feedbackDescriptionId = useId()
   // Team view on with one person says so (c-shell-team-switch M); off, it says what it shows.
-  const teamHint = team
-    ? interpolate(t(people.length === 1 ? '{count} person on this board' : '{count} people on this board'), { count: people.length })
-    : t('See everyone’s requests on one board, with who asked and where work collides.')
+  const teamHint = !team ? t('See everyone’s requests on one board, with who asked and where work collides.')
+    : peopleCount === null ? null
+      : interpolate(t(peopleCount === 1 ? '{count} person on this board' : '{count} people on this board'), { count: peopleCount })
   const chooseTheme = (value: string) => {
     if (!isThemeChoice(value)) throw new Error(`Unknown theme choice ${value}`)
     setTheme(value)
@@ -81,7 +84,7 @@ export function HeaderMenu({ classicViewerInBar }: { classicViewerInBar: boolean
   return (
     <DropdownMenu onOpenChange={(open) => { if (open) setStarsWanted(true) }}>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="icon-sm" aria-label={t('More')} className="size-8 text-muted-foreground">
+        <Button variant="ghost" size="icon" aria-label={t('More')} className="text-muted-foreground [&_svg:not([class*='size-'])]:size-5">
           <MoreHorizontalIcon />
         </Button>
       </DropdownMenuTrigger>
@@ -95,7 +98,7 @@ export function HeaderMenu({ classicViewerInBar }: { classicViewerInBar: boolean
               <UsersIcon aria-hidden="true" className="mt-0.5 text-muted-foreground" />
               <span className="flex min-w-0 flex-col gap-0.5">
                 <span>{t('Team view')}</span>
-                <span className="text-xs text-muted-foreground">{teamHint}</span>
+                {teamHint && <span className="text-xs text-muted-foreground">{teamHint}</span>}
               </span>
             </DropdownMenuCheckboxItem>
             {/* The team plan, a quiet link where a solid "Start team plan" button did nothing (App.tsx before 16.0.0). */}
@@ -143,13 +146,23 @@ export function HeaderMenu({ classicViewerInBar }: { classicViewerInBar: boolean
           </DropdownMenuRadioGroup>
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
-        <DropdownMenuItem asChild className={cn(classicViewerInBar && 'md:hidden')}>
-          <a href={CLASSIC_VIEWER_PATH}>
-            <HistoryIcon aria-hidden="true" className="text-muted-foreground" />
-            <span className="flex-1">{t('Classic viewer')}</span>
-            <span className="text-xs text-muted-foreground">{t('Memory feed')}</span>
+        <DropdownMenuItem asChild className="md:hidden">
+          <a href={MEMORY_PLACE.address}>
+            <LibraryIcon aria-hidden="true" className="text-muted-foreground" />
+            <span className="flex-1">{t(MEMORY_PLACE.label)}</span>
           </a>
         </DropdownMenuItem>
+        {/* Cloud viewer only (R18.1); local My Work has no cmem.ai account to manage. */}
+        {isServedFromCloud(window.location.hostname) && (
+          <Req ids={['R18.1']}>
+            <DropdownMenuItem asChild>
+              <a href={ACCOUNT_AND_BILLING_URL}>
+                <CreditCardIcon aria-hidden="true" className="text-muted-foreground" />
+                <span className="flex-1">{t('Account & billing')}</span>
+              </a>
+            </DropdownMenuItem>
+          </Req>
+        )}
         <DropdownMenuItem asChild>
           <a href={MY_WORK_FEEDBACK_URL} target="_blank" rel="noreferrer" aria-describedby={feedbackDescriptionId}>
             <ExternalRow icon={MessageSquareIcon} trailing={<span className="text-xs text-muted-foreground">{t('Opens GitHub')}</span>}>{t('Send feedback')}</ExternalRow>

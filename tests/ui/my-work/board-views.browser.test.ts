@@ -379,7 +379,7 @@ it.skipIf(!chromeExecutablePath)('the List draws 50 rows; "Show 50 more" adds 50
     await waitFor(`window.tableRows().length === ${LINE_ROWS_PER_PAGE} && !document.getElementById('all-requests')`, "the area's first page");
     await page!.evaluate(`window.clickNamed('^Show 50 more')`);
     await waitFor(`window.tableRows().length === 100`, 'two pages in the area');
-    await page!.evaluate(`window.store.getState().goToHome()`);
+    await page!.evaluate(`window.store.getState().goToPage('work')`);
     await waitFor(`document.getElementById('all-requests') && window.tableRows().length === ${LINE_ROWS_PER_PAGE}`, 'home on its first page');
     expect(fixtureErrors).toEqual([]);
   } finally {
@@ -497,7 +497,7 @@ it.skipIf(!chromeExecutablePath)('By agent: agents with work first; the no-agent
     })()`);
     const noAgent = await fold('no-agent');
     expect(noAgent).toEqual({ label: `${MANY.noAgent} requests have no agent recorded`, end: 'Show them', height: expect.any(Number), edge: 'dashed', expanded: 'false' });
-    // One line: the fold row's own 44px (46.75 at the 17px desktop root), not 18,066px of rows.
+    // One line: the fold row's own 44px, not 18,066px of rows.
     expect(noAgent.height).toBeLessThan(60);
     // Every agent with nothing here, its subagents counted: the empty agents, the two sessions of one folder, and the
     // subagent with no parent link.

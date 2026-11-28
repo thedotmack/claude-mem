@@ -175,7 +175,7 @@ export function AreaEditDialog({ edit, changes, onClose, onSaved, ownUndo }: {
               onKeyDown={(event) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); void submit() } }} />
             {/* The limit is the worker's (WorkViewRoutes focusBody), so the count is real, not a guess (c-focus-changes M2). */}
             <div className="flex items-start justify-between gap-3">
-              <FieldHelperText id={helperId}>{edit.kind === 'rename' ? t('Shown in the side rail and on every request in this area.') : t('Shown under the area’s name on its page.')}</FieldHelperText>
+              <FieldHelperText id={helperId}>{edit.kind === 'rename' ? t('Shown in Focus areas and on every request in this area.') : t('Shown under the area’s name on its page.')}</FieldHelperText>
               <FieldCount count={text.length} limit={limit} className="shrink-0" />
             </div>
             {navWord && <p className="text-xs text-attention-foreground">{interpolate(t('“{text}” reuses the page name “{navWord}”. Pick a name that means only this area.'), { text: text.trim(), navWord })}</p>}

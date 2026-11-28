@@ -26,6 +26,7 @@ import { viewerRu } from '../src/ui/i18n/viewer-ru.ts';
 import { myworkRu } from '../src/ui/i18n/mywork-ru.ts';
 import { setupRu } from '../src/ui/i18n/setup-ru.ts';
 import { settingsRu } from '../src/ui/i18n/settings-ru.ts';
+import { MEMORY_PLACE, MY_WORK_PLACES } from '../src/ui/app-places.ts';
 
 const UI_ROOT = fileURLToPath(new URL('../src/ui/', import.meta.url));
 
@@ -145,6 +146,15 @@ describe('UI language catalogs', () => {
 
   it('every literal t() call has a catalog entry', () => {
     assert.deepEqual(wordsMissingFrom({ ...viewerZh, ...myworkZh, ...setupZh, ...settingsZh }, ['viewer', 'my-work/src']), []);
+  });
+
+  // The bar shows each place's words through t() from one list (src/ui/app-places.ts), which this check's literal
+  // search cannot see: every My Work catalog, Turkish included, has them.
+  it('every place in the bar has its words in every My Work catalog', () => {
+    const words = [...MY_WORK_PLACES.flatMap(place => [place.label, place.shortLabel]), MEMORY_PLACE.label];
+    for (const [name, catalog] of Object.entries({ myworkZh, myworkKo, myworkFr, myworkPtBr, myworkRu, myworkTr })) {
+      assert.deepEqual(words.filter(word => !(word in catalog)), [], name);
+    }
   });
 
   // Setup's own screens only: My Work's pages still have such calls without entries (their track's to fix).

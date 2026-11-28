@@ -1,5 +1,5 @@
 import * as React from "react"
-import { cn } from "cn"
+import { cn } from "@/lib/utils"
 import { CircleAlertIcon, type LucideIcon } from "lucide-react"
 import { interpolate, useI18n } from "@/lib/i18n"
 import { useFieldError } from "./field-error"

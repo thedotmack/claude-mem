@@ -229,9 +229,14 @@ browserTest('private Work View supports a full trial handoff and card setup on a
 
     await chooseUseCase(page, 10);
     expect(await page.evaluate(`document.querySelector('${guide} textarea').value`)).toContain('unresolved blocker');
-    for (const [action, anchor] of [['Open Focus Areas', 'focus-areas'], ['All requests', 'all-requests']]) {
+    // Each opens its page (Focus areas and Requests open the home page at their boards for now, design pass Phase 3).
+    // The guide sits on My Work's home page, so Back returns to it, where the next action is tried.
+    for (const [action, view, board] of [['Open Focus Areas', 'focus', 'focus-areas'], ['All requests', 'requests', 'all-requests']]) {
+      await chooseUseCase(page, 10);
       await clickGuideAction(page, action);
-      await waitFor(page, `location.hash === '#${anchor}' && !!document.getElementById('${anchor}')`);
+      await waitFor(page, `new URLSearchParams(location.search).get('view') === '${view}' && !!document.getElementById('${board}')`);
+      await page.evaluate('history.back()');
+      await waitFor(page, `!new URLSearchParams(location.search).get('view') && !!document.querySelector('${guide} select')`);
     }
 
     await chooseUseCase(page, 14);

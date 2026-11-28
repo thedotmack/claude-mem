@@ -17,14 +17,13 @@ export interface SwipeAction { word: string; swipeFurther: string; letGo: string
 
 /**
  * A decision card's button row below the md width, where the phone's bottom bar is pinned (D9: page-07 F7,
- * c-rules-suggestion-card F5, c-aceternity-draggable-card F7): it sticks 77px above the screen's bottom edge while its
- * card is on screen (the bar is 69px tall: 60px items, 8px padding and a 1px edge, App.tsx; plus 8px of air and the safe
- * area), on the card's own surface and edge to edge across the card's 16px padding, so content passing under it is
+ * c-rules-suggestion-card F5, c-aceternity-draggable-card F7): it sticks above the bottom bar while its card is on
+ * screen (the bar's height, --spacing-bottom-bar in index.css, plus 8px of air and the safe area), on the card's own surface and edge to edge across the card's 16px padding, so content passing under it is
  * hidden. The row must be a direct child of the card's part below what is being decided (DECISION_CARD_BODY): a sticky
  * row never leaves its parent, so it travels that part's height and never covers the rule's sentence or the area's
  * name and goal above it (Phase 7 verify: at 390 it sat over the middle of the sentence).
  */
-export const STICKY_ABOVE_BOTTOM_BAR = 'max-md:sticky max-md:bottom-[calc(77px+env(safe-area-inset-bottom))] max-md:z-10 max-md:-mx-4 max-md:w-auto max-md:bg-card max-md:px-4 max-md:pb-2'
+export const STICKY_ABOVE_BOTTOM_BAR = 'max-md:sticky max-md:bottom-[calc(var(--spacing-bottom-bar)+0.5rem+env(safe-area-inset-bottom))] max-md:z-10 max-md:-mx-4 max-md:w-auto max-md:bg-card max-md:px-4 max-md:pb-2'
 
 /** The part of a decision card below what is being decided: the evidence, then the sticky button row (see above). */
 export const DECISION_CARD_BODY = 'flex flex-col gap-2.5'

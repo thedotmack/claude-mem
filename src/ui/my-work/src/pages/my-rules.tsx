@@ -939,8 +939,8 @@ function ScopeChips({ countsByScope, waiting }: { countsByScope: Map<string, Sco
   const cue = useScrollCue(rowRef)
   return (
     <Req ids={['R14.5', 'R11.1']} className="lg:hidden">
-      {/* top-[76px]: just under the floating header pill (20px drop + 56px tall). */}
-      <nav aria-label={t("Scopes")} data-slot="rule-scope-chips" className="sticky top-[76px] z-20 -mx-4 border-b bg-background/95 py-2 backdrop-blur lg:hidden">
+      {/* Just under the bar (--page-header-bottom, index.css). */}
+      <nav aria-label={t("Scopes")} data-slot="rule-scope-chips" className="sticky top-(--page-header-bottom) z-20 -mx-4 border-b bg-background/95 py-2 backdrop-blur lg:hidden">
         <div ref={rowRef} className={cn('flex gap-2 overflow-x-auto px-4 [scrollbar-width:none]', scrollCueMask(cue))} data-more-before={cue.before || undefined} data-more-after={cue.after || undefined}>
         {waiting > 0 && (
           // The edge is the attention words' own colour: --attention-border is a soft tint (1.4-1.8:1), under the 3:1

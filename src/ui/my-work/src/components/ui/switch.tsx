@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { cn } from "cn"
+import { cn } from "@/lib/utils"
 import { CheckIcon } from "lucide-react"
 import { Switch as SwitchPrimitive } from "radix-ui"
 

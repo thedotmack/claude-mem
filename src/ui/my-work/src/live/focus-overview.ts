@@ -54,10 +54,7 @@ export function focusOverview(areas: readonly FocusArea[], requests: readonly Re
   }
 }
 
-/**
- * Every kept area not merged away, in owner order: the areas the focus board lists, and what the rail's and the chip
- * row's "All N" counts (live/focus-nav.ts), so that link always opens as many areas as it says.
- */
+/** Every kept area not merged away, in owner order: the areas the focus board lists. */
 export function keptFocusAreas(areas: readonly FocusArea[]): FocusArea[] {
   return areas.filter((area) => area.status === 'kept' && !area.mergedInto).sort(byFocusPriority)
 }

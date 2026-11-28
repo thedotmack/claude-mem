@@ -1,5 +1,5 @@
 import * as React from "react"
-import { cn } from "cn"
+import { cn } from "@/lib/utils"
 
 /*
  * The edge is the control edge at the strength the review's card mockup shows (G13; after/c-ui-card.png samples

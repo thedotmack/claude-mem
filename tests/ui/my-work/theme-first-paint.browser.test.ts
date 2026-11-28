@@ -28,14 +28,14 @@ const BUILT_INDEX_HTML = resolve(REPOSITORY_ROOT, 'plugin/ui/work-view/index.htm
 const INLINE_SCRIPT = `<script>${THEME_PRE_PAINT_SCRIPT}</script>`;
 
 // index.css: --background in :root (light) and .dark.
-const PAGE_COLOUR = { light: 'rgb(247, 241, 233)', dark: 'rgb(15, 12, 10)' } as const;
+const PAGE_COLOUR = { light: 'rgb(246, 245, 240)', dark: 'rgb(23, 27, 24)' } as const;
 
 /** What the store shows for these saved preferences and this address: the theme the app keeps on <html> after load. */
 function storeTheme(saved: string | null, query: string, systemDark: boolean): 'dark' | 'light' {
   const items = new Map(saved === null ? [] : [[PREFERENCES_STORAGE_KEY, saved]]);
   const href = `http://localhost/${query}`;
   const store = createBoundStore({
-    href: () => href, writeUrl: () => {}, reportsUsage: false, sendUsage: () => {}, scrollToTop: () => {},
+    href: () => href, writeUrl: () => {}, reportsUsage: false, sendUsage: () => {}, scrollToTop: () => {}, savedScrollY: () => null,
     storage: { getItem: (key) => items.get(key) ?? null, setItem: (key, value) => { items.set(key, value); }, removeItem: (key) => { items.delete(key); } },
   });
   const { page } = store.getState().view;

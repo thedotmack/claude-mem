@@ -24,8 +24,8 @@ function TrialGuideActivity({ step, client, onSelect }: {
         ? t('Choose when to run it. Scheduled tasks need a host account with scheduling and access to Claude-Mem.')
         : t(step.instruction)}</p>
       {step.opensFocus && <div className="mb-3 flex flex-wrap gap-2">
-        <Button type="button" className="min-h-11" onClick={() => useStore.getState().goToHome('focus-areas')}>{t('Open Focus Areas')}</Button>
-        <Button type="button" variant="outline" className="min-h-11" onClick={() => useStore.getState().goToHome('all-requests')}>{t('All requests')}</Button>
+        <Button type="button" className="min-h-11" onClick={() => useStore.getState().goToPage('focus')}>{t('Open Focus Areas')}</Button>
+        <Button type="button" variant="outline" className="min-h-11" onClick={() => useStore.getState().goToPage('requests')}>{t('All requests')}</Button>
       </div>}
       {scheduling && <label className="mb-3 flex flex-wrap items-center gap-2 text-sm font-medium">
         {interpolate(t('Run time ({zone})'), { zone })}

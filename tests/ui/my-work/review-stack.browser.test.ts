@@ -28,6 +28,12 @@ async function waitFor(page: DevToolsPage, expr: string) {
     await Bun.sleep(30);
   }
 }
+/** One of the phone's bottom-bar places (components/app-bar.tsx): links, pressed as a person presses them. */
+const placeLink = (label: string) => `[...document.querySelectorAll('[data-slot="bottom-bar"] a[href]')].find(el => el.textContent.trim() === ${JSON.stringify(label)} && el.getClientRects().length)`;
+async function pressPlace(page: DevToolsPage, label: string) {
+  await waitFor(page, `!!(${placeLink(label)})`);
+  await page.evaluate(`(${placeLink(label)}).click()`);
+}
 async function click(page: DevToolsPage, label: string, scope?: string) {
   const expr = button(label, scope);
   await waitFor(page, `!!(${expr}) && !(${expr}).disabled`);
@@ -84,9 +90,9 @@ browserTest('the built phone and desktop reviewer reads private thumbnails and k
     page = await connectToPage(chrome, url);
     await page.send('Emulation.setDeviceMetricsOverride', { width: 320, height: 740, deviceScaleFactor: 1, mobile: true });
     await waitFor(page, `document.querySelector('.stack-empty h2')?.textContent.includes('empty')`);
-    await click(page, 'My Rules', 'nav');
+    await pressPlace(page, 'My Rules');
     await waitFor(page, `new URLSearchParams(location.search).get('view') === 'rules'`);
-    await click(page, 'Review', 'nav');
+    await pressPlace(page, 'Review');
     await waitFor(page, `new URLSearchParams(location.search).get('view') === 'review-stack'`);
     await click(page, 'Import');
     await waitFor(page, `!!document.querySelector('[type=file]')`);
@@ -217,5 +223,62 @@ browserTest('a new winning image for the same card clears the losing preview and
     expect(requests).toEqual(hashes.map(revision => ({ revision, owner:'fixture-owner' })));
   } finally {
     allowImage?.(); page?.close(); await chrome.close(); server.closeAllConnections(); server.close();
+  }
+}, 30_000);
+
+// Design pass Phase 3 fixes (M1): Review Stack reads its cards again each time it is shown, so Back to it draws a short
+// loading card first. The app holds the position the person left until the cards have drawn, then lands there.
+browserTest('Back to Review Stack lands where the person left it scrolled, once its cards have been read again', async () => {
+  const bundle = process.env.CMEM_TEST_WORK_VIEW_BUNDLE || join(REPOSITORY_ROOT, 'plugin/ui/work-view');
+  const overview = await Bun.file(join(REPOSITORY_ROOT, 'src/ui/my-work/test-fixtures/work-view-snapshot.trimmed.json')).json();
+  const heldReads: Array<() => void> = [];
+  let holdReads = false;
+  const snapshot = { revision: 'a'.repeat(64), cards: cards.map((card, index) => ({ ...card, id: 'scroll-card-' + index, createdAt: index + 1 })),
+    reviews: [], bookmarks: [], followUps: [], groups: [], nextCursor: null };
+  const app = express();
+  app.get(stack, async (_req, res) => {
+    if (holdReads) await new Promise<void>(resolve => heldReads.push(resolve));
+    res.json(snapshot);
+  });
+  app.get('/api/work-view/overview', (_req, res) => res.json(overview));
+  app.get('/api/work-view/session', (_req, res) => res.json({ ok:true }));
+  app.get('/api/work-view/events', (_req, res) => { res.type('text/event-stream'); res.write(': connected\n\n'); });
+  app.get('/api/cloud-sync/renewal-status', (_req, res) => res.json({ trialEndsAt:null, onboarding:null }));
+  app.use('/api', (_req, res) => res.sendStatus(404));
+  app.use('/work-view', express.static(bundle));
+  const html = (await Bun.file(join(bundle, 'index.html')).text()).replace('<head>', '<head><meta name="cmem-work-owner" content="fixture-owner">');
+  app.get('/work', (_req, res) => res.type('html').send(html));
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/work?view=review-stack`;
+  const chrome = launchChrome(url, { remoteDebugging:true, extraFlags:['--no-proxy-server', '--disable-dev-shm-usage'] });
+  let page: DevToolsPage | undefined;
+  try {
+    page = await connectToPage(chrome, url);
+    // A short window, so the card and its controls run past it.
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 480, deviceScaleFactor: 1, mobile: false });
+    await waitFor(page, `!!document.querySelector('.stack-card h2')`);
+    expect(await page.evaluate('history.scrollRestoration')).toBe('manual');
+    const bottom: number = await page.evaluate('Math.floor(document.documentElement.scrollHeight - innerHeight)');
+    // The loading card is far shorter than that, so landing there proves the wait for the cards.
+    expect(bottom).toBeGreaterThan(200);
+    await page.evaluate(`window.scrollTo(0, ${bottom})`);
+    await waitFor(page, `Math.abs(scrollY - ${bottom}) <= 1`);
+    const myRules = `[...document.querySelectorAll('[data-slot="app-bar"] nav a[href]')].find(el => el.textContent.trim() === 'My Rules')`;
+    await waitFor(page, `!!(${myRules})`);
+    await page.evaluate(`(${myRules}).click()`);
+    // My Rules has drawn, so Review Stack has left the page (until then React keeps it, hidden, behind the loading page).
+    await waitFor(page, `new URLSearchParams(location.search).get('view') === 'rules' && document.querySelector('main h1')?.textContent === 'My Rules' && !document.querySelector('.review-stack') && !document.querySelector('main [aria-busy="true"]')`);
+    holdReads = true;
+    await page.evaluate('history.back()');
+    await waitFor(page, `new URLSearchParams(location.search).get('view') === 'review-stack' && document.querySelector('main')?.textContent.includes('Loading review cards')`);
+    expect(await page.evaluate('Math.round(scrollY)')).toBeLessThan(bottom - 100);
+    holdReads = false;
+    for (const answer of heldReads.splice(0)) answer();
+    await waitFor(page, `!!document.querySelector('.stack-card h2') && Math.abs(scrollY - ${bottom}) <= 1`);
+  } finally {
+    holdReads = false;
+    for (const answer of heldReads.splice(0)) answer();
+    page?.close(); await chrome.close(); server.closeAllConnections(); server.close();
   }
 }, 30_000);

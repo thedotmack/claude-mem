@@ -136,13 +136,13 @@ export const REQUIREMENTS: Requirement[] = [
   { id: 'R3.9', section: '3', kind: 'retired', text: 'Retired 2026-10-27 (My Focus): request progress rolls up into its focus area header; goals are one sentence on an area. Replaced by R16.2.' },
 
   // 16. My Focus (added 2026-10-27, append only): focus areas are the top level of My Work.
-  { id: 'R16.1', section: '16', kind: 'ui', text: 'The MY FOCUS rail sits above the pages: kept focus areas in priority order (the owner\'s order wins over the suggested one), each with how many requests in it need me, then Other, then "N suggested", then My Work and My Rules. Selecting an area filters My Work to it. On phones and the icon-only rail the same entries are a chip row above the cards.' },
+  { id: 'R16.1', section: '16', kind: 'retired', text: 'Retired 2026-11-27 (My Work design pass, Phase 3): the MY FOCUS rail and its phone chip row are gone. One bar holds the places (src/ui/app-places.ts); focus areas, Other and Suggested are reached from Focus areas.' },
   { id: 'R16.2', section: '16', kind: 'ui', text: 'The area header: its goal sentence, combined progress of its reviewed requests (unreviewed ones named, not counted), what shipped, asks with no work yet as Not started rows with how often I asked and my quotes, and a menu to Rename, Edit goal, Merge into…, reorder and mark Done.' },
   { id: 'R16.3', section: '16', kind: 'ui', text: 'Other is a permanent bucket for requests that fit no area, with its own header; it is never an area.' },
   { id: 'R16.4', section: '16', kind: 'ui', text: 'Suggested areas wait in a decision queue with Keep, Rename, Merge and Dismiss; each decision can be undone, and a refresh never overrides it.' },
   { id: 'R16.5', section: '16', kind: 'ui', text: 'Each request shows its area chip: the area\'s name, Other, or "Sorting…" until a refresh places it.' },
   { id: 'R16.6', section: '16', kind: 'ui', text: 'Move to… on a request puts it in another area or Other; my move wins over any later automatic placement.' },
-  { id: 'R16.7', section: '16', kind: 'ui', text: 'Past focus, linked from the bottom of the rail, holds areas marked done and what I asked for most, month by month.' },
+  { id: 'R16.7', section: '16', kind: 'ui', text: 'Past focus holds areas marked done and what I asked for most, month by month.' },
 
   // 17. Shared focus page (added 2026-10-29, append only): share a focus area as a page people and agents comment on.
   { id: 'R17.1', section: '17', kind: 'ui', text: 'Share a focus area as a page by link (cmem.ai/focus/…), from the area menu; the area shows that it is shared.' },
@@ -152,7 +152,7 @@ export const REQUIREMENTS: Requirement[] = [
   { id: 'R17.5', section: '17', kind: 'backend', text: 'The shared page carries display text only: no prompts, quotes, transcripts, evidence links, files or machine names.', wireframe: 'to-shared-focus.ts builds the page; cmem.ai keeps only the shared shape (claude-mem-pro src/lib/focus-share/snapshot.ts).' },
 
   // 18. Account (added 2026-11-05, append only): the cloud viewer is where viewer accounts land, so billing is reachable from it.
-  { id: 'R18.1', section: '18', kind: 'ui', text: 'On the cloud viewer only, the bottom of the rail links "Account & billing" to cmem.ai/account. My Work served from this computer shows no such link.' },
+  { id: 'R18.1', section: '18', kind: 'ui', text: 'On the cloud viewer only, the bar’s "…" menu links "Account & billing" to cmem.ai/account. My Work served from this computer shows no such link.' },
 ]
 
 export const REQUIREMENTS_BY_ID = new Map(REQUIREMENTS.map((requirement) => [requirement.id, requirement]))

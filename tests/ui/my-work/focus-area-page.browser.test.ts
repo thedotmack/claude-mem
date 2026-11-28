@@ -9,6 +9,7 @@ import {
 } from '../../helpers/chrome-devtools';
 import { THEME_PRE_PAINT_SCRIPT } from '../../../src/ui/my-work/src/lib/theme-pre-paint';
 import { SAMPLE_STATES, type SampleState } from '../../../src/ui/my-work/src/live/sample-source';
+import { myWorkPlace } from '../../../src/ui/app-places';
 
 failOnCiWithoutChrome('CI requires Chrome for the My Work focus area page regressions.');
 
@@ -343,7 +344,7 @@ it.skipIf(!chromeExecutablePath)('on Other the request that needs you is the mai
     })()`);
     const other = await lead();
     console.log(`[focus-area-page] Other's lead at 1440: ${JSON.stringify(other)}`);
-    // Only the page stack's gap (space-y-5 at the 17px root: 21.25px) is between the header and the card: nothing else.
+    // Only the page stack's gap (space-y-5 at the 16px root: 20px) is between the header and the card: nothing else.
     expect(other.gap).toBeGreaterThanOrEqual(0);
     expect(other.gap).toBeLessThanOrEqual(22);
     expect({ ...other, gap: 0 }).toEqual({ gap: 0, state: 'your-move', heading: 'One thing needs you', request: 'r5', replyCard: true, typingBox: true, beforeAsks: true, beforeBoard: true });
@@ -570,12 +571,13 @@ it.skipIf(!chromeExecutablePath)('the area dialogs: Save says what it saves, bes
       const close = dialog.querySelector('[data-slot="dialog-close"]');
       return { footer: [...footer.querySelectorAll('button')].map((button) => window.nameOf(button)), waits: save.getAttribute('aria-disabled'), reason,
         helper: dialog.querySelector('[data-slot="field-helper-text"]')?.textContent ?? null, count: dialog.querySelector('[data-slot="field-count"]')?.textContent ?? null,
-        field: window.round(field.getBoundingClientRect().height), close: window.round(Math.min(close.getBoundingClientRect().width, close.getBoundingClientRect().height)) };
+        // Layout sizes: the dialog opens with a short zoom, and a box read mid-zoom is scaled down.
+        field: field.offsetHeight, close: Math.min(close.offsetWidth, close.offsetHeight) };
     })()`);
     const rename = await dialog();
     console.log(`[focus-area-page] Rename: ${JSON.stringify(rename)}`);
     expect({ footer: rename.footer, waits: rename.waits, reason: rename.reason, helper: rename.helper })
-      .toEqual({ footer: ['Cancel', 'Save name'], waits: null, reason: null, helper: 'Shown in the side rail and on every request in this area.' });
+      .toEqual({ footer: ['Cancel', 'Save name'], waits: null, reason: null, helper: 'Shown in Focus areas and on every request in this area.' });
     expect(rename.count).toContain('80');
     expect(Math.min(rename.field, rename.close)).toBeGreaterThanOrEqual(44);
     // An empty name: Save waits, and says for what beside it (G16); pressing it saves nothing.
@@ -790,7 +792,7 @@ it.skipIf(!chromeExecutablePath)('an area with no requests is a compact box arou
     // max-w-md: 28rem at the 17px root is 476px (it was the page's full 1171px for two lines and no button).
     expect({ narrow: box.width <= 476.5, buttons: box.buttons }).toEqual({ narrow: true, buttons: ['Find a request to move here'] });
     await pressNamed('[data-slot="work-shell"] main [data-slot="empty"] button', '^Find a request to move here');
-    await waitFor(`!new URLSearchParams(location.search).get('focus') && location.hash === '#all-requests'`, 'All requests');
+    await waitFor(`!new URLSearchParams(location.search).get('focus') && new URLSearchParams(location.search).get('view') === 'requests'`, 'All requests');
     expect(fixtureErrors).toEqual([]);
   } finally {
     await closePage();
@@ -922,7 +924,7 @@ it.skipIf(!chromeExecutablePath)('in French the drawer words what the mapper lef
     for (const english of ['Start not recorded', 'start not recorded', 'Supporting work', 'Untitled task', 'Observation:']) expect(drawer).not.toContain(english);
     await press('Escape');
     // My Rules: a quote and a rule whose time was not recorded.
-    await page!.evaluate(`window.store.getState().goToPage ? window.store.getState().goToPage('rules') : window.store.getState().selectFocus({ kind: 'rules' })`);
+    await page!.evaluate(`window.store.getState().goToPage('rules')`);
     await waitFor(`location.search.includes('view=rules') && document.querySelector('blockquote')`, 'My Rules');
     // The rule whose quote the page shows first: its quotes' times and its latest time not recorded.
     await page!.evaluate(`(() => {
@@ -1467,18 +1469,21 @@ it.skipIf(!chromeExecutablePath)('Other says which requests its percent leaves o
 }, 60_000);
 
 // Phase 6 fix Q-M3: the breadcrumb had no test.
-it.skipIf(!chromeExecutablePath)('the breadcrumb is a real link to the focus overview, and a plain press moves there in the page, without a reload', async () => {
+// The crumb names Focus areas as the bar does (src/ui/app-places.ts); it said "Focus overview" before the design pass Phase 3 fixes.
+it.skipIf(!chromeExecutablePath)('the breadcrumb is a real link to Focus areas, named as the bar names it, and a plain press moves there in the page, without a reload', async () => {
   try {
     await openPage('&focus=fa-sync');
     const crumbs = await page!.evaluate(`(() => { const nav = document.querySelector('nav[aria-label="breadcrumb"], nav[aria-label="Breadcrumb"]');
       const link = nav.querySelector('a[href]'); const url = new URL(link.href);
-      return { link: link.textContent, source: url.searchParams.get('source'), focus: url.searchParams.get('focus'), hash: url.hash, current: nav.querySelector('[aria-current="page"]')?.textContent ?? null }; })()`);
-    expect(crumbs).toEqual({ link: 'Focus overview', source: 'sample', focus: null, hash: '#focus-areas', current: 'Cloud sync' });
+      return { link: link.textContent, source: url.searchParams.get('source'), focus: url.searchParams.get('focus'), view: url.searchParams.get('view'), hash: url.hash, current: nav.querySelector('[aria-current="page"]')?.textContent ?? null }; })()`);
+    expect(crumbs).toEqual({ link: myWorkPlace('focus').label, source: 'sample', focus: null, view: 'focus', hash: '', current: 'Cloud sync' });
     // A plain press is the page's to handle: it moves in place and stops the browser's own navigation (whose address is
     // the one the press already moved to, so only the press itself shows it).
-    await page!.evaluate(`window.notReloaded = true; window.addEventListener('click', (event) => { if (event.target.closest?.('nav a[href]')) window.pressHandledInThePage = event.defaultPrevented; })`);
-    await pressNamed('nav a[href]', '^Focus overview$');
-    await waitFor(`!new URLSearchParams(location.search).get('focus') && location.hash === '#focus-areas' && document.getElementById('focus-areas')`, 'the focus overview');
+    // The bar's Focus areas has the same words, so the press is aimed at the crumb's own nav.
+    const crumbLink = 'nav[aria-label="breadcrumb"] a[href], nav[aria-label="Breadcrumb"] a[href]';
+    await page!.evaluate(`window.notReloaded = true; window.addEventListener('click', (event) => { if (event.target.closest?.(${JSON.stringify(crumbLink)})) window.pressHandledInThePage = event.defaultPrevented; })`);
+    await pressNamed(crumbLink, `^${myWorkPlace('focus').label}$`);
+    await waitFor(`!new URLSearchParams(location.search).get('focus') && new URLSearchParams(location.search).get('view') === 'focus' && document.getElementById('focus-areas')`, 'Focus areas');
     expect(await page!.evaluate('({ notReloaded: window.notReloaded === true, handledInThePage: window.pressHandledInThePage === true })')).toEqual({ notReloaded: true, handledInThePage: true });
     expect(fixtureErrors).toEqual([]);
   } finally {
@@ -1575,7 +1580,7 @@ it.skipIf(!chromeExecutablePath)('the change ticker watches the working requests
     await waitFor(`document.querySelector('[data-ticker="quiet"]')`, 'the ticker at rest');
     // Cloud sync has nothing working; r1 (Viewer) and r2 (no area) work elsewhere.
     expect(await counts()).toEqual({ watching: 0, filter: 0 });
-    await page!.evaluate(`window.store.getState().goToHome('all-requests')`);
+    await page!.evaluate(`window.store.getState().goToPage('requests')`);
     await waitFor(`!new URLSearchParams(location.search).get('focus')`, 'home');
     expect(await counts()).toEqual({ watching: 2, filter: 2 });
     expect(fixtureErrors).toEqual([]);

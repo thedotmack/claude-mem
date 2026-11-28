@@ -24,6 +24,42 @@
 }
 @custom-variant active-enabled (&:where(:active:not(:disabled, [aria-disabled="true"], [aria-busy="true"])));
 
+/*
+ * The bar and the page heading (design pass Phase 3), Codex's sizes (design.css): the bar is 72px tall in a 1380px row
+ * from 768px up and 57px on a phone; the phone's bottom bar is 63px; pages sit in a 1296px column. A page's h1 is
+ * clamp(38px, 3.55vw, 53px) at weight 575, 34px on a phone; a place in the bar is 15px at weight 550 (14px below
+ * 1024px); the name beside the brain mark 22px at 660 (20px below 1024px). Under the bottom bar's places Codex keeps
+ * at least 5px (`padding-bottom: max(5px, env(safe-area-inset-bottom))`), and a phone page ends 24px above the bar
+ * (its page padding, 24px). cn() knows each `--text-*` here (lib/utils.ts CUSTOM_FONT_SIZES).
+ */
+@theme {
+    --spacing-top-bar: 4.5rem;
+    --spacing-top-bar-phone: 3.5625rem;
+    --spacing-bottom-bar: 3.9375rem;
+    --spacing-bottom-bar-floor: 5px;
+    --spacing-bottom-bar-gap: 1.5rem;
+    --container-bar-content: 86.25rem;
+    --container-page: 81rem;
+    --text-page-title: clamp(2.375rem, 3.55vw, 3.3125rem);
+    --text-page-title--line-height: 1.13;
+    --text-page-title--letter-spacing: -0.052em;
+    --text-page-title--font-weight: 575;
+    --text-page-title-phone: 2.125rem;
+    --text-page-title-phone--line-height: 1.13;
+    --text-page-title-phone--letter-spacing: -0.048em;
+    --text-page-title-phone--font-weight: 575;
+    --text-place: 0.9375rem;
+    --text-place--font-weight: 550;
+    --text-place-narrow: 0.875rem;
+    --text-place-narrow--font-weight: 550;
+    --text-brand: 1.375rem;
+    --text-brand--letter-spacing: -0.058em;
+    --text-brand--font-weight: 660;
+    --text-brand-phone: 1.25rem;
+    --text-brand-phone--letter-spacing: -0.058em;
+    --text-brand-phone--font-weight: 660;
+}
+
 @theme inline {
     --font-heading: var(--font-sans);
     --font-sans: 'Geist Variable', sans-serif;
@@ -91,6 +127,9 @@
     --color-primary-bright: var(--primary-bright);
     --color-primary-deep: var(--primary-deep);
     --color-accent-border: var(--accent-border);
+    --color-place-active: var(--place-active);
+    --color-place-active-foreground: var(--place-active-foreground);
+    --color-overlay-dim: var(--overlay-dim);
     --shadow-panel: var(--panel-shadow);
     --shadow-control: var(--control-shadow);
     --shadow-primary: var(--primary-shadow);
@@ -112,200 +151,207 @@
 }
 
 /*
- * Warm paper canvas in the claude-mem brand: brand orange #FD6500 for primary actions,
- * warm neutrals everywhere else. Elevation is reserved for panels and primary actions.
+ * One visual language (My Work design pass, Phase 3; Codex D21): Codex's ink-and-paper palette with one green action
+ * colour, copied from its design.css (codex-astra/.review/design.css lines 3-4) into these token names. The orange brain
+ * mark keeps its own colour (components/brand.tsx). Mapping: --bg to --background; --paper to --card and --popover;
+ * --alt to --muted, --secondary and --accent; --ink to --foreground; --muted to --muted-foreground; --line to --border;
+ * --button and --onbutton to --primary and --primary-foreground; --focus to --ring; --green and --greenbg to the active
+ * place (--place-active) and to working; --amber and --amberbg to attention (your move); --purple to done-not-checked;
+ * --blue to shipped; --lead to goals; --brand to Claude's agent mark. Codex has no value for a few tokens the primitives
+ * need; those are written from its palette and named in their comments.
  *
  * Contrast (tests/ui/my-work/token-contrast.test.ts is the judge, plan rule 7 and G12): text ≥4.5:1; control
  * edges, the focus ring and state marks ≥3:1 on every surface they sit on, in both themes.
- * - Text on orange is near-black in both themes (G1): 6.53:1 on --primary, 7.52:1 on --primary-bright.
  * - --control-edge is the edge of inputs, selects, outline buttons, chips, switches when off, toggles, the progress
- *   track and dialog/sheet panels (G12). --border stays for decorative lines.
+ *   track and dialog/sheet panels (G12). Codex draws its controls with --line, which is decorative (1.4:1), so the
+ *   edge is its palette's grey-green, darkened in light and lightened in dark until it clears 3:1 everywhere.
+ *   --border stays for decorative lines.
  */
 :root {
-    --background: #f7f1e9;
-    --foreground: #1f1a17;
-    --card: #fffdf9;
-    --card-foreground: #1f1a17;
-    --popover: #fffdf9;
-    --popover-foreground: #1f1a17;
-    --primary: #fd6500;
-    --primary-bright: #ff7b1a;
-    --primary-deep: #e55800;
-    --primary-foreground: #0f0c0a;
-    --secondary: #f3ece3;
-    --secondary-foreground: #3b3029;
-    --muted: #f3ece3;
-    /* One step darker than #776a5e, which was 4.47:1 on --muted; now ≥4.6:1 on every light surface. */
-    --muted-foreground: #75685c;
-    --accent: #fdebdd;
-    --accent-foreground: #b04800;
-    --accent-border: #f6cdac;
-    /* #c2413d's hue, darker: #c2413d was 3.97:1 on its own 10% tint (destructive buttons and badges); ≥4.55:1 now. */
+    --background: #f6f5f0;
+    --foreground: #202923;
+    --card: #fffef9;
+    --card-foreground: #202923;
+    --popover: #fffef9;
+    --popover-foreground: #202923;
+    /* Codex's button is one flat colour; its hover is the same colour at 94% brightness (--primary-deep). */
+    --primary: #203e30;
+    --primary-bright: #203e30;
+    --primary-deep: #1e3a2d;
+    --primary-foreground: #fbfff8;
+    --secondary: #eeeee7;
+    --secondary-foreground: #202923;
+    --muted: #eeeee7;
+    --muted-foreground: #536057;
+    /* The hover fill, and the link and hover text: Codex's green (its text buttons and link hovers). */
+    --accent: #eeeee7;
+    --accent-foreground: #1b664e;
+    --accent-border: #b7cbb9;
     --destructive: #a33733;
-    --border: #ebe2d6;
-    --input: #e1d6c8;
-    /* The review's #8f8071: ≥3.19:1 on every light surface and field fill. */
-    --control-edge: #8f8071;
-    /* #fd8a3d's hue at lower lightness: #fd8a3d was 2.33:1 on the card; this is ≥3.05:1 on every light surface. */
-    --ring: #e15c02;
-    --chart-1: #fd6500;
-    --chart-2: #4db8d4;
-    --chart-3: #7eb663;
-    --chart-4: #ffb366;
-    --chart-5: #5ba3c7;
+    --border: #cfd2c8;
+    /* A field's fill and a highlighted menu row: Codex's --soft. */
+    --input: #dfe2d8;
+    /* ≥3.29:1 on every light surface and field fill (see above). */
+    --control-edge: #7a857c;
+    --ring: #22684f;
+    --chart-1: #1b664e;
+    --chart-2: #285d72;
+    --chart-3: #654a73;
+    --chart-4: #784b09;
+    --chart-5: #b44627;
     --radius: 0.625rem;
-    --sidebar: #fbf7f1;
-    --sidebar-foreground: #1f1a17;
-    --sidebar-primary: #fd6500;
-    --sidebar-primary-foreground: #ffffff;
-    --sidebar-accent: #fdebdd;
-    --sidebar-accent-foreground: #b04800;
-    --sidebar-border: #ebe2d6;
-    --sidebar-ring: #fd8a3d;
+    --sidebar: #fffef9;
+    --sidebar-foreground: #202923;
+    --sidebar-primary: #203e30;
+    --sidebar-primary-foreground: #fbfff8;
+    --sidebar-accent: #e1eee4;
+    --sidebar-accent-foreground: #1b664e;
+    --sidebar-border: #cfd2c8;
+    --sidebar-ring: #22684f;
+    /* The bar's active place: Codex's green on its green tint. */
+    --place-active: #e1eee4;
+    --place-active-foreground: #1b664e;
 
-    /* Soft semantic surfaces keep state and ownership readable; subtle shadows add texture. */
-    --surface: #f8f3ec;
-    --surface-warm: #fff7ee;
-    --surface-cool: #f5f1eb;
-    --working: #eaf4f9;
-    --working-foreground: #2b6c8f;
-    --working-border: #c7e0ed;
-    --review: #fdf3e0;
-    --review-foreground: #925e0e;
-    --review-border: #efd6a6;
-    --attention: #fdecea;
-    --attention-foreground: #b43e3a;
-    --attention-border: #f2c7c3;
-    --idle: #f3eee8;
-    --idle-foreground: #6f6358;
-    --idle-border: #e1d8cd;
-    --shipped: #eef6e8;
-    --shipped-foreground: #477a30;
-    --shipped-border: #cce2bc;
-    --goal: #e3f3ee;
-    --goal-foreground: #1d7562;
-    --goal-border: #b6dccf;
-    --agent-claude: #fdeee2;
-    --agent-claude-foreground: #b2500f;
-    --agent-claude-border: #f4d1b6;
-    --agent-codex: #eef0f1;
-    --agent-codex-foreground: #465663;
-    --agent-codex-border: #d4dbe0;
-    --agent-gemini: #eaf0fb;
-    --agent-gemini-foreground: #3b5ea6;
-    --agent-gemini-border: #cad7ef;
-    --terminal: #f7f2eb;
-    --terminal-foreground: #54483e;
-    --terminal-border: #e2d7c9;
+    /* Surfaces: the hover and inset fill is Codex's --alt; the warm and cool ones are its paper and page. */
+    --surface: #eeeee7;
+    --surface-warm: #fffef9;
+    --surface-cool: #f6f5f0;
+    --working: #e1eee4;
+    --working-foreground: #1b664e;
+    --working-border: #b7cbb9;
+    --review: #eee5f1;
+    --review-foreground: #654a73;
+    --review-border: #d8c9de;
+    --attention: #f7ecd6;
+    --attention-foreground: #784b09;
+    --attention-border: #e6d2a8;
+    --idle: #eeeee7;
+    --idle-foreground: #536057;
+    --idle-border: #cfd2c8;
+    --shipped: #deeaf0;
+    --shipped-foreground: #285d72;
+    --shipped-border: #b9d0db;
+    --goal: #e5eee3;
+    --goal-foreground: #385d46;
+    --goal-border: #b7cbb9;
+    --agent-claude: #f8e8df;
+    --agent-claude-foreground: #b44627;
+    --agent-claude-border: #ecc9b8;
+    --agent-codex: #eeeee7;
+    --agent-codex-foreground: #536057;
+    --agent-codex-border: #cfd2c8;
+    --agent-gemini: #deeaf0;
+    --agent-gemini-foreground: #285d72;
+    --agent-gemini-border: #b9d0db;
+    --terminal: #f2f2ec;
+    --terminal-foreground: #536057;
+    --terminal-border: #dfe2d8;
 
-    /* Elevation: hairline plus a soft diffuse lift, warm-tinted, never a hard drop. */
-    --panel-shadow: 0 1px 2px rgb(74 46 20 / 0.04), 0 14px 36px -18px rgb(96 58 22 / 0.16);
-    --popover-shadow: 0 2px 6px rgb(74 46 20 / 0.06), 0 18px 44px -16px rgb(96 58 22 / 0.22);
-    --control-shadow: inset 0 1px 0 rgb(255 255 255 / 0.9), 0 1px 2px rgb(74 46 20 / 0.06);
-    --primary-shadow: inset 0 1px 0 rgb(255 255 255 / 0.3), inset 0 -1px 0 rgb(120 40 0 / 0.18), 0 1px 2px rgb(150 60 0 / 0.22), 0 6px 14px -6px rgb(253 101 0 / 0.45);
-    --tile-shadow: inset 0 1px 0 rgb(255 255 255 / 0.85), 0 1px 1.5px rgb(74 46 20 / 0.1);
+    /* Elevation: Codex's one soft shadow on panels and controls; popovers and the image viewer lift further. */
+    --panel-shadow: 0 2px 4px rgb(30 41 31 / 0.035);
+    --popover-shadow: 0 2px 6px rgb(30 41 31 / 0.06), 0 18px 44px -16px rgb(30 41 31 / 0.22);
+    --control-shadow: 0 2px 4px rgb(30 41 31 / 0.035);
+    --primary-shadow: 0 2px 4px rgb(30 41 31 / 0.035);
+    --tile-shadow: 0 1px 1.5px rgb(30 41 31 / 0.08);
     /*
      * The image viewer floats highest and dims the page more than Dialog and Sheet do (0.4 light, 0.6 dark): nobody
      * reads the page behind an image they opened, so the image gets the attention (owner, 2026-11-18).
      */
-    --image-viewer-shadow: 0 4px 12px rgb(74 46 20 / 0.12), 0 32px 80px -24px rgb(40 24 10 / 0.55);
-    --image-viewer-backdrop: rgb(15 12 10 / 0.7);
-
-    /* Canvas: warm paper with a faint peach haze and a barely-there grain. */
-    --haze-a: rgb(255 196 150 / 0.42);
-    --haze-b: rgb(255 179 102 / 0.24);
-    --haze-c: rgb(253 101 0 / 0.07);
-    --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .35 0 0 0 0 .22 0 0 0 0 .1 0 0 0 .035 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    --image-viewer-shadow: 0 4px 12px rgb(30 41 31 / 0.12), 0 32px 80px -24px rgb(17 22 18 / 0.55);
+    --image-viewer-backdrop: rgb(17 22 18 / 0.7);
+    /* What Dialog and Sheet dim the page with: the same darkest green-black, lighter, so the page stays readable. */
+    --overlay-dim: rgb(17 22 18 / 0.4);
 }
 
 .dark {
-    --background: #0f0c0a;
-    --foreground: #f4ece2;
-    --card: #201b17;
-    --card-foreground: #f4ece2;
-    --popover: #27211c;
-    --popover-foreground: #f4ece2;
-    --primary: #fd6500;
-    --primary-bright: #ff7b1a;
-    --primary-deep: #e55800;
-    --primary-foreground: #0f0c0a;
-    --secondary: #29231e;
-    --secondary-foreground: #e6dbcd;
-    --muted: #29231e;
-    --muted-foreground: #ae9f8e;
-    --accent: #3a2415;
-    --accent-foreground: #ffb27a;
-    --accent-border: #5f3719;
-    --destructive: #f08a86;
-    --border: #3a312a;
-    --input: #483d34;
+    --background: #171b18;
+    --foreground: #f4f3e9;
+    --card: #202520;
+    --card-foreground: #f4f3e9;
+    --popover: #202520;
+    --popover-foreground: #f4f3e9;
+    --primary: #c3e4c7;
+    --primary-bright: #c3e4c7;
+    --primary-deep: #b7d6bb;
+    --primary-foreground: #173426;
+    --secondary: #262d26;
+    --secondary-foreground: #f4f3e9;
+    --muted: #262d26;
+    --muted-foreground: #b4bcb1;
+    --accent: #262d26;
+    --accent-foreground: #a1d6b5;
+    --accent-border: #415e49;
+    /* The old #f08a86, lighter: on its own 18% tint over Codex's --alt it was 4.27:1; this is ≥4.69:1. */
+    --destructive: #f39a96;
+    --border: #434b42;
+    --input: #343d35;
+    /* ≥3.65:1 on every dark surface and field fill (see above). */
+    --control-edge: #7e897f;
+    --ring: #b2e0bb;
+    --chart-1: #a1d6b5;
+    --chart-2: #afd3dd;
+    --chart-3: #d9bedf;
+    --chart-4: #efd096;
+    --chart-5: #f1a183;
+    --sidebar: #202520;
+    --sidebar-foreground: #f4f3e9;
+    --sidebar-primary: #c3e4c7;
+    --sidebar-primary-foreground: #173426;
+    --sidebar-accent: #2a3d30;
+    --sidebar-accent-foreground: #a1d6b5;
+    --sidebar-border: #434b42;
+    --sidebar-ring: #b2e0bb;
+    --place-active: #2a3d30;
+    --place-active-foreground: #a1d6b5;
+
+    --surface: #262d26;
+    --surface-warm: #202520;
+    --surface-cool: #171b18;
+    --working: #2a3d30;
+    --working-foreground: #a1d6b5;
+    --working-border: #415e49;
+    --review: #382e3c;
+    --review-foreground: #d9bedf;
+    --review-border: #5a4a61;
+    --attention: #382f22;
+    --attention-foreground: #efd096;
+    --attention-border: #5c4b31;
+    --idle: #262d26;
+    --idle-foreground: #b4bcb1;
+    --idle-border: #434b42;
+    --shipped: #29383e;
+    --shipped-foreground: #afd3dd;
+    --shipped-border: #41575f;
+    --goal: #263c30;
+    --goal-foreground: #c1d6c4;
+    --goal-border: #415e49;
+    --agent-claude: #382b24;
+    --agent-claude-foreground: #f1a183;
+    --agent-claude-border: #5c4234;
+    --agent-codex: #262d26;
+    --agent-codex-foreground: #b4bcb1;
+    --agent-codex-border: #434b42;
+    --agent-gemini: #29383e;
+    --agent-gemini-foreground: #afd3dd;
+    --agent-gemini-border: #41575f;
+    --terminal: #1b1f1c;
+    --terminal-foreground: #b4bcb1;
+    --terminal-border: #343d35;
+
     /*
-     * The review's #7d6e60 hue and saturation, lightened until it clears 3:1 everywhere: #7d6e60 was 2.89:1 on
-     * #312923 (--input at 30% on the popover, a field inside a dialog). This is ≥3.09:1 on every dark surface.
+     * Codex draws no shadow in dark; popovers and the image viewer keep a lift so they read above the page. "No shadow"
+     * is a transparent one, not `none`: Tailwind lists the shadow after the focus ring in one box-shadow, and a `none`
+     * in that list makes the whole value invalid, which drew no focus ring on a primary button.
      */
-    --control-edge: #897869;
-    --ring: #ff8a3d;
-    --chart-1: #ff7b1a;
-    --chart-2: #4db8d4;
-    --chart-3: #7eb663;
-    --chart-4: #ffb366;
-    --chart-5: #5ba3c7;
-    --sidebar: #15110f;
-    --sidebar-foreground: #f4ece2;
-    --sidebar-primary: #ff7b1a;
-    --sidebar-primary-foreground: #ffffff;
-    --sidebar-accent: #3a2415;
-    --sidebar-accent-foreground: #ffb27a;
-    --sidebar-border: #3a312a;
-    --sidebar-ring: #ff8a3d;
-
-    /* Soft semantic surfaces keep state and ownership readable; subtle shadows add texture. */
-    --surface: #29231e;
-    --surface-warm: #231b15;
-    --surface-cool: #1b1815;
-    --working: #142632;
-    --working-foreground: #8cc6e3;
-    --working-border: #26475a;
-    --review: #2d2214;
-    --review-foreground: #f2c27a;
-    --review-border: #574124;
-    --attention: #341a1a;
-    --attention-foreground: #f4a19c;
-    --attention-border: #5f2d2b;
-    --idle: #24201c;
-    --idle-foreground: #b4a798;
-    --idle-border: #3c352f;
-    --shipped: #1a2816;
-    --shipped-foreground: #a9d590;
-    --shipped-border: #33502a;
-    --goal: #112822;
-    --goal-foreground: #86d3bf;
-    --goal-border: #22503f;
-    --agent-claude: #34210f;
-    --agent-claude-foreground: #ffb27a;
-    --agent-claude-border: #5f3a1c;
-    --agent-codex: #22262a;
-    --agent-codex-foreground: #b8c3cc;
-    --agent-codex-border: #3a434b;
-    --agent-gemini: #182238;
-    --agent-gemini-foreground: #a9c0f0;
-    --agent-gemini-border: #2f4470;
-    --terminal: #181411;
-    --terminal-foreground: #cdbfae;
-    --terminal-border: #362d26;
-
-    --panel-shadow: inset 0 1px 0 rgb(255 240 225 / 0.035), 0 1px 2px rgb(0 0 0 / 0.3), 0 16px 40px -18px rgb(0 0 0 / 0.7);
-    --popover-shadow: inset 0 1px 0 rgb(255 240 225 / 0.04), 0 18px 44px -14px rgb(0 0 0 / 0.75);
-    --control-shadow: inset 0 1px 0 rgb(255 240 225 / 0.05), 0 1px 2px rgb(0 0 0 / 0.35);
-    --primary-shadow: inset 0 1px 0 rgb(255 255 255 / 0.25), inset 0 -1px 0 rgb(80 25 0 / 0.3), 0 1px 2px rgb(0 0 0 / 0.4), 0 6px 16px -6px rgb(253 101 0 / 0.4);
-    --tile-shadow: inset 0 1px 0 rgb(255 240 225 / 0.06), 0 1px 1.5px rgb(0 0 0 / 0.4);
-    --image-viewer-shadow: inset 0 1px 0 rgb(255 240 225 / 0.05), 0 4px 12px rgb(0 0 0 / 0.5), 0 32px 80px -24px rgb(0 0 0 / 0.9);
-    --image-viewer-backdrop: rgb(15 12 10 / 0.75);
-
-    --haze-a: rgb(253 101 0 / 0.09);
-    --haze-b: rgb(255 179 102 / 0.05);
-    --haze-c: rgb(253 101 0 / 0.04);
-    --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 .9 0 0 0 0 .8 0 0 0 .025 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    --panel-shadow: 0 0 #0000;
+    --popover-shadow: 0 18px 44px -14px rgb(0 0 0 / 0.75);
+    --control-shadow: 0 0 #0000;
+    --primary-shadow: 0 0 #0000;
+    --tile-shadow: 0 0 #0000;
+    --image-viewer-shadow: 0 4px 12px rgb(0 0 0 / 0.5), 0 32px 80px -24px rgb(0 0 0 / 0.9);
+    --image-viewer-backdrop: rgb(17 22 18 / 0.75);
+    /* Stronger in dark, where the page is already dark. */
+    --overlay-dim: rgb(17 22 18 / 0.6);
 }
 
 @layer base {
@@ -313,9 +359,8 @@
     @apply border-border outline-ring/50;
     }
   html {
-    /* Generous 17px base on desktop, like the fly.io dashboard; 16px on phones. Rem sizes scale with it. */
+    /* 16px at every width (Codex design.css line 6: body 16px/1.54). Rem sizes are 16px. */
     font-size: 100%;
-    @media (width >= 48rem) { font-size: 106.25%; }
     color-scheme: light;
     @apply font-sans;
     }
@@ -323,45 +368,41 @@
     color-scheme: dark;
     }
   /*
-   * A focused control never sits under the sticky header or the phone's bottom bar (c-shell-resizable-navbar,
-   * c-shell-notch F focus-not-obscured; WCAG 2.4.11): scrolling something into view (focus, the home anchors) keeps
-   * this much room. The header's floating pill ends 76px down at the 16px root (3.5rem tall, 20px lower), 79.5px at
-   * 17px, so 5.5rem leaves 8–12px; the pinned bottom bar is 69px tall (60px items, 8px padding, 1px edge), so 5rem plus
-   * the safe area leaves 11px. Only while the My Work shell is on the page: the install funnel keeps its own layout.
-   * --page-header-bottom is where that pill ends (App.tsx HeaderBody h-14, resizable-navbar's 20px drop), where the
-   * List's column headings stick so no row shows between them and the pill.
+   * A focused control never sits under the sticky bar or the phone's bottom bar (F focus-not-obscured; WCAG 2.4.11):
+   * scrolling something into view (focus, a board the page opens at) keeps this much room, Codex's numbers: 82px under
+   * the 72px bar, 65px under the phone's 57px bar, and 82px above the 63px bottom bar plus the safe area. Only while
+   * the My Work shell is on the page: the install funnel keeps its own layout. --page-header-bottom is where the bar
+   * ends, where the List's column headings and My Rules' scope chips stick so no row shows between them and the bar.
    */
   html:has([data-slot="work-shell"]) {
-    --page-header-bottom: calc(3.5rem + 20px);
-    scroll-padding-top: 5.5rem;
-    @media (width < 48rem) {
-      scroll-padding-bottom: calc(5rem + env(safe-area-inset-bottom));
+    --page-header-bottom: var(--spacing-top-bar-phone);
+    scroll-padding-top: 65px;
+    scroll-padding-bottom: calc(82px + env(safe-area-inset-bottom));
+    @media (width >= 48rem) {
+      --page-header-bottom: var(--spacing-top-bar);
+      scroll-padding-top: 82px;
+      scroll-padding-bottom: 0;
     }
     }
   /*
-   * My Rules below the lg width keeps its scope chips stuck under the header pill (pages/my-rules.tsx ScopeChips: from
-   * 76px down, 61px tall), so what scrolls into view there clears both: 76 + 61 + 11px of air = 9.25rem at the 16px
-   * root (c-rules-scope-nav, F focus-not-obscured).
+   * My Rules below the lg width keeps its scope chips stuck under the bar (pages/my-rules.tsx ScopeChips, 61px tall),
+   * so what scrolls into view there clears both: the bar, the chips and 11px of air (c-rules-scope-nav, F
+   * focus-not-obscured).
    */
   html:has([data-slot="rule-scope-chips"]) {
     @media (width < 64rem) {
-      scroll-padding-top: 9.25rem;
+      scroll-padding-top: calc(var(--page-header-bottom) + 72px);
     }
     }
   body {
     @apply bg-background text-foreground antialiased;
-    background-image:
-      var(--grain),
-      radial-gradient(1100px 620px at -5% -10%, var(--haze-a), transparent 62%),
-      radial-gradient(900px 560px at 105% 0%, var(--haze-b), transparent 60%),
-      radial-gradient(1200px 720px at 60% 115%, var(--haze-c), transparent 62%);
-    background-attachment: fixed;
+    line-height: 1.54;
     }
 }
 
 /* Small caps section label, as in the fly.io sidebar (BUILD, MONITOR). */
 @utility section-label {
-  /* 12px at the 16px phone root, 12.75px at the 17px desktop root: the review's Keep line "card text ≥12px". */
+  /* 12px at the 16px root: the review's Keep line "card text ≥12px". */
   font-size: 0.75rem;
   font-weight: 500;
   letter-spacing: 0.08em;

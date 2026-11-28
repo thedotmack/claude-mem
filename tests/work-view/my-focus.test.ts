@@ -275,10 +275,11 @@ describe('ownerGoalsAreaRows', () => {
 
 describe('nav words', () => {
   it('matches whole nav labels only, so ordinary names stay usable', () => {
-    for (const [name, label] of [['My Work', 'my work'], ['Ship the My Work viewer', 'my work'], ['other', 'other'], ['Past focus notes', 'past focus'], ['Monitor', 'monitor'], ['Steer-ing', 'steer'], ['  SUGGESTED ', 'suggested']]) {
+    for (const [name, label] of [['My Work', 'my work'], ['Ship the My Work viewer', 'my work'], ['other', 'other'], ['Past focus notes', 'past focus'], ['Focus areas', 'focus areas'], ['Review-Stack cleanup', 'review stack'], ['  SUGGESTED ', 'suggested']]) {
       expect(navWordIn(name)).toBe(label);
     }
-    for (const name of ['Work viewer', 'Network', 'My laptop', 'Focus mode', 'Others', 'Monitoring', 'Rules engine']) expect(navWordIn(name)).toBeNull();
+    // The rail's old group labels are gone, and the bar's single common words never refuse a name.
+    for (const name of ['Work viewer', 'Network', 'My laptop', 'Focus mode', 'Others', 'Monitor', 'Steer', 'Rules engine', 'Requests', 'Memory', 'Workspace', 'Focus area', 'Review']) expect(navWordIn(name)).toBeNull();
   });
 
   it('refuses a proposed area named like a nav item', () => {

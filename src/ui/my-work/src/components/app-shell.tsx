@@ -1,127 +1,124 @@
-// The shell's own pieces that show before the work model has loaded (page-06): the brand the header always keeps, the
-// skeleton of the real layout while the first read is open, and the failed read. Both screens take the theme from
-// <html>, which index.html sets before the first paint (G8), so a dark user never sees them light.
-import { useEffect, useRef, type ReactNode } from 'react'
+// The page around every My Work screen (design pass Phase 3): the skip link, the one bar, the page column with its
+// h1, and the phone's bottom bar. The loaded app and the two screens before it (the first read still open, the first
+// read failed) draw the same frame, so the bar works on all three: the places and Memory stay one press away while
+// the work cannot be read (Codex D14, Claude D22). The screens take the theme from <html>, which index.html sets before
+// the first paint (G8), so a dark user never sees them light.
+import { useEffect, useRef, type ReactNode, type Ref } from 'react'
+import { CircleAlertIcon, LibraryIcon, RefreshCwIcon } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { Collapsible, CollapsibleContent, CollapsibleFoldTrigger } from '@/components/ui/collapsible'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { isServedFromCloud } from '@/live/served-from'
-import { CLASSIC_VIEWER_PATH } from './bits'
-import { CmemMark } from './brand'
-
-/** The logo and the name, as the header shows them at every width and in every state (page-06 F navigation-consistency). */
-export function AppBrand() {
-  return (
-    <span className="flex shrink-0 items-center gap-2">
-      <CmemMark className="size-8 text-[#D86441]" />
-      <span className="sr-only md:not-sr-only md:text-[0.95rem] md:font-semibold md:tracking-tight">claude-mem</span>
-    </span>
-  )
-}
-
-/** The bar the loaded app draws at the top of the page, with only what is known before any work has been read. */
-function ShellHeader() {
-  return (
-    <header className="sticky top-0 z-30 border-b border-border/70 bg-card/95">
-      <div className="mx-auto flex h-14 max-w-[1440px] items-center gap-3 px-4 md:px-6">
-        <AppBrand />
-      </div>
-    </header>
-  )
-}
+import { MEMORY_PLACE } from '../../../app-places'
+import { AppBottomBar, AppTopBar, usePageHeadingBeforeLoad } from './app-bar'
 
 /**
- * The page under the header: the rail column (from 768px; icons only up to 1023px) and the main column. The loaded app
- * (App.tsx) and the screens below draw the same grid, so the page keeps its shape from the first paint.
+ * `above`: what sits over the bar (the cloud trial banner, an offer, the sample strip). `heading`: the page's h1, shown
+ * unless `headingHidden` (a focus area's page names its area in its own header). `below`: what floats over the page (the
+ * request drawer). `data-slot="work-shell"` turns on the scroll padding in index.css that keeps a focused control clear
+ * of the bar and the phone's bottom bar.
  */
-export function ShellGrid({ children }: { children: ReactNode }) {
+export function ShellFrame({ above, heading, headingHidden = false, mainRef, below, children }: {
+  above?: ReactNode; heading: string; headingHidden?: boolean; mainRef?: Ref<HTMLElement>; below?: ReactNode; children: ReactNode
+}) {
+  const { t } = useI18n()
   return (
-    <div className="mx-auto max-w-[1440px] gap-6 px-4 py-4 md:grid md:grid-cols-[52px_minmax(0,1fr)] md:px-6 md:py-6 lg:grid-cols-[184px_minmax(0,1fr)] lg:gap-8">
-      {children}
+    <div data-slot="work-shell" className="min-h-svh pb-[calc(var(--spacing-bottom-bar)+var(--spacing-bottom-bar-gap)+env(safe-area-inset-bottom))] text-foreground md:pb-0">
+      {/* The first Tab stop (F skip-links), as in setup (setup-page.tsx). */}
+      <a href="#main-content" className="sr-only rounded-lg border border-control-edge bg-card px-4 py-2.5 text-sm font-medium text-foreground shadow-popover outline-none focus:not-sr-only focus:fixed focus:top-3 focus:left-4 focus:z-[200] focus-visible:ring-3 focus-visible:ring-ring/50">
+        {t('Skip to content')}
+      </a>
+      {above}
+      <AppTopBar />
+      <div className="mx-auto w-full max-w-page px-4 pt-6 md:px-14 md:pt-12 md:pb-16">
+        <main ref={mainRef} id="main-content" tabIndex={-1} className="min-w-0 space-y-4 outline-none md:space-y-5">
+          <h1 className={cn('text-page-title-phone md:text-page-title', headingHidden && 'sr-only')}>{heading}</h1>
+          {children}
+        </main>
+      </div>
+      <AppBottomBar />
+      {below}
     </div>
   )
 }
 
-/** The rail's place, still empty, and the main column. */
-function ShellColumns({ children }: { children: ReactNode }) {
+/** A panel of the loading screen: a card holding still placeholder lines (the ring beside the words is what moves). */
+function PlaceholderPanel({ className, lines }: { className?: string; lines: string[] }) {
   return (
-    <ShellGrid>
-      <div aria-hidden="true" className="hidden space-y-2.5 md:block">
-        {/* Still, not pulsing: the ring beside the words is the one thing that moves (plan rule 8). */}
-        {Array.from({ length: 5 }, (_, row) => <Skeleton key={row} className="h-7 rounded-[10px] motion-safe:animate-none" />)}
-      </div>
-      <main id="main-content" tabIndex={-1} className="min-w-0 outline-none">{children}</main>
-    </ShellGrid>
+    <div className={cn('space-y-3 rounded-xl border bg-card p-6 md:p-7', className)}>
+      {lines.map((line, index) => <Skeleton key={index} className={cn('h-4 motion-safe:animate-none', line)} />)}
+    </div>
   )
 }
 
 /**
- * While the first read is open: the header, then the shape of the page (a title, two cards, rows) around one status
- * line, read out once (D b18 M 372). No timer: the read ends in the work or in the failed screen below.
+ * While the first read is open (Codex D14, mockup `loading`): the bar, the page's h1, one status line read out once
+ * (D b18 M 372), and the home page's content area kept for it: the lead card and its neighbour, then a row of focus
+ * areas. Nothing shaped like navigation: the bar above is the real one. No timer: the read ends in the work or in the
+ * failed screen below.
  */
 export function ShellLoading() {
   const { t } = useI18n()
+  const heading = usePageHeadingBeforeLoad()
   return (
-    <div className="min-h-svh text-foreground">
-      <ShellHeader />
-      <ShellColumns>
-        <div aria-busy="true" className="space-y-4">
-          <Skeleton className="h-7 w-1/2 max-w-sm motion-safe:animate-none" />
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Skeleton className="h-36 rounded-xl motion-safe:animate-none" />
-            <Skeleton className="h-36 rounded-xl motion-safe:animate-none" />
-          </div>
-          <p className="flex justify-center py-1 text-sm text-muted-foreground">
-            <Spinner label={t('Reading local work…')} />
-          </p>
-          {Array.from({ length: 3 }, (_, row) => <Skeleton key={row} className="h-12 rounded-xl motion-safe:animate-none" />)}
+    <ShellFrame heading={heading}>
+      <div aria-busy="true" className="space-y-5 md:space-y-8">
+        <p role="status" className="flex items-center gap-2.5 text-muted-foreground">
+          <Spinner className="size-4.5" />{t('Reading local work…')}
+        </p>
+        <div aria-hidden="true" className="grid gap-3 md:grid-cols-3 md:gap-8">
+          <PlaceholderPanel className="md:col-span-2" lines={['w-2/5', 'h-9 w-3/5', 'w-4/5', 'w-2/5']} />
+          <PlaceholderPanel lines={['w-2/5', 'w-4/5']} />
         </div>
-      </ShellColumns>
-    </div>
+        <div aria-hidden="true" className="space-y-3">
+          <Skeleton className="h-4 w-2/5 motion-safe:animate-none" />
+          <div className="grid gap-3 md:grid-cols-3 md:gap-4">
+            {Array.from({ length: 3 }, (_, card) => <PlaceholderPanel key={card} lines={['w-2/5', 'w-4/5']} />)}
+          </div>
+        </div>
+      </div>
+    </ShellFrame>
   )
 }
 
 /**
- * The first read failed (page-06, G17): what happened in plain words, saying the worker may be restarting; the raw
- * cause folded under Details in monospace; then "Try again" (the screen's one primary, G1) and the classic viewer,
- * which the same worker serves as a simpler page, on this computer and behind the cloud viewer's gate alike
- * (services/viewer-host/src/gate.ts), as the loaded header offers it. Announced as an alert. No automatic retry: the
- * person decides. `focusRetry`: this screen came back after the person pressed Try again, so focus goes back to that
- * button instead of staying on the page body (the loading screen in between had nothing to focus).
+ * The first read failed (Codex D14, mockup `unavailable`; G17): what did not answer in one plain sentence, then "Try
+ * again" (the screen's one primary, G1) and Memory, which the same worker serves as its own page, on this computer and
+ * behind the cloud viewer's gate alike (services/viewer-host/src/gate.ts); the raw cause folds under Technical details.
+ * Announced as an alert. No automatic retry: the person decides. `focusRetry`: this screen came back after the person
+ * pressed Try again, so focus goes back to that button instead of staying on the page body.
  */
 export function ShellReadError({ cause, onRetry, focusRetry = false }: { cause: string; onRetry: () => void; focusRetry?: boolean }) {
   const { t } = useI18n()
+  const heading = usePageHeadingBeforeLoad()
   const cloud = isServedFromCloud(window.location.hostname)
   const retryRef = useRef<HTMLButtonElement>(null)
   useEffect(() => { if (focusRetry) retryRef.current?.focus() }, [focusRetry])
   return (
-    <div className="min-h-svh text-foreground">
-      <ShellHeader />
-      <ShellColumns>
-        <Alert variant="attention" role="alert" className="max-w-xl px-5 py-4">
-          <AlertTitle><h2 className="text-base font-semibold">{t("Can't read local work right now")}</h2></AlertTitle>
-          <AlertDescription className="text-foreground/80">
-            {cloud ? t('My Work did not get an answer from your cloud viewer. Try again in a moment.')
-              : t('My Work did not get an answer from the claude-mem worker on this computer. It may be restarting.')}
-          </AlertDescription>
-          {/* Beside the description in the alert's text column, so the alert's own link underline stays off the buttons. */}
-          <div className="col-start-2 space-y-3 pt-2.5">
-            <Collapsible>
-              <CollapsibleFoldTrigger className="text-xs">{t('Details')}</CollapsibleFoldTrigger>
-              <CollapsibleContent>
-                <p className="mt-2 rounded-md bg-card px-3 py-2 font-mono text-xs break-words text-foreground/80">{cause}</p>
-              </CollapsibleContent>
-            </Collapsible>
-            <div className="flex flex-wrap gap-2">
-              <Button ref={retryRef} onClick={onRetry}>{t('Try again')}</Button>
-              <Button asChild variant="outline"><a href={CLASSIC_VIEWER_PATH}>{t('Open classic viewer')}</a></Button>
-            </div>
-          </div>
-        </Alert>
-      </ShellColumns>
-    </div>
+    <ShellFrame heading={heading}>
+      <section role="alert" className="max-w-2xl space-y-3 rounded-xl border bg-card p-4.5 shadow-panel md:p-8">
+        <span className="flex size-10 items-center justify-center rounded-xl bg-muted text-muted-foreground"><CircleAlertIcon aria-hidden="true" className="size-5" /></span>
+        <h2 className="text-2xl font-semibold tracking-tight">{t('Local work couldn’t load')}</h2>
+        <p className="text-muted-foreground">
+          {cloud ? t('Your cloud viewer didn’t answer. Try again in a moment.') : t('The worker on this computer didn’t answer. It may be restarting.')}
+        </p>
+        <div className="flex flex-wrap gap-2 pt-1">
+          <Button ref={retryRef} onClick={onRetry}><RefreshCwIcon aria-hidden="true" />{t('Try again')}</Button>
+          <Button asChild variant="outline"><a href={MEMORY_PLACE.address}><LibraryIcon aria-hidden="true" />{t('Open Memory')}</a></Button>
+        </div>
+        <Collapsible>
+          {/* A quiet text button (Codex's `textbtn`): the details are for whoever has to fix it, not the next step. */}
+          <CollapsibleTrigger asChild>
+            <Button variant="ghost" size="sm" className="-ml-2 text-accent-foreground">{t('Technical details')}</Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <p className="mt-2 rounded-md bg-muted px-3 py-2 font-mono text-xs break-words text-foreground/80">{cause}</p>
+          </CollapsibleContent>
+        </Collapsible>
+      </section>
+    </ShellFrame>
   )
 }

@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { cn } from "cn"
+import { cn } from "@/lib/utils"
 import { Dialog as DialogPrimitive } from "radix-ui"
 import { useControllableState } from "@radix-ui/react-use-controllable-state"
 
@@ -86,7 +86,7 @@ function DialogClose({
 
 /**
  * Dims the page and does not blur it (D b8 M 172): the page stays readable behind, and the dialog's ≥3:1 edge carries
- * the separation. The dim is the app's darkest colour (#0f0c0a), stronger in dark mode where the page is already dark.
+ * the separation. The dim is the --overlay-dim token (index.css), stronger in dark mode.
  */
 function DialogOverlay({
   className,
@@ -96,7 +96,7 @@ function DialogOverlay({
     <DialogPrimitive.Overlay
       data-slot="dialog-overlay"
       className={cn(
-        "fixed inset-0 isolate z-50 bg-[rgb(15_12_10/0.4)] duration-100 motion-safe:data-open:animate-in data-open:fade-in-0 motion-safe:data-closed:animate-out data-closed:fade-out-0 dark:bg-[rgb(15_12_10/0.6)]",
+        "fixed inset-0 isolate z-50 bg-overlay-dim duration-100 motion-safe:data-open:animate-in data-open:fade-in-0 motion-safe:data-closed:animate-out data-closed:fade-out-0",
         className
       )}
       {...props}

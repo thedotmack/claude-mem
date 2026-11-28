@@ -310,12 +310,12 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
     await withTimeout(ready, 15_000, 'Primitive fixture did not start');
     page = await connectToPage(chrome, server.url.href);
 
-    // Desktop, fine pointer, 1440 wide (the 17px root).
+    // Desktop, fine pointer, 1440 wide (the 16px root, design pass Phase 3).
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1400, deviceScaleFactor: 1, mobile: false });
     await page.settle();
     const desktop = await page.evaluate('window.measureDesktop()');
     expect(desktop.coarse).toBe(false);
-    expect(desktop.rootFontSize).toBe('17px');
+    expect(desktop.rootFontSize).toBe('16px');
     // The review's sizes: default, icon, select and input at least 44px; lg at least 48px; sm keeps a smaller look.
     for (const name of ['button-default', 'button-icon', 'select-default', 'input']) expect(desktop.heights[name]).toBeGreaterThanOrEqual(44);
     expect(desktop.heights['button-lg']).toBeGreaterThanOrEqual(48);
@@ -328,19 +328,19 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
       'toggle-other': 'pointer', 'switch-off': 'pointer', 'label-switch': 'pointer', card: 'pointer', 'input-disabled': 'not-allowed',
       'button-disabled': 'not-allowed', 'button-aria-disabled': 'not-allowed', 'button-busy': 'progress' });
     expect(desktop.disabled).toEqual({ opacity: '0.5', pointerEvents: 'auto', ariaOpacity: '0.5', inputPointerEvents: 'auto' });
-    expect(desktop.primary).toEqual({ color: rgb('#0f0c0a'), textShadow: 'none' });
-    const lightEdge = rgb('#8f8071');
+    expect(desktop.primary).toEqual({ color: rgb('#fbfff8'), textShadow: 'none' });
+    const lightEdge = rgb('#7a857c');
     expect(desktop.edges).toEqual({ outlineButton: lightEdge, select: lightEdge, input: lightEdge, textarea: lightEdge, badge: lightEdge,
-      toggleOther: lightEdge, switchOff: lightEdge, switchOn: rgb('#e55800') });
+      toggleOther: lightEdge, switchOff: lightEdge, switchOn: rgb('#1e3a2d') });
     // The chosen toggle reads heavier by a 0.5px stroke on the same weight, and its check keeps its room when hidden, so
     // choosing an item does not widen it (widths on the real page: toggle-width.browser.test.ts).
-    expect(desktop.toggle).toEqual({ chosenWeight: '500', chosenStroke: '0.5px', chosenBackground: rgb('#f3ece3'), chosenEdge: rgb('#75685c'),
+    expect(desktop.toggle).toEqual({ chosenWeight: '500', chosenStroke: '0.5px', chosenBackground: rgb('#eeeee7'), chosenEdge: rgb('#536057'),
       chosenCheck: 'visible', otherCheck: 'hidden', otherWeight: '500', otherStroke: '0px' });
     expect(desktop.switchCheck).toEqual({ on: '1', off: '0' });
     expect(desktop.bare).toEqual({ padding: '0px', background: 'rgba(0, 0, 0, 0)', border: 'rgba(0, 0, 0, 0)', fontSize: '19px', fontWeight: '700',
       lineHeight: '30px', whiteSpace: 'normal' });
     expect(desktop.busy).toEqual({ ariaBusy: 'true', spinner: true, text: 'Refresh nowWorking…', labelled: 'Refreshing…' });
-    expect(desktop.fields).toEqual({ autoComplete: 'off', readOnlyEdge: 'dashed', countText: '60 / 6060 of 60 characters', countColor: rgb('#925e0e'), errorIcon: true });
+    expect(desktop.fields).toEqual({ autoComplete: 'off', readOnlyEdge: 'dashed', countText: '60 / 6060 of 60 characters', countColor: rgb('#654a73'), errorIcon: true });
     expect(desktop.numbers.tabular).toBe('tabular-nums');
     expect(desktop.numbers.monoNumeric).toBe('tabular-nums');
     expect(desktop.numbers.monoFamily).toContain('monospace');
@@ -365,7 +365,7 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
     };
     const plainAtRest = await page.evaluate('window.backgroundOf("secondary-plain")');
     await hover('team-on');
-    expect(await page.evaluate('window.hoverLook("team-on")')).toEqual({ hoverCapablePointer: true, hovered: true, background: rgb('#fdebdd') });
+    expect(await page.evaluate('window.hoverLook("team-on")')).toEqual({ hoverCapablePointer: true, hovered: true, background: rgb('#eeeee7') });
     await hover('secondary-plain');
     const plainHovered = await page.evaluate('window.hoverLook("secondary-plain")');
     expect({ hoverCapablePointer: plainHovered.hoverCapablePointer, hovered: plainHovered.hovered, lookChanged: plainHovered.background !== plainAtRest })
@@ -376,7 +376,7 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
       await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
       await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
       await page.settle();
-      expect(await page.evaluate('window.backgroundOf("press-override")')).toBe(rgb('#fdebdd'));
+      expect(await page.evaluate('window.backgroundOf("press-override")')).toBe(rgb('#eeeee7'));
       await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
       await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 });
       await page.settle();
@@ -390,7 +390,7 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
     const buttonFocus = await page.evaluate('window.focusState()');
     expect(buttonFocus.focused).toBe('button-default');
     expect(buttonFocus.focusVisible).toBe(true);
-    expect(buttonFocus.edge).toBe(rgb('#e15c02'));
+    expect(buttonFocus.edge).toBe(rgb('#22684f'));
     expect(buttonFocus.boxShadow).toContain('0px 0px 0px 3px');
     await page.evaluate('document.querySelector(\'[data-test="card"]\').focus()');
     await page.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
@@ -416,7 +416,7 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
     // Input keeps its orange focus edge (D b12 K245/248).
     await page.evaluate('window.focusOn("input")');
     const inputFocused = await page.evaluate('window.fieldLook("input")');
-    expect(inputFocused.edge).toBe(rgb('#e15c02'));
+    expect(inputFocused.edge).toBe(rgb('#22684f'));
     // Command's search field shows that look too, on its group: the same edge and the same 3px ring (it showed none).
     const ringOf = (boxShadow: string) => boxShadow.match(/(?:[a-z]+\([^)]*\)|#[0-9a-f]+) 0px 0px 0px 3px/)?.[0] ?? null;
     const inputRing = ringOf(inputFocused.boxShadow);
@@ -442,9 +442,9 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
     await page.settle();
     const list = await page.evaluate('window.openList()');
     expect({ listbox: list.listbox, chosenHasCheck: list.chosenHasCheck, highlighted: list.highlighted })
-      .toEqual({ listbox: true, chosenHasCheck: true, highlighted: rgb('#e1d6c8') });
+      .toEqual({ listbox: true, chosenHasCheck: true, highlighted: rgb('#dfe2d8') });
     // The highlighted row's mark: a 1px --muted-foreground edge, ≥3:1 against the list (token contrast test).
-    expect(list.mark).toContain(`${rgb('#75685c')} 0px 0px 0px 1px inset`);
+    expect(list.mark).toContain(`${rgb('#536057')} 0px 0px 0px 1px inset`);
     await pressKey('Escape', 'Escape', 27);
     // A popper-positioned list does not animate open under reduced motion (the component gates it, rule 8).
     await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
@@ -457,7 +457,7 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work primitive size, cursor
 
     // Dark theme: the dark control edge, and near-black text on orange.
     await page.evaluate('window.setDark(true)');
-    expect(await page.evaluate('window.darkEdges()')).toEqual({ outlineButton: rgb('#897869'), primaryText: rgb('#0f0c0a'), ring: '#ff8a3d' });
+    expect(await page.evaluate('window.darkEdges()')).toEqual({ outlineButton: rgb('#7e897f'), primaryText: rgb('#173426'), ring: '#b2e0bb' });
     await page.evaluate('window.setDark(false)');
 
     // Coarse pointer at a desktop width: the pointer clause alone makes every control 44px.

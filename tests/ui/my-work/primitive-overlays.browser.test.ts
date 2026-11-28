@@ -396,7 +396,8 @@ describeWithChrome('My Work overlay and status primitives in Chrome', () => {
       return { role: content.getAttribute('role'),
         named: document.getElementById(content.getAttribute('aria-labelledby'))?.textContent ?? null,
         described: document.getElementById(content.getAttribute('aria-describedby'))?.textContent ?? null,
-        closeHeight: content.querySelector('[data-slot=dialog-close]').getBoundingClientRect().height,
+        // Layout height: the dialog opens with a short zoom, and a box read mid-zoom is scaled down.
+        closeHeight: content.querySelector('[data-slot=dialog-close]').offsetHeight,
         edge: getComputedStyle(content).borderTopWidth, blur: getComputedStyle(overlay).backdropFilter }; })()`);
     expect({ role: dialogLook.role, named: dialogLook.named, described: dialogLook.described })
       .toEqual({ role: 'dialog', named: 'Add a rule', described: 'Write it the way you would say it.' });
@@ -471,8 +472,8 @@ describeWithChrome('My Work overlay and status primitives in Chrome', () => {
     expect(scrolled.closeTop).toBeLessThan(20);
     expect(scrolled.closeHeight).toBeGreaterThanOrEqual(44);
     expect(Math.abs(scrolled.headerTop)).toBeLessThan(1);
-    // One width for every side panel: max-w-xl (36rem) at the 17px desktop root.
-    expect(scrolled.width).toBe(612);
+    // One width for every side panel: max-w-xl (36rem) at the 16px root.
+    expect(scrolled.width).toBe(576);
     expect(scrolled.edge).toBe('1px');
     await press('Escape');
     await waitFor(`!document.querySelector('[data-slot=sheet-content]') && document.activeElement.id === 'open-sheet'`, 'focus back on the sheet opener');
@@ -507,9 +508,9 @@ describeWithChrome('My Work overlay and status primitives in Chrome', () => {
 
   it('the fold row is 44px or taller with its chevron turning, and opens by keyboard', async () => {
     expect(await heightOf('#fold-trigger')).toBeGreaterThanOrEqual(44);
-    // At rest its edge is the ≥3:1 control edge (#8f8071 here); focused, the ring colour replaces it. (It may hold focus
+    // At rest its edge is the ≥3:1 control edge (#7a857c here); focused, the ring colour replaces it. (It may hold focus
     // already: the sheet above returned focus to the element its Tab reached.)
-    expect(await page!.evaluate(`(() => { document.activeElement?.blur(); return getComputedStyle(document.getElementById('fold-trigger')).borderTopColor; })()`)).toBe('rgb(143, 128, 113)');
+    expect(await page!.evaluate(`(() => { document.activeElement?.blur(); return getComputedStyle(document.getElementById('fold-trigger')).borderTopColor; })()`)).toBe('rgb(122, 133, 124)');
     await tabUntil(`active.id === 'fold-trigger'`);
     await press('Enter');
     expect(await page!.evaluate(`(() => { const trigger = document.getElementById('fold-trigger');
@@ -524,15 +525,16 @@ describeWithChrome('My Work overlay and status primitives in Chrome', () => {
     await waitFor(`document.activeElement?.dataset.slot === 'dropdown-menu-item'`, 'the menu to open with its first row focused');
     const menu = await page!.evaluate(`(() => { const items = [...document.querySelectorAll('[data-slot=dropdown-menu-item]')];
       const content = document.querySelector('[data-slot=dropdown-menu-content]');
-      return { heights: items.map(item => item.getBoundingClientRect().height), focusedText: document.activeElement.textContent,
+      // Layout heights: the menu opens with a short zoom, and a box read mid-zoom is scaled down.
+      return { heights: items.map(item => item.offsetHeight), focusedText: document.activeElement.textContent,
         highlight: getComputedStyle(document.activeElement).backgroundColor, menu: getComputedStyle(content).backgroundColor,
         mark: getComputedStyle(document.activeElement).boxShadow,
         hint: document.querySelector('#menu-mark-done [data-slot=dropdown-menu-item-hint]')?.textContent ?? null }; })()`);
     for (const height of menu.heights) expect(height).toBeGreaterThanOrEqual(40);
     expect(menu.focusedText).toBe('Rename');
     expect(menu.highlight).not.toBe(menu.menu);
-    // The highlighted row's mark: a 1px --muted-foreground edge (#75685c here), ≥3:1 on the menu (token contrast test).
-    expect(menu.mark).toContain('rgb(117, 104, 92) 0px 0px 0px 1px inset');
+    // The highlighted row's mark: a 1px --muted-foreground edge (#536057 here), ≥3:1 on the menu (token contrast test).
+    expect(menu.mark).toContain('rgb(83, 96, 87) 0px 0px 0px 1px inset');
     expect(menu.hint).toBe('moves to Past focus');
     await press('Escape');
     await waitFor(`document.activeElement.id === 'menu-trigger'`, 'focus back on the menu trigger');

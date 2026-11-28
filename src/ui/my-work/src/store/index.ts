@@ -42,19 +42,89 @@ function browserStorage(): StoreEnvironment['storage'] {
   }
 }
 
+/** What this page keeps in a history entry's state: the entry's id, and where it was left scrolled when it was written. */
+interface EntryState { entryId?: unknown; scrollY?: unknown }
+
+/**
+ * Where the entry shown was left scrolled when this page's document went away (a reload, a link to another site):
+ * history.state cannot be written then (Chrome keeps no change made while the page hides), so it waits in the tab's
+ * sessionStorage for the next document. One record, replaced each time.
+ */
+const LEFT_DOCUMENT_STORAGE_KEY = 'claude-mem:my-work:left-scrolled'
+
+/**
+ * The page's history entries, and where the person left each one scrolled, so Back, Forward and a reload land there
+ * again (design pass Phase 3). The app restores the position itself (`scrollRestoration = 'manual'`) once the page it
+ * lands on is tall enough (App.tsx, lib/scroll-ask.ts): the browser's own restore ran while that page was still being
+ * drawn. Each entry carries an id in history.state and positions are kept by id, because after Back or Forward the
+ * entry the person left can no longer be written. A push also writes the position into the entry it leaves, so a new
+ * document of this page finds it there; the entry shown when the document goes away keeps it in sessionStorage.
+ */
+function browserHistory() {
+  window.history.scrollRestoration = 'manual'
+  // Unique across this tab's documents: a reload starts the count again, with a new start time.
+  let entries = 0
+  const newEntryId = () => `${performance.timeOrigin}:${++entries}`
+  const stateOf = (): EntryState => (window.history.state ?? {}) as EntryState
+  /** Where each entry this document showed was left scrolled: one number per entry visited. */
+  const leftScrolledAt = new Map<string, number>()
+  const entryIdNow = stateOf().entryId
+  let current = typeof entryIdNow === 'string' ? entryIdNow : newEntryId()
+  const writeEntry = (scrolled: boolean) => window.history.replaceState({ ...stateOf(), entryId: current, ...(scrolled ? { scrollY: window.scrollY } : {}) }, '')
+  writeEntry(false)
+  // sessionStorage can throw (blocked site data); positions then last only while this document does.
+  try {
+    const left: unknown = JSON.parse(window.sessionStorage.getItem(LEFT_DOCUMENT_STORAGE_KEY) ?? 'null')
+    const { entryId, scrollY } = (left ?? {}) as EntryState
+    if (entryId === current && typeof scrollY === 'number') leftScrolledAt.set(current, scrollY)
+  } catch { /* no position from the last document */ }
+  window.addEventListener('pagehide', () => {
+    try { window.sessionStorage.setItem(LEFT_DOCUMENT_STORAGE_KEY, JSON.stringify({ entryId: current, scrollY: window.scrollY })) } catch { /* see above */ }
+  })
+  return {
+    writeUrl: (url: URL, replace: boolean) => {
+      if (replace) { window.history.replaceState(window.history.state, '', url); return }
+      leftScrolledAt.set(current, window.scrollY)
+      writeEntry(true)
+      current = newEntryId()
+      window.history.pushState({ entryId: current }, '', url)
+    },
+    /**
+     * Back or Forward showed another entry: the one left keeps where it was scrolled (under `manual` the window has not
+     * moved yet), and an entry this page did not make (a link to `#main-content`) gets an id.
+     */
+    arrived: () => {
+      leftScrolledAt.set(current, window.scrollY)
+      const id = stateOf().entryId
+      current = typeof id === 'string' ? id : newEntryId()
+      if (typeof id !== 'string') writeEntry(false)
+    },
+    savedScrollY: (): number | null => {
+      const written = stateOf().scrollY
+      return leftScrolledAt.get(current) ?? (typeof written === 'number' ? written : null)
+    },
+  }
+}
+
+const pageHistory = browserHistory()
+
 const useStoreBase = createBoundStore({
   href: () => window.location.href,
-  writeUrl: (url, replace) => replace ? window.history.replaceState(null, '', url) : window.history.pushState(null, '', url),
+  writeUrl: pageHistory.writeUrl,
   storage: browserStorage(),
   // The signed-in shared host records consent-aware milestones on its overview GET.
   // Local workers and the legacy hosted viewer retain their existing usage endpoint.
   reportsUsage: !sharedOwner && ACTIVE_SOURCE === localSource,
   sendUsage: isServedFromCloud(window.location.hostname) ? sendHostedUsage : sendUsageReport,
   scrollToTop: () => window.scrollTo(0, 0),
+  savedScrollY: pageHistory.savedScrollY,
 })
 
 export const useStore = createSelectors(useStoreBase)
-window.addEventListener('popstate', () => useStore.getState().showUrl())
+window.addEventListener('popstate', () => {
+  pageHistory.arrived()
+  useStore.getState().showUrl()
+})
 
 function currentWorkModel(): WorkModel {
   const load = useStore.getState().work.load

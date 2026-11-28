@@ -685,8 +685,8 @@ const pressTryAgain = (name: string) => page!.evaluate(`[...window.lineOf(${JSON
       await waitFor(`document.querySelector('[data-line-section="shipped"] [data-request-line]')`, 'the Shipped rows to open');
       const height = await page!.evaluate(`document.querySelector('[data-line-section="shipped"] [data-request-line]').getBoundingClientRect().height`);
       if (viewport.touch) expect(height).toBeGreaterThanOrEqual(44);
-      // h-9 at the 17px desktop root: 38.25px, the small button's size (it set 44px at every width itself).
-      else expect(Math.round(height * 100) / 100).toBe(38.25);
+      // h-9 at the 16px root: 36px, the small button's size (it set 44px at every width itself).
+      else expect(Math.round(height * 100) / 100).toBe(36);
       expect(fixtureErrors).toEqual([]);
     } finally { await closeFixture(); }
   }

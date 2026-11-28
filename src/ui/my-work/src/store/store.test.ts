@@ -11,8 +11,10 @@ import type { UsageReport } from '../live/usage.ts'
 import type { RuleSaveResult, WorkDataSource, WorkModel } from '../live/work-data-source.ts'
 import { createBoundStore } from './create-store.ts'
 import { OLDEST_MIGRATED_PREFERENCES_VERSION, PREFERENCES_STORAGE_KEY, PREFERENCES_VERSION } from './preferences.ts'
-import { themeChoiceInUse } from './slices/view-slice.ts'
+import { activePlace, readRoute, themeChoiceInUse, writeRoute } from './slices/view-slice.ts'
 import type { FocusChangeRecord, StoreEnvironment } from './store-types.ts'
+import { MY_WORK_PLACES } from '../../../app-places.ts'
+import { WORK_VIEW_SECTIONS } from '../../../../shared/work-view-pages.ts'
 
 const SAMPLE_MODEL = await sampleSource.loadWorkModel()
 const LOCAL_MODEL: WorkModel = { ...SAMPLE_MODEL, sourceKind: 'local' }
@@ -49,11 +51,14 @@ function memoryStorage(initial: Record<string, string> = {}) {
   return { getItem: (key: string) => items.get(key) ?? null, setItem: (key: string, value: string) => { items.set(key, value) }, removeItem: (key: string) => { items.delete(key) }, items }
 }
 
-function testStore(options: { href?: string; storage?: ReturnType<typeof memoryStorage> } = {}) {
+/** `scrolledTo`: where the person left the entry the store opens on (a reload of it), as the browser keeps it. */
+function testStore(options: { href?: string; storage?: ReturnType<typeof memoryStorage>; scrolledTo?: number } = {}) {
   let href = options.href ?? 'http://localhost/'
   const urls: { href: string; replace: boolean }[] = []
   const usage: UsageReport[] = []
   const scrolls = { toTop: 0 }
+  // Where the history entry now shown was left scrolled (the browser keeps it by entry, store/index.ts).
+  let savedScrollY: number | null = options.scrolledTo ?? null
   const environment: StoreEnvironment = {
     href: () => href,
     writeUrl: (url, replace) => { href = url.href; urls.push({ href: url.href, replace }) },
@@ -61,9 +66,12 @@ function testStore(options: { href?: string; storage?: ReturnType<typeof memoryS
     reportsUsage: true,
     sendUsage: (report) => { if (report) usage.push(report) },
     scrollToTop: () => { scrolls.toTop++ },
+    savedScrollY: () => savedScrollY,
   }
   const store = createBoundStore(environment)
-  return { store, urls, usage, scrolls, setHref: (next: string) => { href = next } }
+  /** Back or Forward to `next`, an entry the person left scrolled to `scrolledTo` (null: no position was saved). */
+  const back = (next: string, scrolledTo: number | null = null) => { href = next; savedScrollY = scrolledTo; store.getState().showUrl() }
+  return { store, urls, usage, scrolls, back, setHref: (next: string) => { href = next } }
 }
 
 const settle = () => new Promise((resolve) => setImmediate(resolve))
@@ -409,65 +417,134 @@ describe('where the person is', () => {
     assert.equal(store.getState().view.openRequest?.replyAsked, undefined)
   })
 
-  it('the home anchors have their own addresses; asking for one scrolls there, Back does not', () => {
-    const { store, urls, scrolls } = testStore({ href: 'http://localhost/?view=rules' })
-    store.getState().goToHome('all-requests')
-    assert.deepEqual(urls.at(-1), { href: 'http://localhost/#all-requests', replace: false })
-    assert.deepEqual([store.getState().view.section, store.getState().view.homeAnchor, store.getState().view.homeAnchorRequest], ['work', 'all-requests', { anchor: 'all-requests', sequence: 1 }])
-    store.getState().goToHome('focus-areas')
-    assert.equal(urls.at(-1)?.href, 'http://localhost/#focus-areas')
-    assert.deepEqual(store.getState().view.homeAnchorRequest, { anchor: 'focus-areas', sequence: 2 })
+  it('every page round-trips through the address: written onto a clean address, it reads back as the same place', () => {
+    const hrefs = [
+      ...WORK_VIEW_SECTIONS.map((section) => `http://localhost/?view=${section}`),
+      'http://localhost/?source=sample&view=requests',
+      'http://localhost/?focus=fa-sync',
+      'http://localhost/?focus=other',
+      'http://localhost/?focus=fa-sync&request=r1',
+      'http://localhost/?view=requests&request=r1',
+    ]
+    for (const href of hrefs) {
+      const route = readRoute(new URL(href))
+      const place = { section: route.section, focusChoice: route.focusChoice, openRequest: route.requestId ? { id: route.requestId, fromLiveFeed: null, fallback: null } : null }
+      // Only what writeRoute writes can come back: the clean address keeps just the source, which is not the place's.
+      const clean = new URL('http://localhost/')
+      const source = new URL(href).searchParams.get('source')
+      if (source) clean.searchParams.set('source', source)
+      assert.deepEqual(readRoute(writeRoute(clean, place)), route, href)
+    }
+    // The store writes each page's address on a move to it, and Back to that address shows the same page.
+    for (const section of WORK_VIEW_SECTIONS) {
+      const { store, urls, back } = testStore({ href: 'http://localhost/?source=sample&focus=fa-sync' })
+      store.getState().goToPage(section)
+      const written = urls.at(-1)!.href
+      assert.equal(readRoute(new URL(written)).section, section, section)
+      assert.equal(new URL(written).searchParams.get('source'), 'sample', section)
+      store.getState().goToFocus('fa-sync')
+      back(written)
+      assert.deepEqual([store.getState().view.section, store.getState().view.focusChoice], [section, null], section)
+    }
+  })
+
+  it('old addresses still land: the home anchors, Suggested, Past focus and an area with its request', () => {
+    const at = (href: string) => {
+      const view = testStore({ href }).store.getState().view
+      return { section: view.section, focusChoice: view.focusChoice, request: view.openRequest?.id ?? null, scrollAsk: view.scrollAsk?.target ?? null }
+    }
+    assert.deepEqual(at('http://localhost/#all-requests'), { section: 'requests', focusChoice: null, request: null, scrollAsk: { to: 'element', elementId: 'all-requests' } })
+    assert.deepEqual(at('http://localhost/#focus-areas'), { section: 'focus', focusChoice: null, request: null, scrollAsk: { to: 'element', elementId: 'focus-areas' } })
+    assert.deepEqual(at('http://localhost/?view=suggested'), { section: 'suggested', focusChoice: null, request: null, scrollAsk: null })
+    assert.deepEqual(at('http://localhost/?view=past-focus'), { section: 'past-focus', focusChoice: null, request: null, scrollAsk: null })
+    assert.deepEqual(at('http://localhost/?focus=fa-sync&request=r1'), { section: 'work', focusChoice: 'fa-sync', request: 'r1', scrollAsk: null })
+    // An anchor only ever named a place on the home page: with another page or an area, or any other fragment, it is ignored.
+    assert.deepEqual(at('http://localhost/?view=rules#all-requests').section, 'rules')
+    assert.deepEqual(at('http://localhost/?focus=fa-sync#all-requests'), { section: 'work', focusChoice: 'fa-sync', request: null, scrollAsk: null })
+    assert.deepEqual(at('http://localhost/#somewhere'), { section: 'work', focusChoice: null, request: null, scrollAsk: null })
+    // The next move writes the page's own address, without the old anchor.
+    const { store, urls } = testStore({ href: 'http://localhost/#focus-areas' })
     store.getState().openRequestDrawer(LOCAL_MODEL.requests[0])
-    assert.equal(urls.at(-1)?.href, `http://localhost/?request=${LOCAL_MODEL.requests[0].id}#focus-areas`, 'the drawer opens over the same place')
+    assert.equal(urls.at(-1)?.href, `http://localhost/?view=focus&request=${LOCAL_MODEL.requests[0].id}`, 'the drawer opens over the same page')
+  })
+
+  it('each place opens the page its address names, and the bar marks the place each page sits under', () => {
+    for (const place of MY_WORK_PLACES) assert.equal(readRoute(new URL(place.address, 'http://localhost/')).section, place.id, place.label)
+    const marked = (href: string) => activePlace(readRoute(new URL(href)))
+    assert.deepEqual(['/', '/?view=focus', '/?view=suggested', '/?view=past-focus', '/?focus=fa-sync', '/?focus=other', '/?view=requests', '/?view=review-stack', '/?view=rules&tab=dismissed', '/?view=find']
+      .map((path) => marked(`http://localhost${path}`)), ['work', 'focus', 'focus', 'focus', 'focus', 'focus', 'requests', 'review-stack', 'rules', 'work'])
+  })
+
+  it('a move scrolls its page once it has drawn: a new page from its top, Requests and Focus areas at their boards', () => {
+    const { store } = testStore({ href: 'http://localhost/?view=rules' })
+    assert.equal(store.getState().view.scrollAsk, null, 'an address opened on a page asks for nothing')
+    const asked = () => store.getState().view.scrollAsk
+    store.getState().goToPage('requests')
+    assert.deepEqual(asked(), { sequence: 1, target: { to: 'element', elementId: 'all-requests' } })
+    store.getState().goToPage('focus')
+    assert.deepEqual(asked(), { sequence: 2, target: { to: 'element', elementId: 'focus-areas' } })
     store.getState().goToFocus('fa-sync')
-    assert.equal(urls.at(-1)?.href, 'http://localhost/?focus=fa-sync', 'leaving home drops the anchor')
-    assert.deepEqual([store.getState().view.homeAnchor, store.getState().view.homeAnchorRequest], [null, null], 'and the ask')
-    store.getState().selectFocus(null)
-    assert.deepEqual([urls.at(-1)?.href, scrolls.toTop], ['http://localhost/', 1], 'Focus overview is the top of home')
-    assert.equal(store.getState().view.homeAnchorRequest, null, 'the top of home is not an anchor ask')
-    store.getState().goToHome('focus-areas')
-    assert.deepEqual(store.getState().view.homeAnchorRequest, { anchor: 'focus-areas', sequence: 3 }, 'a new ask never reuses an old number')
+    assert.deepEqual(asked(), { sequence: 3, target: { to: 'top' } })
+    store.getState().goToPage('review-stack')
+    assert.deepEqual(asked(), { sequence: 4, target: { to: 'top' } })
+    store.getState().goToPage('review-stack')
+    assert.deepEqual(asked(), { sequence: 5, target: { to: 'top' } }, 'pressing the place shown again is a new ask: back to its top')
+    store.getState().openRequestDrawer(LOCAL_MODEL.requests[0])
+    store.getState().closeRequestDrawer()
+    assert.equal(asked()?.sequence, 5, 'the drawer opens over the page without scrolling it')
   })
 
-  it('an old "All N" ask does not open the whole board again after the person left home (quality review L5)', () => {
-    const { store } = testStore()
-    store.getState().goToHome('focus-areas')
-    assert.deepEqual(store.getState().view.homeAnchorRequest, { anchor: 'focus-areas', sequence: 1 })
-    store.getState().goToFocus('fa-sync')
-    store.getState().selectFocus(null)
-    assert.equal(store.getState().view.homeAnchorRequest, null, 'Focus overview draws the board with its priority areas')
-    for (const leave of [() => store.getState().goToPage('rules'), () => store.getState().selectFocus({ kind: 'suggested' }), () => store.getState().selectFocus({ kind: 'past-focus' })]) {
-      store.getState().goToHome('focus-areas')
-      leave()
-      assert.equal(store.getState().view.homeAnchorRequest, null)
+  it('Back and Forward restore the place and where the person left it scrolled', () => {
+    const { store, urls, back } = testStore({ href: 'http://localhost/?view=requests' })
+    store.getState().goToPage('rules')
+    assert.equal(urls.at(-1)?.href, 'http://localhost/?view=rules')
+    back('http://localhost/?view=requests', 1840)
+    assert.deepEqual([store.getState().view.section, store.getState().view.scrollAsk?.target], ['requests', { to: 'position', y: 1840 }])
+    back('http://localhost/?view=rules', 320)
+    assert.deepEqual([store.getState().view.section, store.getState().view.scrollAsk?.target], ['rules', { to: 'position', y: 320 }], 'Forward')
+    assert.equal(urls.length, 1, 'Back and Forward write no address of their own')
+    // An entry with no known position (a link to #main-content made it) leaves the window where it is.
+    const before = store.getState().view.scrollAsk
+    back('http://localhost/?view=rules#main-content', null)
+    assert.equal(store.getState().view.scrollAsk, before)
+  })
+
+  it('a reload opens where the person left that entry scrolled, before the page\'s own board', () => {
+    assert.deepEqual(testStore({ href: 'http://localhost/?view=requests', scrolledTo: 2400 }).store.getState().view.scrollAsk, { sequence: 1, target: { to: 'position', y: 2400 } })
+    assert.deepEqual(testStore({ href: 'http://localhost/?view=rules', scrolledTo: 0 }).store.getState().view.scrollAsk, { sequence: 1, target: { to: 'position', y: 0 } })
+    assert.deepEqual(testStore({ href: 'http://localhost/?view=requests' }).store.getState().view.scrollAsk?.target, { to: 'element', elementId: 'all-requests' }, 'a first visit opens at the board')
+  })
+
+  it('opening a request keeps the page it opens over; closing it goes back to that page\'s address', () => {
+    const { store, urls } = testStore({ href: 'http://localhost/?view=requests' })
+    const [first] = LOCAL_MODEL.requests
+    store.getState().openRequestDrawer(first)
+    assert.equal(urls.at(-1)?.href, `http://localhost/?view=requests&request=${first.id}`)
+    store.getState().closeRequestDrawer()
+    assert.equal(urls.at(-1)?.href, 'http://localhost/?view=requests')
+    assert.equal(store.getState().view.section, 'requests')
+  })
+
+  it('an area address the work does not show (dismissed, or not in it) becomes the home page\'s address once the work is read', async () => {
+    const dismissed = { ...LOCAL_MODEL.focusAreas[0], status: 'dismissed' as const, mergedInto: null }
+    const model: WorkModel = { ...LOCAL_MODEL, focusAreas: [dismissed, ...LOCAL_MODEL.focusAreas.slice(1)] }
+    for (const focus of [dismissed.id, 'fa-not-in-the-work']) {
+      const { store, urls } = testStore({ href: `http://localhost/?source=sample&focus=${focus}` })
+      const { source, reads } = fakeSource()
+      store.getState().startWorkSource(source)
+      assert.equal(store.getState().view.focusChoice, focus, 'kept while the work is read')
+      reads[0].resolve(model)
+      await settle()
+      assert.deepEqual([store.getState().view.focusChoice, urls.at(-1)], [null, { href: 'http://localhost/?source=sample', replace: true }], focus)
+      assert.equal(activePlace(store.getState().view), 'work', 'the bar marks the page shown')
     }
-  })
-
-  it('Back or Forward to another place ends an anchor ask; to the same anchor it keeps it', () => {
-    const { store, setHref } = testStore()
-    store.getState().goToHome('focus-areas')
-    const ask = store.getState().view.homeAnchorRequest
-    setHref('http://localhost/#focus-areas')
-    store.getState().showUrl()
-    assert.equal(store.getState().view.homeAnchorRequest, ask, 'the same place: the board keeps every area')
-    for (const elsewhere of ['http://localhost/?focus=fa-sync', 'http://localhost/', 'http://localhost/#all-requests', 'http://localhost/?view=rules']) {
-      store.getState().goToHome('focus-areas')
-      setHref(elsewhere)
-      store.getState().showUrl()
-      assert.equal(store.getState().view.homeAnchorRequest, null, elsewhere)
-    }
-  })
-
-  it('an address with a home anchor scrolls there once; other fragments and other pages carry none', () => {
-    assert.deepEqual(testStore({ href: 'http://localhost/#focus-areas' }).store.getState().view.homeAnchorRequest, { anchor: 'focus-areas', sequence: 1 })
-    assert.equal(testStore({ href: 'http://localhost/#focus-areas' }).store.getState().view.homeAnchor, 'focus-areas')
-    assert.equal(testStore({ href: 'http://localhost/#somewhere' }).store.getState().view.homeAnchor, null)
-    assert.equal(testStore({ href: 'http://localhost/?view=rules#all-requests' }).store.getState().view.homeAnchor, null)
-    assert.equal(testStore({ href: 'http://localhost/?focus=fa-sync#all-requests' }).store.getState().view.homeAnchorRequest, null)
-    const { store, setHref } = testStore({ href: 'http://localhost/?view=rules' })
-    setHref('http://localhost/#all-requests')
-    store.getState().showUrl()
-    assert.deepEqual([store.getState().view.homeAnchor, store.getState().view.homeAnchorRequest], ['all-requests', null], 'Back restores the scroll itself')
+    // An area the work shows keeps its address.
+    const { store, urls } = testStore({ href: `http://localhost/?focus=${LOCAL_MODEL.focusAreas[1].id}` })
+    const { source, reads } = fakeSource()
+    store.getState().startWorkSource(source)
+    reads[0].resolve(model)
+    await settle()
+    assert.deepEqual([store.getState().view.focusChoice, urls], [LOCAL_MODEL.focusAreas[1].id, []])
   })
 
   it('opening a focus area closes the drawer', () => {

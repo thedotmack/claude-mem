@@ -31,7 +31,6 @@ import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { byAttention, firstNeedingYou, isSubagent, isWorkingNow, needsYou, OTHER_FOCUS_AREA_ID, requestTitle, SAMPLE_RUNS, startedTimestamp, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
 import { type WorkFilter, type WorkListView, type WorkSort, deviceById, useFreshlyUpdated, useStore, useWorkModel, useWorkspace } from '@/store'
-import type { HomeAnchor } from '@/store/home-anchor'
 import { useShallow } from 'zustand/react/shallow'
 import type { BuildStory, StoryChapter } from '@/live/work-data-source'
 import { asksToKeepOrDismiss, createFocusAreaResolver, focusAreaPlaceWords } from '@/live/to-focus-model'
@@ -1006,8 +1005,10 @@ export function MyWork({ focusAreaId, onOpen, onReply = onOpen, onOpenFocus, onO
   // How the person likes to see My Work is saved across visits (store/create-store.ts).
   const { listView: view, filter, sort } = useStore(useShallow((state) => ({ listView: state.view.listView, filter: state.view.filter, sort: state.view.sort })))
   const focusArtwork = useStore((state) => state.view.focusArtwork)
-  const homeAnchorRequest = useStore((state) => state.view.homeAnchorRequest)
-  const { setListView: setView, setFilter, setSort, goToHome } = useStore.getState()
+  // Focus areas opens this page at its focus area board with every area shown, until it has a page of its own. Each
+  // press of it is a new scroll ask, so each one opens the whole board again, after the person folded it.
+  const allAreasAsked = useStore((state) => state.view.section === 'focus' ? state.view.scrollAsk?.sequence ?? 1 : 0)
+  const { setListView: setView, setFilter, setSort, goToPage } = useStore.getState()
   const [storyOpen, setStoryOpen] = useState(false)
   // Where focus goes once the last unreadable request is dismissed: the board's heading (components/request-read-errors.tsx).
   const boardHeading = useRef<HTMLHeadingElement | null>(null)
@@ -1019,7 +1020,7 @@ export function MyWork({ focusAreaId, onOpen, onReply = onOpen, onOpenFocus, onO
   const grouped = sort === 'attention' && filter === 'all'
   const open = requests.filter((request) => !request.closed)
   // "Show all N" lands on every request with that filter on (the home page's All requests; a focus page's own board).
-  const showOnBoard = (next: Filter) => { setFilter(next); if (!focusAreaId) goToHome('all-requests') }
+  const showOnBoard = (next: Filter) => { setFilter(next); if (!focusAreaId) goToPage('requests') }
   // Live mode shows the worker's automatic refresh, or the last review before its first run. No cost. This page's
   // worker can start one, so the line carries its button (c-work-filters: the review's time beside Refresh).
   const refreshLine = sample ? <RefreshButton run={SAMPLE_RUNS.progress} ids={['R14.12']} />
@@ -1031,14 +1032,14 @@ export function MyWork({ focusAreaId, onOpen, onReply = onOpen, onOpenFocus, onO
       {!sourceHealth.connected && <SourceReadAlert error={sourceHealth.error} />}
       <FocusChangeBar changes={focusChanges} />
       {!focusAreaId && <NeedsYouFirst requests={open} onOpen={onOpen} onReply={onReply} onOpenFocus={onOpenFocus} onShowWorking={() => showOnBoard('working')} />}
-      {/* `/#focus-areas` (the rail's and chip row's "All N", the bottom bar's Focus) opens this board with every area shown. */}
-      {!focusAreaId && <FocusOverview anchorId={'focus-areas' satisfies HomeAnchor} expandAllOn={homeAnchorRequest?.anchor === 'focus-areas' ? homeAnchorRequest.sequence : 0} areas={focusAreas} requests={allRequests} incomplete={allReadErrors.length > 0} onOpenArea={onOpenFocus} onOpenRequest={onOpen} artwork={focusArtwork} onArtworkChange={useStore.getState().setFocusArtwork} />}
+      {/* `?view=focus` (the bar's Focus areas) opens this page here, with every area shown. */}
+      {!focusAreaId && <FocusOverview anchorId="focus-areas" expandAllOn={allAreasAsked} areas={focusAreas} requests={allRequests} incomplete={allReadErrors.length > 0} onOpenArea={onOpenFocus} onOpenRequest={onOpen} artwork={focusArtwork} onArtworkChange={useStore.getState().setFocusArtwork} />}
       {/* Every request in the area, closed ones too: the combined progress counts each reviewed request (D1's rule). */}
       {area ? <FocusHeader key={area.id} area={area} requests={requests} changes={focusChanges} onOpen={onOpen} />
         : focusAreaId === OTHER_FOCUS_AREA_ID && <OtherHeader requests={requests} onOpen={onOpen} />}
-      {/* `/#all-requests`: the rail's and the bottom bar's My Work land here (page-02 deep-linking). It is the view's
-          heading where the request drawer puts focus when the row that opened it is gone (request-drawer.tsx). */}
-      {!focusAreaId && <h2 ref={boardHeading} id={'all-requests' satisfies HomeAnchor} tabIndex={-1} data-view-heading="" className={cn('section-label rounded-sm', FOCUS_FROM_CODE_CLASS_NAME)}>{t('All requests')}</h2>}
+      {/* `?view=requests` (the bar's Requests) opens this page here. It is the view's heading where the request drawer
+          puts focus when the row that opened it is gone (request-drawer.tsx). */}
+      {!focusAreaId && <h2 ref={boardHeading} id="all-requests" tabIndex={-1} data-view-heading="" className={cn('section-label rounded-sm', FOCUS_FROM_CODE_CLASS_NAME)}>{t('All requests')}</h2>}
       {/* page-03's order: the header, then what needs you as the main card with its reply card, then the asks nobody
           has started, then the board. The header's Keep, on a suggested area, is then the screen's one orange (G1). */}
       {focusAreaId && <FocusMainCard requests={open} primary={!(area && asksToKeepOrDismiss(area))} onOpen={onOpen} onReply={onReply} onShowAll={() => showOnBoard('needs-you')} />}
@@ -1061,7 +1062,7 @@ export function MyWork({ focusAreaId, onOpen, onReply = onOpen, onOpenFocus, onO
               <EmptyTitle>{focusAreaId ? t("No requests in this area yet.") : t("No requests recorded yet.")}</EmptyTitle>
               <EmptyDescription>{focusAreaId ? t("A refresh places new requests here, or move one here from its page.") : t("Ask an agent for something and it appears here.")}</EmptyDescription>
             </EmptyHeader>
-            {focusAreaId && <EmptyContent><Button variant="outline" onClick={() => goToHome('all-requests')}>{t('Find a request to move here')}<ArrowRightIcon aria-hidden="true" /></Button></EmptyContent>}
+            {focusAreaId && <EmptyContent><Button variant="outline" onClick={() => goToPage('requests')}>{t('Find a request to move here')}<ArrowRightIcon aria-hidden="true" /></Button></EmptyContent>}
           </Empty>
         </Req>
       ) : (

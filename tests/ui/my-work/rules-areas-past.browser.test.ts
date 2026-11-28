@@ -159,10 +159,9 @@ beforeAll(async () => {
     window.orangeButtons = () => [...document.querySelectorAll('button[data-variant="default"], a[data-variant="default"]')].filter(visible).map(nameOf);
     window.buttonsNamed = (pattern) => [...document.querySelectorAll('button')].filter((button) => visible(button) && new RegExp(pattern).test(nameOf(button)));
     window.clickNamed = (pattern) => { const button = window.buttonsNamed(pattern)[0]; if (!button) throw new Error('no button ' + pattern); button.click(); };
-    // The phone's pinned bottom bar (App.tsx: the Pages nav shown under md).
+    // The phone's pinned bottom bar (components/app-bar.tsx AppBottomBar, shown under md).
     window.bottomBar = () => {
-      const nav = [...document.querySelectorAll('nav[aria-label="Pages"]')].find((element) => element.classList.contains('md:hidden'));
-      const bar = nav?.querySelector('.pointer-events-auto') ?? nav;
+      const bar = document.querySelector('[data-slot="bottom-bar"]');
       return bar && visible(bar) ? bar.getBoundingClientRect() : null;
     };
     // Approve and Reject buttons a visible part of which the bar covers.
@@ -1031,14 +1030,15 @@ it.skipIf(!chromeExecutablePath)('on a phone the Decide chip’s edge is ≥3:1 
     expect(heights.filter((target) => target.height < 44)).toEqual([]);
     // The review's Keep line "card text ≥12px", at the 16px phone root.
     expect(await page!.evaluate('parseFloat(getComputedStyle(document.querySelector("#decide .section-label")).fontSize)')).toBeGreaterThanOrEqual(12);
-    // A touch screen as wide as a desktop shows the rail: its rows keep the 44px touch size too; a mouse keeps 36px rows.
-    const pastFocusRow = '[...document.querySelectorAll("button")].find((button) => window.nameOf(button) === "Past focus" && button.getBoundingClientRect().height > 0)';
+    // A touch screen as wide as a desktop shows the top bar: its brand link keeps the 44px touch size too; a mouse
+    // keeps the 34px mark's height (the rail this checked before went in the design pass, Phase 3).
+    const brandLink = 'document.querySelector("[data-slot=\\"app-bar\\"] a[href]")';
     await desktop();
-    expect(await page!.evaluate(`${pastFocusRow}.getBoundingClientRect().height`)).toBeLessThan(44);
+    expect(await page!.evaluate(`${brandLink}.getBoundingClientRect().height`)).toBeLessThan(44);
     await page!.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
     await page!.settle();
     expect(await page!.evaluate('matchMedia("(pointer: coarse)").matches')).toBe(true);
-    expect(await page!.evaluate(`${pastFocusRow}.getBoundingClientRect().height`)).toBeGreaterThanOrEqual(44);
+    expect(await page!.evaluate(`${brandLink}.getBoundingClientRect().height`)).toBeGreaterThanOrEqual(44);
     expect(fixtureErrors).toEqual([]);
   } finally {
     await page?.send('Emulation.setEmulatedMedia', { features: [] });

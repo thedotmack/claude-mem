@@ -33,6 +33,9 @@ describe('hosted viewer usage', () => {
     });
     expect(hostedUsageEvent({ event: 'opened', view: 'work' }, 'work.cmem.ai', page)?.event).toBe('work_view_opened');
     expect(hostedUsageEvent({ event: 'switched', view: 'rules', previousView: 'work' }, 'work.cmem.ai', page)?.properties.previous_view).toBe('work');
+    // The bar's places since the design pass Phase 3, Focus areas and Requests among them, are counted too.
+    expect(hostedUsageEvent({ event: 'opened', view: 'requests' }, 'work.cmem.ai', page)?.properties.view).toBe('requests');
+    expect(hostedUsageEvent({ event: 'switched', view: 'focus', previousView: 'review-stack' }, 'work.cmem.ai', page)?.event).toBe('work_view_switched');
     expect(hostedUsageEvent({ event: 'opened', view: 'timeline' }, 'work.cmem.ai', page)).toBeNull();
     expect(hostedUsageEvent({ event: 'opened', view: 'work', title: 'secret' }, 'work.cmem.ai', page)).toBeNull();
     expect(hostedUsageEvent({ event: 'pageview' }, 'work.cmem.ai', page)?.properties.$set).toBeUndefined();

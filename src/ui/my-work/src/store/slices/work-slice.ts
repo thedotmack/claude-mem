@@ -49,6 +49,7 @@ export const createWorkSlice: SliceCreator<WorkSlice> = (set, get) => {
       freshTimer = setTimeout(() => set((state) => { state.work.freshlyUpdatedIds = new Set() }), FRESHLY_UPDATED_FOR_MS)
     }
     get().reconcileOpenRequest()
+    get().reconcileFocusChoice()
   }
 
   const activeSource = (what: string) => {

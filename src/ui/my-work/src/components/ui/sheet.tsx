@@ -1,5 +1,5 @@
 import * as React from "react"
-import { cn } from "cn"
+import { cn } from "@/lib/utils"
 import { Dialog as SheetPrimitive } from "radix-ui"
 
 import { Button } from "@/components/ui/button"
@@ -31,7 +31,7 @@ function SheetPortal({
 
 /**
  * Dims the page and does not blur it (D b17 M 354): the work behind stays readable while the person replies. The dim
- * is the app's darkest colour (#0f0c0a), stronger in dark mode where the page is already dark.
+ * is the --overlay-dim token (index.css), stronger in dark mode.
  */
 function SheetOverlay({
   className,
@@ -41,7 +41,7 @@ function SheetOverlay({
     <SheetPrimitive.Overlay
       data-slot="sheet-overlay"
       className={cn(
-        "fixed inset-0 z-50 bg-[rgb(15_12_10/0.4)] duration-100 motion-safe:data-open:animate-in data-open:fade-in-0 motion-safe:data-closed:animate-out data-closed:fade-out-0 dark:bg-[rgb(15_12_10/0.6)]",
+        "fixed inset-0 z-50 bg-overlay-dim duration-100 motion-safe:data-open:animate-in data-open:fade-in-0 motion-safe:data-closed:animate-out data-closed:fade-out-0",
         className
       )}
       {...props}

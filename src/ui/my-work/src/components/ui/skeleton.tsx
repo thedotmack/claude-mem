@@ -1,4 +1,4 @@
-import { cn } from "cn"
+import { cn } from "@/lib/utils"
 
 /**
  * The shape of content that is still loading (D b18 M 373: waits over a second show the page's shape, not a lone

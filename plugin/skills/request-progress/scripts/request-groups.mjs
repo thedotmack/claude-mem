@@ -4258,7 +4258,7 @@ var NAV_LABELS;
 var init_nav_words = __esm({
   "src/services/work-view/nav-words.mjs"() {
     "use strict";
-    NAV_LABELS = Object.freeze(["my focus", "my work", "my rules", "other", "suggested", "past focus", "monitor", "steer"]);
+    NAV_LABELS = Object.freeze(["my focus", "my work", "my rules", "other", "suggested", "past focus", "focus areas", "review stack"]);
   }
 });
 

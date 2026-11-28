@@ -547,10 +547,10 @@ it.skipIf(!chromeExecutablePath)('a deliverable chip shows its full words on key
       'Doc · endless-mode-claude-code-mod-research-notes-for-the-owner-with-every-decision-and-its-reason.md',
       'PR · claude-mem #6229', 'Page · index.html',
     ]);
-    // 36px on a desktop at the 16px root (38.25 at the 17px desktop root); two lines at most, then the tooltip.
+    // 36px on a desktop at the 16px root; two lines at most, then the tooltip.
     for (const chip of chips) expect(chip.height).toBeGreaterThanOrEqual(36);
     expect(chips[0].clamp).toBe('2');
-    // The width cap (16rem at the 17px root): a long name wraps instead of stretching the chip.
+    // The width cap (16rem, 256px at the 16px root): a long name wraps instead of stretching the chip.
     expect(chips[0].width).toBeLessThanOrEqual(272.5);
     expect(tooltip).toBe('Doc · endless-mode-claude-code-mod-research-notes-for-the-owner-with-every-decision-and-its-reason.md');
     expect(more).toMatchObject({ text: '+2 more', label: 'Open the request to see 2 more deliverables', tag: 'BUTTON' });

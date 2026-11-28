@@ -119,7 +119,7 @@ type ItemSamples = { label: string; chosen: number[]; notChosen: number[]; check
     expect(await page.evaluate('window.geistLoaded()')).toBe(true);
 
     const moved: string[] = [], checks: object[] = [], expectedChecks: object[] = [];
-    // 1440 is the review's desktop (17px root); 390 is its phone (16px root, 44px-tall items).
+    // 1440 is the review's desktop; 390 is its phone (44px-tall items). Both draw at the 16px root.
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
       await page.send('Emulation.setDeviceMetricsOverride', { ...viewport, deviceScaleFactor: 1, mobile: false });
       await page.settle();
