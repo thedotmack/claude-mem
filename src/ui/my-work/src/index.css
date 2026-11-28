@@ -59,7 +59,7 @@
     --text-brand-phone--letter-spacing: -0.058em;
     --text-brand-phone--font-weight: 660;
     /*
-     * Find work, Workspace and Machine and sync (design pass Phase 4) sit in Codex's narrower column (`.compact`: 1064px
+     * Requests (Phase 5), Find work, Workspace and Machine and sync (design pass Phase 4) sit in Codex's narrower column (`.compact`: 1064px
      * with its 56px sides, as --container-page is 1296px with them). A section's heading is 26px (22px on a phone), a panel's 28px (24px), both at weight 575;
      * a row's title 17px at 565 (design.css `.sectionline h2`, `h2`, `.rowtitle`).
      */
@@ -514,7 +514,7 @@
 .just-updated { animation: just-updated-glow 1.6s ease-out 2; }
 /*
  * A List, By agent or Team row or a card whose record just changed (components/request-rows.tsx RequestRow,
- * pages/my-work.tsx ListTableRow, components/request-card.tsx), for the store's FRESHLY_UPDATED_FOR_MS: a still mark,
+ * pages/requests.tsx ListTableRow, components/request-card.tsx), for the store's FRESHLY_UPDATED_FOR_MS: a still mark,
  * never the glow, so one live model that changes
  * several rows moves only the change ticker and the newest change's riffle (rule 8: two moving things per view). A
  * 3px bar in the accent text colour (5.57:1 on the light card, high on the dark one: ≥3:1 for a state mark, rule 7) at

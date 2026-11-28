@@ -1259,24 +1259,25 @@ for (const scrollbar of SCROLLBAR_MODES) {
   }, 60_000);
 }
 
-it.skipIf(!chromeExecutablePath)('By agent rows give a long next step as many lines as it needs, whole', async () => {
+it.skipIf(!chromeExecutablePath)('By agent rows on Requests give a long name as many lines as it needs, whole', async () => {
   try {
-    await openPage('');
-    const step = 'Read the current usage rollup, then compare it with last month’s and write down every place the two disagree';
-    await page!.evaluate(`window.store.getState().updateSampleRequest('r2', (request) => ({ ...request, next: { who: 'bot', text: ${JSON.stringify(step)} } }))`);
-    await page!.evaluate(`[...document.querySelectorAll('[role=radio]')].find((item) => window.nameOf(item) === 'By agent').click()`);
-    await waitFor(`document.querySelector('[data-agent-card] [data-request-row] [data-next-move]')`, 'the agent cards');
+    await openPage('&view=requests&by=agent');
+    const name = 'Read the current usage rollup, then compare it with last month’s and write down every place the two disagree, and then say which of the disagreements came from a late sync rather than from a real change in usage';
+    await page!.evaluate(`window.store.getState().updateSampleRequest('r2', (request) => ({ ...request, title: ${JSON.stringify(name)} }))`);
+    await waitFor(`document.querySelector('[data-agent-group]')`, 'the agent groups');
+    // Every agent's group open, so r2's row is drawn wherever its agent sits.
+    await page!.evaluate(`[...document.querySelectorAll('[data-agent-group][data-state=closed] [data-agent-header]')].forEach((header) => header.click())`);
+    await waitFor(`[...document.querySelectorAll('[data-agent-group] [data-row-title]')].some((title) => title.textContent.includes('usage rollup'))`, 'r2 in its agent');
     for (const width of [1440, 768]) {
       await resize(width);
-      const move = await page!.evaluate(`(() => {
-        const move = [...document.querySelectorAll('[data-agent-card] [data-request-row] [data-next-move]')].find((each) => each.textContent.includes('usage rollup'));
-        const words = [...move.querySelectorAll('span')].find((span) => !span.classList.contains('sr-only') && span.textContent.includes('usage rollup') && !span.querySelector('span:not(.sr-only)'));
-        const lineHeight = parseFloat(getComputedStyle(words).lineHeight);
-        return { whole: words.scrollWidth <= words.clientWidth + 1 && getComputedStyle(words).textOverflow !== 'ellipsis', lines: Math.round(words.getBoundingClientRect().height / lineHeight) };
+      const title = await page!.evaluate(`(() => {
+        const words = [...document.querySelectorAll('[data-agent-group] [data-row-title]')].find((each) => each.textContent.includes('usage rollup'));
+        const style = getComputedStyle(words);
+        return { whole: words.scrollWidth <= words.clientWidth + 1 && style.textOverflow !== 'ellipsis' && style.whiteSpace !== 'nowrap', lines: Math.round(words.getBoundingClientRect().height / parseFloat(style.lineHeight)) };
       })()`);
-      console.log(`[focus-area-page] By agent's long next step at ${width}: ${JSON.stringify(move)}`);
-      expect(move.whole).toBe(true);
-      expect(move.lines).toBeGreaterThanOrEqual(2);
+      console.log(`[focus-area-page] By agent's long name at ${width}: ${JSON.stringify(title)}`);
+      expect(title.whole).toBe(true);
+      expect(title.lines).toBeGreaterThanOrEqual(2);
     }
     expect(fixtureErrors).toEqual([]);
   } finally {
@@ -1580,7 +1581,7 @@ it.skipIf(!chromeExecutablePath)('the change ticker watches the working requests
     await waitFor(`document.querySelector('[data-ticker="quiet"]')`, 'the ticker at rest');
     // Cloud sync has nothing working; r1 (Viewer) and r2 (no area) work elsewhere.
     expect(await counts()).toEqual({ watching: 0, filter: 0 });
-    await page!.evaluate(`window.store.getState().goToPage('requests')`);
+    await page!.evaluate(`window.store.getState().goToPage('work')`);
     await waitFor(`!new URLSearchParams(location.search).get('focus')`, 'home');
     expect(await counts()).toEqual({ watching: 2, filter: 2 });
     expect(fixtureErrors).toEqual([]);

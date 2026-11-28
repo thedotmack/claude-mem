@@ -25,7 +25,7 @@ function CollapsibleTrigger({
 /**
  * The one fold row (decision G5, D b7): at least 44px tall at every width, a chevron on the left that turns when it
  * opens, the label, a count on the right, the pointer cursor and the Button focus ring. Its edge is the ≥3:1 control
- * edge (rule 7, G12; --border was 1.14–1.53:1). Accordion triggers share it. Opening has no motion (D b7 K 146); only
+ * edge (rule 7, G12; --border was 1.14–1.53:1). The Task and Chain of Thought triggers share it. Opening has no motion (D b7 K 146); only
  * the chevron turns, and not at all under reduced motion.
  */
 const FOLD_TRIGGER_CLASS_NAME =

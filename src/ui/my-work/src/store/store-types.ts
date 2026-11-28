@@ -1,6 +1,7 @@
 // The one My Work store is these slices bound together (index.ts). Each slice keeps its state under one key
 // (`work`, `view`, `rules`) and its actions at the top level, after MemeDeck's lib/store.
 import type { FocusChange, Request } from '../data.ts'
+import type { CardGroupId } from '../live/card-groups.ts'
 import type { OwnerRule, RuleChange } from '../data-rules.ts'
 import type { ThemeChoice } from '../lib/theme.ts'
 import type { ConnectionStatus } from '../live/connection-status.ts'
@@ -9,6 +10,8 @@ import type { RuleDecision, SavedRuleDecision } from '../live/rule-actions.ts'
 import type { RequestChange } from '../live/update-queue.ts'
 import type { UsageReport } from '../live/usage.ts'
 import type { WORK_VIEW_SECTIONS } from '../../../../shared/work-view-pages.ts'
+import type { RequestsArea } from '../live/requests-areas.ts'
+import type { RequestsGrouping, RequestsMove } from './slices/view-slice.ts'
 import type { ConversationContinuationSource, RuleSaveResult, SuggestionSaveResult, WorkDataSource, WorkModel } from '../live/work-data-source.ts'
 
 // ---------- Work: the active source's model ----------
@@ -84,8 +87,8 @@ export interface Workspace { mode: 'home' | 'web'; team: boolean; connected: boo
 
 /**
  * Where the window scrolls once the page has drawn the place the person went to (App.tsx, lib/scroll-ask.ts), one ask
- * per move: a new page from its top, Back, Forward and a reload where the person left that history entry, and Requests
- * and Focus areas at their boards on the home page until they have pages of their own.
+ * per move: a new page from its top, Back, Forward and a reload where the person left that history entry, and Focus
+ * areas at its board on the home page until it has a page of its own.
  */
 export type ScrollTarget = { to: 'top' } | { to: 'element'; elementId: string } | { to: 'position'; y: number }
 
@@ -111,6 +114,16 @@ export interface ViewState {
   openRequest: OpenRequest | null
   /** The words typed in Find work (`?q=`), on its page only; null when none. */
   findQuery: string | null
+  /** Requests' status tab (`?status=`), on its page only; null is All. */
+  requestsStatus: CardGroupId | null
+  /** Requests grouped instead of listed (`?by=`), on its page only; null is the list. */
+  requestsBy: RequestsGrouping | null
+  /** The focus area Requests' list shows (`?area=`), on its list only; null is every area. */
+  requestsArea: RequestsArea | null
+  /** Requests' list shows the closed requests instead of the open ones (`?closed=1`), on its list only. */
+  requestsClosed: boolean
+  /** The words typed in Requests' find box (`?q=`), on its list only; null when none. */
+  requestsWords: string | null
   /** The last move's scroll, once its page has drawn; each move asks with a new `sequence` (App.tsx runs it once). */
   scrollAsk: { sequence: number; target: ScrollTarget } | null
   /** Sample mode's place and TeamBrain switches. Outside sample mode the place comes from the source. */
@@ -133,13 +146,20 @@ export interface ViewState {
 export interface ViewSlice {
   view: ViewState
   /**
-   * Shows a page from its top (Requests and Focus areas at their boards on the home page, for now), or, with
-   * `elementId`, at that element once the page has drawn it (a rule Find work opened on My Rules).
+   * Shows a page from its top (Focus areas at its board on the home page, for now), or, with `elementId`, at that
+   * element once the page has drawn it (a rule Find work opened on My Rules). Requests opens on its All tab.
    */
   goToPage: (page: Section, options?: { elementId?: string }) => void
+  /**
+   * Shows Requests grouped `by` agent, or its list on a status tab (none is All), an area, or the closed requests; on
+   * the list, what the move leaves out stays as shown (slices/view-slice.ts requestsPlace). Each is a history entry.
+   */
+  showRequests: (move: RequestsMove) => void
   goToFocus: (focusAreaId: string) => void
   /** Find work's words, written to the address in place (no new history entry); '' clears them. */
   setFindQuery: (query: string) => void
+  /** Requests' find words, written to the address in place, as Find work's are; '' clears them. */
+  setRequestsWords: (words: string) => void
   /** Opens a request's drawer; `{ reply: true }` opens it on its reply box (Reply on a card or the summary, G2). */
   openRequestDrawer: (request: Request, options?: { reply?: boolean }) => void
   closeRequestDrawer: () => void
@@ -147,6 +167,11 @@ export interface ViewSlice {
   reconcileOpenRequest: () => void
   /** An area's address whose area the work does not show becomes the home page's address. Runs on every model. */
   reconcileFocusChoice: () => void
+  /**
+   * On Requests: an area no request sits in reads as every area, and an address naming what the page does not apply
+   * is rewritten in place. Runs on every model and after Back or Forward.
+   */
+  reconcileRequestsDetails: () => void
   /** Back/Forward: show what the URL now says. */
   showUrl: () => void
   startSetup: () => void

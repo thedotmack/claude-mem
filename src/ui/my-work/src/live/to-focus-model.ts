@@ -93,7 +93,7 @@ export function focusAreaLabel(focusAreaId: string | undefined, areas: readonly 
 /**
  * A request's place as the screens word it (components/bits.tsx FocusAreaChip): its area's own name, or "Other" and
  * "Not sorted yet" in the reader's language (`t`). A row that may cut the chip gives these whole words as its hover
- * text (pages/my-work.tsx ListTableRow).
+ * text (pages/requests.tsx ListTableRow).
  */
 export function focusAreaPlaceWords(focusAreaId: string | undefined, areas: readonly FocusArea[], t: (english: string) => string): string {
   const placed = resolveFocusAreaId(focusAreaId, areas)

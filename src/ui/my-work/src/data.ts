@@ -40,7 +40,7 @@ export interface Agent {
   /**
    * The start of the recorded session a main agent ran in (sdk_sessions.content_session_id), set only where another
    * main agent has the same name, role and machine (several sessions in one folder): the one fact that tells their
-   * cards apart (live/to-work-model.ts toWorkModel; pages/my-work.tsx AgentCard shows it). Workers before 16.0.0 send
+   * cards apart (live/to-work-model.ts toWorkModel; pages/requests.tsx AgentGroup shows it). Workers before 16.0.0 send
    * none (G19).
    */
   sessionShortId?: string

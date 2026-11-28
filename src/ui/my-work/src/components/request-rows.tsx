@@ -1,6 +1,6 @@
-// Requests as rows in their state groups (decision G4): the List below the table's width, By agent's cards and no-agent
-// requests, the Team columns, and the Cards board's folded Idle and Shipped. Self-contained, so either board layout can
-// mount them (plan rule 12).
+// Requests as rows in their state groups (decision G4): the old board's List below the table's width, the Team columns,
+// and the Cards board's folded Idle and Shipped (By agent draws Requests' own rows, pages/requests.tsx RequestListRow).
+// Self-contained, so either board layout can mount them (plan rule 12).
 import type { ReactNode } from 'react'
 import { AgentIcon, FocusAreaChip, LocalTime, NextMove, ProgressMeter, STATE_LABEL, STATE_SURFACE, StateBadge } from '@/components/bits'
 import { RunningFor } from '@/components/live-motion'
@@ -96,8 +96,8 @@ export function RequestGroups({ requests, grouped, renderRow, countAlways = fals
  * the same badge, then the word rests again: only the newest change does, only while its request is "just updated"
  * (the store's FRESHLY_UPDATED_FOR_MS), never on the first draw (a first model has no changes), and never under reduced
  * motion, read as it is now (a setting changed while the page is open counts), where the badge simply changes its word.
- * So one live model that changes several requests moves two things in the List, By agent and Team: the change ticker
- * and this riffle (rule 8). Every other changed row, the riffling one too, shows the still "just updated" mark
+ * So one live model that changes several requests moves two things in the List and Team: the change ticker and this
+ * riffle (rule 8). Every other changed row, the riffling one too, shows the still "just updated" mark
  * (index.css .just-updated-mark), never a glow. A screen reader hears the word either way.
  */
 export function ListStatus({ request }: { request: Request }) {
@@ -116,7 +116,7 @@ export function ListStatus({ request }: { request: Request }) {
 }
 
 /**
- * The facts the List's table shows beside a row's title, status and next step (pages/my-work.tsx ListTable), for the
+ * The facts the List's table shows beside a row's title, status and next step (pages/requests.tsx ListTable), for the
  * List's rows from 768px up to the table's width, on a line of its own that wraps (rule 2: HEAD's table showed them
  * there): the focus area, who asked (team mode), progress, the start in the reader's clock (the shared LocalTime: the
  * full time on hover, focus and tap) and how long it has run. The area link and the time sit above the row's stretched
@@ -147,7 +147,7 @@ function RowFacts({ request, onOpenFocus }: { request: Request; onOpenFocus: (fo
 const ROW_TARGET_CLASS_NAME = 'after:absolute after:inset-0 after:rounded-lg focus-visible:border-transparent focus-visible:ring-0 focus-visible:after:ring-3 focus-visible:after:ring-ring/50'
 
 /**
- * One request on a List row below the table's width, in a Team column and on a By agent card: the whole row opens it
+ * One request on a List row below the table's width and in a Team column: the whole row opens it
  * (its button, stretched over the row), its title, its status, and its next step on one line ("—" when none is
  * recorded, G3). The agent's mark sits above the stretched button, so its tooltip stays reachable without a control
  * inside a control: with the mark, a row is two Tab stops, the mark (G10: a tooltip trigger is a Tab stop) and the
@@ -158,23 +158,23 @@ const ROW_TARGET_CLASS_NAME = 'after:absolute after:inset-0 after:rounded-lg foc
  * Two layouts of the same parts, in the order they are seen (and read, and reached by Tab):
  * - the List's (c-work-list-view): the mark, then the title cut to one line beside the status, the next step under
  *   them;
- * - `titleOnItsOwnLine` (Team columns, By agent cards): the whole title on a line of its own as wide as the row,
+ * - `titleOnItsOwnLine` (Team columns): the whole title on a line of its own as wide as the row,
  *   wrapping, as HEAD's Team and By agent cards showed it (rule 2); under it the status, then the next step beside it
  *   or, when they do not fit side by side, under it; then the mark (with the tool's name in Team). Nothing shares the
  *   title's line, so a narrow column cannot squeeze it: in a 202px Team column at 768px the mark, the name and the
  *   status beside it left the title 0px and stacked the status letter by letter (measured on the owner's data and in
  *   sample mode, 2026-11-17).
  */
-export function RequestRow({ request, onOpen, showAgent = true, showAgentName = false, titleOnItsOwnLine = false, facts }: {
-  request: Request; onOpen: (request: Request) => void; showAgent?: boolean
+export function RequestRow({ request, onOpen, showAgentName = false, titleOnItsOwnLine = false, facts }: {
+  request: Request; onOpen: (request: Request) => void
   /**
    * The tool's name printed beside the agent's mark (Team columns: HEAD's Team cards printed it, rule 2). A name past
    * the mark's room ends in an ellipsis with the whole identity in the mark's tooltip, as everywhere AgentIcon prints it.
    */
   showAgentName?: boolean
-  /** The whole title on a line of its own, wrapping (Team columns, By agent cards); left out, the List's one line. */
+  /** The whole title on a line of its own, wrapping (Team columns); left out, the List's one line. */
   titleOnItsOwnLine?: boolean
-  /** The List's rows (pages/my-work.tsx ListView): the facts line, whose area link opens that area. */
+  /** The List's rows (pages/requests.tsx ListView): the facts line, whose area link opens that area. */
   facts?: { onOpenFocus: (focusAreaId: string) => void }
 }) {
   const { t } = useI18n()
@@ -196,14 +196,14 @@ export function RequestRow({ request, onOpen, showAgent = true, showAgentName = 
           </span>
           {freshWords}
         </Button>
-        {showAgent && <span className="relative z-[1] flex w-fit max-w-full"><AgentIcon agentId={request.agentId} showName={showAgentName} /></span>}
+        <span className="relative z-[1] flex w-fit max-w-full"><AgentIcon agentId={request.agentId} showName={showAgentName} /></span>
       </div>
     )
   }
   return (
     <div data-request-row={request.state} data-just-updated={fresh || undefined} className={rowClassName}>
       <div className="flex min-w-0 items-start gap-2.5">
-        {showAgent && <span className="relative z-[1]"><AgentIcon agentId={request.agentId} showName={showAgentName} /></span>}
+        <span className="relative z-[1]"><AgentIcon agentId={request.agentId} showName={showAgentName} /></span>
         <Button variant="bare" data-row-target="" data-request-opener={request.id} onClick={() => onOpen(request)} className={cn('min-w-0 flex-1 flex-col items-stretch gap-1 text-sm', ROW_TARGET_CLASS_NAME)}>
           <span className="flex min-w-0 items-center gap-2">
             <span data-row-title="" className={cn('min-w-0 flex-1 truncate font-medium', titleTone)}>{title}</span>

@@ -8,6 +8,7 @@ import { BookMarkedIcon, GalleryVerticalEndIcon, HouseIcon, LayersIcon, LibraryI
 import { useI18n } from '@/lib/i18n'
 import { underWorkspace } from '@/lib/page-frame'
 import { placeLinkPress, usePageHref } from '@/lib/place-link'
+import { requestsHeading } from '@/lib/requests-heading'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { useStore, type Section } from '@/store'
@@ -85,13 +86,17 @@ const isPlaceId = (section: Section): section is MyWorkPlaceId => (MY_WORK_PLACE
 export const pageHeading = (section: Section, t: Translate) => isPlaceId(section) ? t(myWorkPlace(section).label) : OTHER_PAGE_HEADING[section](t)
 
 /**
- * The h1 of the screens before the work has loaded: the page's words, and for a focus area's page Focus areas, the
- * place it sits under (its name is in the work that has not been read).
+ * The h1 of the screens before the work has loaded: the page's words, Requests' as the loaded page words them ("Idle
+ * requests", "Requests by agent"), and for a focus area's page Focus areas, the place it sits under (its name is in the
+ * work that has not been read).
  */
 export function usePageHeadingBeforeLoad(): string {
   const { t } = useI18n()
   const section = useStore((state) => state.view.section)
   const inArea = useStore((state) => state.view.section === 'work' && state.view.focusChoice !== null)
+  const requestsStatus = useStore((state) => state.view.requestsStatus)
+  const requestsBy = useStore((state) => state.view.requestsBy)
+  if (section === 'requests') return requestsHeading({ requestsStatus, requestsBy }, t)
   return pageHeading(inArea ? 'focus' : section, t)
 }
 

@@ -50,6 +50,7 @@ export const createWorkSlice: SliceCreator<WorkSlice> = (set, get) => {
     }
     get().reconcileOpenRequest()
     get().reconcileFocusChoice()
+    get().reconcileRequestsDetails()
   }
 
   const activeSource = (what: string) => {

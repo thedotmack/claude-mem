@@ -25,32 +25,42 @@ export const CARD_SIZE: Record<LiveState, CardSize> = {
 export const LINE_ROWS_PER_PAGE = 50
 
 /**
- * The narrowest title column the List's table may give a request (pages/my-work.tsx ListView): the 183px it has at
+ * The narrowest title column the List's table may give a request (pages/requests.tsx ListView): the 183px it has at
  * 1360px without Team, the narrowest width the table shows a title at (measured on the owner's data, 2026-11-16,
  * verify-4). With Team on, an Asked by column (7rem, 119px at the 17px desktop root) left the title 64px at 1360 and
  * 128px from 1440, where the page stops widening, so in team mode the table never fits this width and the List is
  * rows at every width, with who asked on each row's facts line. The List draws the table only where its own width
- * leaves the title column this wide (pages/my-work.tsx ListView), so a classic 15px scrollbar, which a window-width rule
+ * leaves the title column this wide (pages/requests.tsx ListView), so a classic 15px scrollbar, which a window-width rule
  * did not count (175.5px at 1366 on PR #6210's Linux CI), keeps it rows. The browser test holds the List to it from 1355
  * to 1390px with and without that scrollbar, Team off and on.
  */
 export const LIST_TITLE_MIN_PX = 183
 
-export type CardGroup = { id: string; label: string; states: LiveState[]; dot: string; size: CardSize }
+export type CardGroup<Id extends string = string> = { id: Id; label: string; states: LiveState[]; dot: string; size: CardSize }
 
-const group = (id: string, label: string, states: LiveState[], dot: string): CardGroup => {
+const group = <Id extends string>(id: Id, label: string, states: LiveState[], dot: string): CardGroup<Id> => {
   const size = CARD_SIZE[states[0]]
   if (states.some((state) => CARD_SIZE[state] !== size)) throw new Error(`Card group ${id} mixes card sizes`)
   return { id, label, states, dot, size }
 }
 
-/** What needs you, then what is moving, then the rest, folded to one line each. Every mark is still (rule 8). */
-export const CARD_GROUPS: CardGroup[] = [
+/**
+ * What needs you, then what is moving, then the rest, folded to one line each. Every mark is still (rule 8). The one
+ * list of request groups: the boards' sections, and Requests' status tabs and its `?status=` (pages/requests.tsx,
+ * store/slices/view-slice.ts) take theirs from here.
+ */
+export const CARD_GROUPS = [
   group('needs-you', 'Needs you', ['your-move', 'needs-check'], 'bg-attention-foreground'),
   group('working', 'Working', ['working'], 'bg-working-foreground'),
   group('idle', 'Idle', ['idle'], 'bg-idle-foreground'),
   group('shipped', 'Shipped', ['shipped'], 'bg-shipped-foreground'),
 ]
+
+/** A group's id, typed from CARD_GROUPS: Requests' status tab (`?status=`). */
+export type CardGroupId = (typeof CARD_GROUPS)[number]['id']
+
+/** Whether a word from outside (an address) names one of the groups. */
+export const isCardGroupId = (value: string | null): value is CardGroupId => CARD_GROUPS.some((cardGroup) => cardGroup.id === value)
 
 /** A card entry carries the size its section draws it at (CARD_SIZE, never a line in the grid). */
 export type CardGridEntry =
@@ -72,8 +82,8 @@ export function cardGridEntries(requests: Request[]): CardGridEntry[] {
 }
 
 /**
- * Every group with its requests in board order, empty groups left out: the List, By agent's no-agent block and the Team
- * columns draw these as group rows (G4), the groups of one-line cards folded until opened.
+ * Every group with its requests in board order, empty groups left out: the List and the Team columns draw these as
+ * group rows (G4), the groups of one-line cards folded until opened.
  */
 export function requestSections(requests: Request[]): { group: CardGroup; members: Request[] }[] {
   return CARD_GROUPS

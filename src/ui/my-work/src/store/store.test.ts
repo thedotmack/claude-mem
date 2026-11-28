@@ -11,7 +11,10 @@ import type { UsageReport } from '../live/usage.ts'
 import type { RuleSaveResult, WorkDataSource, WorkModel } from '../live/work-data-source.ts'
 import { createBoundStore } from './create-store.ts'
 import { OLDEST_MIGRATED_PREFERENCES_VERSION, PREFERENCES_STORAGE_KEY, PREFERENCES_VERSION } from './preferences.ts'
-import { activePlace, readRoute, themeChoiceInUse, writeRoute } from './slices/view-slice.ts'
+import { activePlace, NO_PAGE_DETAILS, readRoute, REQUESTS_GROUPINGS, themeChoiceInUse, writeRoute } from './slices/view-slice.ts'
+import { CARD_GROUPS } from '../live/card-groups.ts'
+import { NOT_SORTED_AREA, requestsAreaChoices } from '../live/requests-areas.ts'
+import { OTHER_FOCUS_AREA_ID } from '../data.ts'
 import type { FocusChangeRecord, StoreEnvironment } from './store-types.ts'
 import { MY_WORK_PLACES } from '../../../app-places.ts'
 import { WORK_VIEW_SECTIONS } from '../../../../shared/work-view-pages.ts'
@@ -427,10 +430,21 @@ describe('where the person is', () => {
       'http://localhost/?view=requests&request=r1',
       'http://localhost/?view=find&q=viewer%20sync',
       'http://localhost/?view=find&q=viewer&request=r1',
+      ...CARD_GROUPS.map((group) => `http://localhost/?view=requests&status=${group.id}`),
+      'http://localhost/?view=requests&status=working&request=r1',
+      ...REQUESTS_GROUPINGS.map((by) => `http://localhost/?view=requests&by=${by}`),
+      'http://localhost/?view=requests&by=agent&request=r1',
+      ...['fa-sync', OTHER_FOCUS_AREA_ID, NOT_SORTED_AREA].map((area) => `http://localhost/?view=requests&area=${area}`),
+      'http://localhost/?view=requests&closed=1',
+      'http://localhost/?view=requests&q=viewer%20sync',
+      'http://localhost/?view=requests&status=idle&area=fa-sync&closed=1&request=r1&q=sync',
     ]
     for (const href of hrefs) {
       const route = readRoute(new URL(href))
-      const place = { section: route.section, focusChoice: route.focusChoice, openRequest: route.requestId ? { id: route.requestId, fromLiveFeed: null, fallback: null } : null, findQuery: route.findQuery }
+      const place = {
+        section: route.section, focusChoice: route.focusChoice, openRequest: route.requestId ? { id: route.requestId, fromLiveFeed: null, fallback: null } : null, findQuery: route.findQuery,
+        requestsStatus: route.requestsStatus, requestsBy: route.requestsBy, requestsArea: route.requestsArea, requestsClosed: route.requestsClosed, requestsWords: route.requestsWords,
+      }
       // Only what writeRoute writes can come back: the clean address keeps just the source, which is not the place's.
       const clean = new URL('http://localhost/')
       const source = new URL(href).searchParams.get('source')
@@ -455,7 +469,7 @@ describe('where the person is', () => {
     assert.equal(readRoute(new URL('http://localhost/?view=find&q=')).findQuery, null, 'empty words are none')
     assert.equal(readRoute(new URL('http://localhost/?view=find')).findQuery, null)
     assert.equal(readRoute(new URL('http://localhost/?view=rules&q=viewer')).findQuery, null, 'on another page the words are no detail of it')
-    assert.equal(writeRoute(new URL('http://localhost/?view=rules&q=viewer'), { section: 'rules', focusChoice: null, openRequest: null, findQuery: 'viewer' }).searchParams.has('q'), false)
+    assert.equal(writeRoute(new URL('http://localhost/?view=rules&q=viewer'), { section: 'rules', openRequest: null, ...NO_PAGE_DETAILS, findQuery: 'viewer' }).searchParams.has('q'), false)
     const { store, urls, back } = testStore({ href: 'http://localhost/?source=sample' })
     store.getState().goToPage('find')
     assert.deepEqual(urls.at(-1), { href: 'http://localhost/?source=sample&view=find', replace: false })
@@ -475,6 +489,159 @@ describe('where the person is', () => {
     assert.equal(urls.at(-1)?.href, 'http://localhost/?source=sample&view=find', 'clearing the box clears the address')
   })
 
+  it('Requests\' status tab and grouping live in the address on its page only: each round-trips, and a value neither list names, or another page, reads as none', () => {
+    // Every status tab and every grouping, written onto a clean address, read back as the same.
+    for (const group of CARD_GROUPS) {
+      const route = readRoute(new URL(`http://localhost/?view=requests&status=${group.id}`))
+      assert.deepEqual([route.section, route.requestsStatus, route.requestsBy], ['requests', group.id, null], group.id)
+      const written = writeRoute(new URL('http://localhost/'), { section: 'requests', openRequest: null, ...NO_PAGE_DETAILS, requestsStatus: group.id })
+      assert.equal(written.href, `http://localhost/?view=requests&status=${group.id}`)
+    }
+    for (const by of REQUESTS_GROUPINGS) {
+      const written = writeRoute(new URL('http://localhost/'), { section: 'requests', openRequest: null, ...NO_PAGE_DETAILS, requestsBy: by })
+      assert.equal(written.href, `http://localhost/?view=requests&by=${by}`)
+      assert.deepEqual([readRoute(written).requestsBy, readRoute(written).requestsStatus], [by, null])
+    }
+    // Unknown values, and either detail on another page, read as none and are not written back.
+    assert.equal(readRoute(new URL('http://localhost/?view=requests&status=parked')).requestsStatus, null)
+    assert.equal(readRoute(new URL('http://localhost/?view=requests&status=')).requestsStatus, null)
+    assert.equal(readRoute(new URL('http://localhost/?view=requests&by=person')).requestsBy, null)
+    assert.deepEqual([readRoute(new URL('http://localhost/?view=rules&status=working&by=agent')).requestsStatus, readRoute(new URL('http://localhost/?view=rules&status=working&by=agent')).requestsBy], [null, null])
+    assert.deepEqual([readRoute(new URL('http://localhost/?status=working')).requestsStatus, readRoute(new URL('http://localhost/?by=agent')).requestsBy], [null, null])
+    // By agent has no status tabs: a status beside it is no detail of it.
+    assert.deepEqual([readRoute(new URL('http://localhost/?view=requests&by=agent&status=working')).requestsStatus, readRoute(new URL('http://localhost/?view=requests&by=agent&status=working')).requestsBy], [null, 'agent'])
+    const other = writeRoute(new URL('http://localhost/?view=requests&status=working&by=agent'), { section: 'rules', openRequest: null, ...NO_PAGE_DETAILS, requestsStatus: 'working', requestsBy: 'agent' })
+    assert.deepEqual([other.searchParams.has('status'), other.searchParams.has('by')], [false, false])
+  })
+
+  it('Requests\' area, closed choice and find words live in the address on its list only: each round-trips onto a clean address; empty, unknown, on another page or beside By agent they read as none', () => {
+    const onList = (details: Partial<typeof NO_PAGE_DETAILS>) => writeRoute(new URL('http://localhost/'), { section: 'requests', openRequest: null, ...NO_PAGE_DETAILS, ...details })
+    // Each area choice: an area's id, Other's and the requests not sorted yet.
+    for (const area of [LOCAL_MODEL.focusAreas[0].id, OTHER_FOCUS_AREA_ID, NOT_SORTED_AREA]) {
+      const written = onList({ requestsArea: area })
+      assert.equal(written.href, `http://localhost/?view=requests&area=${area}`)
+      assert.equal(readRoute(written).requestsArea, area)
+    }
+    const closed = onList({ requestsClosed: true })
+    assert.deepEqual([closed.href, readRoute(closed).requestsClosed], ['http://localhost/?view=requests&closed=1', true])
+    const words = onList({ requestsWords: 'viewer sync' })
+    assert.deepEqual([words.href, readRoute(words).requestsWords], ['http://localhost/?view=requests&q=viewer+sync', 'viewer sync'])
+    const all = onList({ requestsStatus: 'idle', requestsArea: OTHER_FOCUS_AREA_ID, requestsClosed: true, requestsWords: 'sync' })
+    assert.equal(all.href, 'http://localhost/?view=requests&status=idle&area=other&closed=1&q=sync')
+    assert.deepEqual(readRoute(all), { ...readRoute(new URL('http://localhost/?view=requests')), requestsStatus: 'idle', requestsArea: OTHER_FOCUS_AREA_ID, requestsClosed: true, requestsWords: 'sync' })
+    // A closed flag that is not the flag, an empty area or empty words read as none.
+    for (const flag of ['0', 'yes', 'true', '']) assert.equal(readRoute(new URL(`http://localhost/?view=requests&closed=${flag}`)).requestsClosed, false, flag)
+    assert.deepEqual([readRoute(new URL('http://localhost/?view=requests&area=')).requestsArea, readRoute(new URL('http://localhost/?view=requests&q=')).requestsWords], [null, null])
+    // On another page, or beside By agent (it has no tabs and no filter), none of them is a detail of it, nor written.
+    for (const href of ['http://localhost/?view=rules&area=other&closed=1&q=sync', 'http://localhost/?area=other&closed=1', 'http://localhost/?view=requests&by=agent&area=other&closed=1&q=sync']) {
+      const route = readRoute(new URL(href))
+      assert.deepEqual([route.requestsArea, route.requestsClosed, route.requestsWords], [null, false, null], href)
+    }
+    const beside = writeRoute(new URL('http://localhost/'), { section: 'requests', openRequest: null, ...NO_PAGE_DETAILS, requestsBy: 'agent', requestsArea: OTHER_FOCUS_AREA_ID, requestsClosed: true, requestsWords: 'sync', requestsStatus: 'idle' })
+    assert.equal(beside.href, 'http://localhost/?view=requests&by=agent')
+    const elsewhere = writeRoute(new URL('http://localhost/'), { section: 'rules', openRequest: null, ...NO_PAGE_DETAILS, requestsArea: OTHER_FOCUS_AREA_ID, requestsClosed: true, requestsWords: 'sync' })
+    assert.equal(elsewhere.href, 'http://localhost/?view=rules')
+  })
+
+  it('once the work is read, an area no request sits in reads as every area, and an address naming what Requests does not apply is rewritten in place', async () => {
+    const present = requestsAreaChoices(LOCAL_MODEL.requests, LOCAL_MODEL.focusAreas)
+    assert.ok(present.length > 0, 'the sample has requests in an area')
+    const read = async (href: string) => {
+      const { store, urls } = testStore({ href })
+      const { source, reads } = fakeSource()
+      store.getState().startWorkSource(source)
+      reads[0].resolve(LOCAL_MODEL)
+      await settle()
+      return { view: store.getState().view, urls }
+    }
+    // An area merged away, dismissed or never in the work: kept while the work is read, then every area, in place.
+    const gone = await read('http://localhost/?source=sample&view=requests&area=fa-not-in-the-work&q=sync')
+    assert.deepEqual([gone.view.requestsArea, gone.view.requestsWords, gone.urls], [null, 'sync', [{ href: 'http://localhost/?source=sample&view=requests&q=sync', replace: true }]])
+    // An area some request sits in keeps its address.
+    const kept = await read(`http://localhost/?source=sample&view=requests&area=${present[0]}`)
+    assert.deepEqual([kept.view.requestsArea, kept.urls], [present[0], []])
+    // A status (or any list detail) typed beside By agent, and a value no list names, leave the address.
+    const typed = await read('http://localhost/?source=sample&view=requests&by=agent&status=idle&closed=1')
+    assert.deepEqual([typed.view.requestsBy, typed.view.requestsStatus, typed.urls], ['agent', null, [{ href: 'http://localhost/?source=sample&view=requests&by=agent', replace: true }]])
+    const unknown = await read('http://localhost/?source=sample&view=requests&status=parked&closed=yes')
+    assert.deepEqual([unknown.view.requestsStatus, unknown.view.requestsClosed, unknown.urls], [null, false, [{ href: 'http://localhost/?source=sample&view=requests', replace: true }]])
+    // Another page's address is not Requests' to rewrite.
+    assert.deepEqual((await read('http://localhost/?view=rules&status=idle')).urls, [])
+  })
+
+  it('on Requests\' list a status tab keeps the area, the closed choice and the words; an area and the closed choice are history entries, each word replaces the entry; By agent drops them and Back brings them back', () => {
+    const { store, urls, back } = testStore({ href: 'http://localhost/?source=sample&view=requests' })
+    const asked = store.getState().view.scrollAsk?.sequence
+    store.getState().showRequests({ area: OTHER_FOCUS_AREA_ID })
+    assert.deepEqual(urls.at(-1), { href: 'http://localhost/?source=sample&view=requests&area=other', replace: false })
+    store.getState().showRequests({ closed: true })
+    assert.deepEqual(urls.at(-1), { href: 'http://localhost/?source=sample&view=requests&area=other&closed=1', replace: false })
+    store.getState().setRequestsWords('vie')
+    store.getState().setRequestsWords('viewer')
+    assert.deepEqual(urls.slice(-2), [
+      { href: 'http://localhost/?source=sample&view=requests&area=other&closed=1&q=vie', replace: true },
+      { href: 'http://localhost/?source=sample&view=requests&area=other&closed=1&q=viewer', replace: true },
+    ], 'each word replaces the entry: Back takes the last choice back, not one letter')
+    store.getState().showRequests({ status: 'idle' })
+    // A detail joins the address after those already in it.
+    const filtered = 'http://localhost/?source=sample&view=requests&area=other&closed=1&q=viewer&status=idle'
+    assert.deepEqual(urls.at(-1), { href: filtered, replace: false })
+    assert.equal(store.getState().view.scrollAsk?.sequence, asked, 'a tab, an area and the closed choice ask for no scroll')
+    // A request opened over the list keeps them; closed, the address is the list's again.
+    store.getState().openRequestDrawer(LOCAL_MODEL.requests[0])
+    assert.equal(urls.at(-1)?.href, `${filtered}&request=${LOCAL_MODEL.requests[0].id}`)
+    store.getState().closeRequestDrawer()
+    assert.equal(urls.at(-1)?.href, filtered)
+    // Every area again, and the open requests: only those details change.
+    store.getState().showRequests({ area: null, closed: false })
+    assert.equal(urls.at(-1)?.href, 'http://localhost/?source=sample&view=requests&q=viewer&status=idle')
+    // By agent has none of them; Request list opens the list plain; Back brings the filtered list back.
+    store.getState().showRequests({ by: 'agent' })
+    const { requestsStatus, requestsArea, requestsClosed, requestsWords } = store.getState().view
+    assert.deepEqual([urls.at(-1)?.href, requestsStatus, requestsArea, requestsClosed, requestsWords], ['http://localhost/?source=sample&view=requests&by=agent', null, null, false, null])
+    store.getState().showRequests({})
+    assert.equal(urls.at(-1)?.href, 'http://localhost/?source=sample&view=requests')
+    store.getState().goToPage('rules')
+    back(filtered, 480)
+    const restored = store.getState().view
+    assert.deepEqual([restored.section, restored.requestsStatus, restored.requestsArea, restored.requestsClosed, restored.requestsWords, restored.scrollAsk?.target],
+      ['requests', 'idle', OTHER_FOCUS_AREA_ID, true, 'viewer', { to: 'position', y: 480 }])
+    // The bar's Requests (any page move) opens the list with none of them.
+    store.getState().goToPage('requests')
+    assert.equal(urls.at(-1)?.href, 'http://localhost/?source=sample&view=requests')
+  })
+
+  it('a status tab is a history entry that leaves the window where it is; the bar\'s Requests opens on All; Back brings the tab back', () => {
+    const { store, urls, back } = testStore({ href: 'http://localhost/?source=sample&view=rules' })
+    store.getState().showRequests({ status: 'working' })
+    assert.deepEqual(urls.at(-1), { href: 'http://localhost/?source=sample&view=requests&status=working', replace: false })
+    assert.deepEqual(store.getState().view.scrollAsk?.target, { to: 'top' }, 'from another page, Requests opens at its top')
+    const asked = store.getState().view.scrollAsk?.sequence
+    store.getState().showRequests({ status: 'idle' })
+    assert.deepEqual(urls.at(-1), { href: 'http://localhost/?source=sample&view=requests&status=idle', replace: false })
+    assert.equal(store.getState().view.scrollAsk?.sequence, asked, 'a tab asks for no scroll')
+    // A request opened over a tab keeps it; closed, the address is the tab's again.
+    store.getState().openRequestDrawer(LOCAL_MODEL.requests[0])
+    assert.equal(urls.at(-1)?.href, `http://localhost/?source=sample&view=requests&status=idle&request=${LOCAL_MODEL.requests[0].id}`)
+    store.getState().closeRequestDrawer()
+    // By agent drops the tab and opens at its top; the list comes back on All.
+    store.getState().showRequests({ by: 'agent' })
+    assert.deepEqual([urls.at(-1)?.href, store.getState().view.requestsStatus, store.getState().view.scrollAsk?.target], ['http://localhost/?source=sample&view=requests&by=agent', null, { to: 'top' }])
+    store.getState().showRequests({})
+    assert.equal(urls.at(-1)?.href, 'http://localhost/?source=sample&view=requests')
+    // Back and Forward bring the tab and the grouping back with the place.
+    back('http://localhost/?source=sample&view=requests&status=idle', 640)
+    assert.deepEqual([store.getState().view.section, store.getState().view.requestsStatus, store.getState().view.requestsBy, store.getState().view.scrollAsk?.target], ['requests', 'idle', null, { to: 'position', y: 640 }])
+    back('http://localhost/?source=sample&view=requests&by=agent', 0)
+    assert.deepEqual([store.getState().view.requestsStatus, store.getState().view.requestsBy], [null, 'agent'])
+    // The bar's Requests (any page move) opens the list on All; another page leaves both details behind.
+    store.getState().goToPage('requests')
+    assert.deepEqual([urls.at(-1)?.href, store.getState().view.requestsStatus, store.getState().view.requestsBy], ['http://localhost/?source=sample&view=requests', null, null])
+    store.getState().showRequests({ status: 'shipped' })
+    store.getState().goToFocus('fa-sync')
+    assert.deepEqual([store.getState().view.requestsStatus, new URL(urls.at(-1)!.href).searchParams.has('status')], [null, false])
+  })
+
   it('a rule Find work opens lands My Rules at that rule once it has drawn', () => {
     const { store } = testStore({ href: 'http://localhost/?view=find&q=draft' })
     store.getState().goToPage('rules', { elementId: 'rule-no-draft-pr' })
@@ -486,7 +653,7 @@ describe('where the person is', () => {
       const view = testStore({ href }).store.getState().view
       return { section: view.section, focusChoice: view.focusChoice, request: view.openRequest?.id ?? null, scrollAsk: view.scrollAsk?.target ?? null }
     }
-    assert.deepEqual(at('http://localhost/#all-requests'), { section: 'requests', focusChoice: null, request: null, scrollAsk: { to: 'element', elementId: 'all-requests' } })
+    assert.deepEqual(at('http://localhost/#all-requests'), { section: 'requests', focusChoice: null, request: null, scrollAsk: null })
     assert.deepEqual(at('http://localhost/#focus-areas'), { section: 'focus', focusChoice: null, request: null, scrollAsk: { to: 'element', elementId: 'focus-areas' } })
     assert.deepEqual(at('http://localhost/?view=suggested'), { section: 'suggested', focusChoice: null, request: null, scrollAsk: null })
     assert.deepEqual(at('http://localhost/?view=past-focus'), { section: 'past-focus', focusChoice: null, request: null, scrollAsk: null })
@@ -510,12 +677,12 @@ describe('where the person is', () => {
     assert.deepEqual(['/?view=find', '/?view=workspace', '/?view=machine'].map((path) => marked(`http://localhost${path}`)), [null, null, null])
   })
 
-  it('a move scrolls its page once it has drawn: a new page from its top, Requests and Focus areas at their boards', () => {
+  it('a move scrolls its page once it has drawn: a new page from its top, Focus areas at its board', () => {
     const { store } = testStore({ href: 'http://localhost/?view=rules' })
     assert.equal(store.getState().view.scrollAsk, null, 'an address opened on a page asks for nothing')
     const asked = () => store.getState().view.scrollAsk
     store.getState().goToPage('requests')
-    assert.deepEqual(asked(), { sequence: 1, target: { to: 'element', elementId: 'all-requests' } })
+    assert.deepEqual(asked(), { sequence: 1, target: { to: 'top' } }, 'Requests is a page of its own (design pass Phase 5)')
     store.getState().goToPage('focus')
     assert.deepEqual(asked(), { sequence: 2, target: { to: 'element', elementId: 'focus-areas' } })
     store.getState().goToFocus('fa-sync')
@@ -547,7 +714,8 @@ describe('where the person is', () => {
   it('a reload opens where the person left that entry scrolled, before the page\'s own board', () => {
     assert.deepEqual(testStore({ href: 'http://localhost/?view=requests', scrolledTo: 2400 }).store.getState().view.scrollAsk, { sequence: 1, target: { to: 'position', y: 2400 } })
     assert.deepEqual(testStore({ href: 'http://localhost/?view=rules', scrolledTo: 0 }).store.getState().view.scrollAsk, { sequence: 1, target: { to: 'position', y: 0 } })
-    assert.deepEqual(testStore({ href: 'http://localhost/?view=requests' }).store.getState().view.scrollAsk?.target, { to: 'element', elementId: 'all-requests' }, 'a first visit opens at the board')
+    assert.deepEqual(testStore({ href: 'http://localhost/?view=focus' }).store.getState().view.scrollAsk?.target, { to: 'element', elementId: 'focus-areas' }, 'a first visit opens at the board')
+    assert.equal(testStore({ href: 'http://localhost/?view=requests' }).store.getState().view.scrollAsk, null, 'Requests opens at its top')
   })
 
   it('opening a request keeps the page it opens over; closing it goes back to that page\'s address', () => {

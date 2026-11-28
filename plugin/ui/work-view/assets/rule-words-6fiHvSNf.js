@@ -1,0 +1,1 @@
+import"./served-from-a-8XO5wk.js";import{X as e}from"./parse-sse-frame-CrVJkhEy.js";var t=e=>e.charAt(0).toLowerCase()+e.slice(1),n=(n,r)=>n.when.trim()?e(r(`When {when}: {then}`),{when:n.when.trim(),then:t(n.then.trim())}):n.then.trim(),r=(t,n)=>t.tier===`everywhere`?n(`Everywhere`):t.tier===`project`?e(n(`In {name}`),{name:t.name}):t.name;export{n,r,t};

@@ -1,5 +1,5 @@
 // Long lists 50 rows at a time (decision G4), as the List, By agent, the Team columns and the Cards board's folded
-// groups draw them (components/request-rows.tsx, pages/my-work.tsx). No components here, so either board layout can
+// groups draw them (components/request-rows.tsx, pages/requests.tsx, pages/my-work.tsx). No components here, so either board layout can
 // import it (plan rule 12).
 import { createContext, useContext, useEffect, useId, useRef, useState } from 'react'
 import { TRIGGER_FOCUS_RING_CLASS_NAME } from '@/components/ui/interaction-behavior'
@@ -7,7 +7,7 @@ import { linePage } from '@/live/card-groups'
 import { cn } from '@/lib/utils'
 
 /**
- * The board's filter, sort and area (pages/my-work.tsx MyWork provides it): when one changes, every paged list under it
+ * The board's filter, sort and area (pages/my-work.tsx MyWork and pages/requests.tsx provide it): when one changes, every paged list under it
  * goes back to its first page. Outside a board it is one value, so lists keep their pages.
  */
 export const PagingResetContext = createContext('')

@@ -2,8 +2,10 @@
 // press moves there in the page, without a reload. The bar's places, the brand, the focus area breadcrumb and the
 // links between pages use it.
 import type { MouseEvent } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useStore, type Section } from '@/store'
-import { writeRoute } from '@/store/slices/view-slice'
+import type { ViewState } from '@/store/store-types'
+import { NO_PAGE_DETAILS, requestsPlace, writeRoute, type RequestsMove } from '@/store/slices/view-slice'
 
 /** A press handler that moves in the page on a plain left click and leaves every other click to the browser. */
 export function placeLinkPress(go: () => void) {
@@ -22,5 +24,29 @@ export function placeLinkPress(go: () => void) {
  */
 export function usePageHref(section: Section): string {
   useStore((state) => state.view.themeForThisVisit)
-  return writeRoute(new URL(window.location.href), { section, focusChoice: null, openRequest: null, findQuery: null }).href
+  return writeRoute(new URL(window.location.href), { section, openRequest: null, ...NO_PAGE_DETAILS }).href
+}
+
+/** The place shown, as an address names it (without the open request), and the visit's theme, which the address carries. */
+const placeShown = ({ view }: { view: ViewState }) => ({
+  section: view.section, focusChoice: view.focusChoice, findQuery: view.findQuery, requestsStatus: view.requestsStatus, requestsBy: view.requestsBy,
+  requestsArea: view.requestsArea, requestsClosed: view.requestsClosed, requestsWords: view.requestsWords, themeForThisVisit: view.themeForThisVisit,
+})
+
+/**
+ * The address a move on Requests goes to (pages/requests.tsx: a status tab, By agent, the list): on the list, the list's
+ * other details as shown (store/slices/view-slice.ts requestsPlace).
+ */
+export function useRequestsHref(move: RequestsMove): string {
+  const place = useStore(useShallow(placeShown))
+  return writeRoute(new URL(window.location.href), { ...requestsPlace({ ...place, openRequest: null }, move), openRequest: null }).href
+}
+
+/**
+ * The address of a request opened over the page shown (`?request=`, kept with the page's own details), for the rows
+ * that are links to their request (pages/requests.tsx RequestListRow).
+ */
+export function useRequestHref(): (requestId: string) => string {
+  const place = useStore(useShallow(placeShown))
+  return (requestId) => writeRoute(new URL(window.location.href), { ...place, openRequest: { id: requestId, fromLiveFeed: null, fallback: null } }).href
 }

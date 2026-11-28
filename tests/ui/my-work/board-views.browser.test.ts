@@ -9,27 +9,39 @@ import {
 } from '../../helpers/chrome-devtools';
 import { THEME_PRE_PAINT_SCRIPT } from '../../../src/ui/my-work/src/lib/theme-pre-paint';
 import { SAMPLE_STATES } from '../../../src/ui/my-work/src/live/sample-source';
-import { LINE_ROWS_PER_PAGE, LIST_TITLE_MIN_PX } from '../../../src/ui/my-work/src/live/card-groups';
+import { CARD_GROUPS, LINE_ROWS_PER_PAGE, LIST_TITLE_MIN_PX } from '../../../src/ui/my-work/src/live/card-groups';
+import { UNRECORDED_AGENT } from '../../../src/ui/my-work/src/live/to-work-model';
+import type { LiveState } from '../../../src/ui/my-work/src/data';
+import { myWorkPlace } from '../../../src/ui/app-places';
 
-failOnCiWithoutChrome('CI requires Chrome for the My Work List, By agent, Team and read-error regressions.');
+failOnCiWithoutChrome('CI requires Chrome for the My Work Requests page, List, By agent, Team and read-error regressions.');
 
 /**
- * Phase 4 of the pro-max-v16 plan on the real App, its compiled stylesheet and its Geist font:
+ * Requests (design pass Phase 5, Codex D06) on the real App, its compiled stylesheet and its Geist font: its title and
+ * line, the find box (in the page, no read), Filter and sort (an area, the closed requests, the sort; its count in
+ * words), status tabs from CARD_GROUPS whose counts add up to All, rows that are links 50 at a time (an untitled one
+ * says its title is being written), a tab, an area and the closed choice as history entries and the words in the
+ * address, which Back brings back where they were scrolled, the phone; By agent on it (the busiest agent open, the
+ * others rows that open in place, "Agent not recorded" as a group, the agents with nothing here folded, the find box
+ * for an agent or session, the read-error card, what it says with nothing to show, Mark finished behind a confirm);
+ * focus on the h1 when the list and By agent change places; and the Team board in its place when Team view is on.
+ *
+ * Phase 4 of the pro-max-v16 plan, on the old board Home keeps until design pass Phase 6:
  * - the List (c-work-list-view, c-ui-table): 50 rows at a time (G4) and "Show 50 more", rows that are Tab stops Enter
  *   opens, a status cell a screen reader hears as one word (also while its split-flap tiles riffle after a live
  *   change, and only the newest change riffles), 44px rows on a touch phone;
- * - By agent (c-work-by-agent-view, c-ai-agent): the no-agent requests and the empty agents each one dashed line with
- *   "Show them", subagents nested only where the model links them, and Mark finished behind a confirm (its route
- *   cannot be undone), in sample mode;
  * - Team (c-work-team-board): the note for one person, Sort, G4 columns and the dashed places for teammates; each
  *   row's whole title on a line of its own, from 768px to a phone, and status badges that never break inside a word
- *   (StateBadge), in English and Korean; By agent's cards show each whole title the same way;
+ *   (StateBadge), in English and Korean; By agent's rows show each whole title the same way;
  * - the read-error card (sample case): plain words, the raw reason folded, Try again with its outcome, and a Dismiss
  *   per request that holds for that error and moves focus on;
  * - after a failed refresh, My Rules, Past focus and Suggested areas each offer one control, Try again;
- * - rule 8: one live model that changes several requests moves two things at most in the List, By agent and Team.
+ * - rule 8: one live model that changes several requests moves two things at most: Home's List (the ticker and the
+ *   newest riffle), and on Requests, By agent (nothing) and Team (the newest riffle).
  * Nothing here reaches a worker: the data is the sample, reshaped in the page where a test needs more of it.
  */
+/** The bar's Requests, and the crumb back to it from By agent: the place's own words. */
+const REQUESTS_PLACE = myWorkPlace('requests').label;
 const sampleState = (name: (typeof SAMPLE_STATES)[number]) => {
   const state = SAMPLE_STATES.find((entry) => entry === name);
   if (!state) throw new Error(`No sample state ${name} in SAMPLE_STATES`);
@@ -46,6 +58,8 @@ const MANY_TOTAL = MANY.yourMove + MANY.working + MANY.idle + MANY.shipped;
 
 const KEYS = {
   Tab: { code: 'Tab', keyCode: 9, text: undefined }, Enter: { code: 'Enter', keyCode: 13, text: '\r' },
+  ArrowDown: { code: 'ArrowDown', keyCode: 40, text: undefined }, ArrowUp: { code: 'ArrowUp', keyCode: 38, text: undefined },
+  Escape: { code: 'Escape', keyCode: 27, text: undefined },
 } as const;
 
 let server: ReturnType<typeof Bun.serve> | undefined;
@@ -141,13 +155,15 @@ beforeAll(async () => {
     sampleSource.refreshWork = async () => { window.refreshStarts++; return { state: 'running' }; };
     createRoot(document.getElementById('root')).render(<App />);
     (function waitForPage() {
-      if (document.querySelector('[data-slot="work-shell"] main section, [data-slot="work-shell"] main [data-slot="empty"]')) document.fonts.ready.then(() => fetch('/fixture-ready'));
+      if (document.querySelector('[data-slot="work-shell"] main section, [data-slot="work-shell"] main [data-slot="empty"], [data-slot="work-shell"] main [data-board-view]')) document.fonts.ready.then(() => fetch('/fixture-ready'));
       else requestAnimationFrame(waitForPage);
     })();
     const visible = (element) => { const box = element.getBoundingClientRect(); return box.width > 0 && box.height > 0 && getComputedStyle(element).visibility !== 'hidden'; };
     window.nameOf = (element) => (element.getAttribute('aria-label') || element.textContent || '').replace(/\\s+/g, ' ').trim();
     window.buttonsNamed = (pattern) => [...document.querySelectorAll('button')].filter((button) => visible(button) && new RegExp(pattern).test(window.nameOf(button)));
     window.clickNamed = (pattern) => { const button = window.buttonsNamed(pattern)[0]; if (!button) throw new Error('no button ' + pattern); button.click(); };
+    // Types into a field React controls, as the person's typing would (the value setter React tracks, then the event).
+    window.typeInto = (selector, words) => { const field = document.querySelector(selector); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(field, words); field.dispatchEvent(new Event('input', { bubbles: true })); };
     window.tableRows = () => document.querySelectorAll('table[aria-label] tbody tr[data-list-row]');
     window.footerText = () => document.querySelector('[data-slot=table-page-footer]')?.innerText.replace(/\\s+/g, ' ').trim() ?? null;
     // A model from the live feed, as the store receives one (the change ticker and the List's flip read its changes).
@@ -161,26 +177,26 @@ beforeAll(async () => {
     // What moves in the change ticker and the board, once a frame for \`ms\`, as rule 8 counts things, not animations:
     // every running Web Animation and CSS animation, and every element whose inline transform changed since the frame
     // before (motion's glides and slides write one; a progress bar's still transform is its value, not a move), grouped
-    // by what it moves: the ticker, one status badge's riffle, one agent's card (the one around the element or inside
-    // it), or the request it moves (the one whose row, line or card is around the element, or the one inside it), else
-    // that one element. So each moving element is counted apart unless it moves a part of the same thing: an element
-    // outside a row or card was named by its tag, so several of them read as one thing (Phase 6 re-verify V2). Answers
-    // the things of each frame.
+    // by what it moves: the ticker, one status badge's riffle, one agent's group on By agent (the one around the element
+    // or inside it), or the request it moves (the one whose row, line or card is around the element, or the one inside
+    // it), else that one element. So each moving element is counted apart unless it moves a part of the same thing: an
+    // element outside a row or card was named by its tag, so several of them read as one thing (Phase 6 re-verify V2).
+    // Answers the things of each frame.
     window.movingThingsOver = (ms) => {
       const scopes = () => [document.querySelector('[data-ticker]'), document.querySelector('[data-board-view]')].filter(Boolean);
       // An element named apart has its own number: one in no agent's or request's block, or in a block of several.
       const elementNumbers = new WeakMap();
       let elementsNumbered = 0;
       const numberedName = (element) => { if (!elementNumbers.has(element)) elementNumbers.set(element, ++elementsNumbered); return element.tagName + '#' + elementNumbers.get(element); };
-      // One thing's own block: an agent's card, a request's card, its List row or table row, its one-line row.
-      const ownBlock = (element) => element.closest('[data-agent-card], [data-slot="card"], [data-list-row], [data-request-row], [data-request-line]') ?? element;
+      // One thing's own block: an agent's group, a request's card, its List row or table row, its one-line row.
+      const ownBlock = (element) => element.closest('[data-agent-group], [data-slot="card"], [data-list-row], [data-request-row], [data-request-line]') ?? element;
       const requestIdsIn = (element) => new Set([...(element.matches('[data-request-opener]') ? [element] : []), ...element.querySelectorAll('[data-request-opener]')].map((opener) => opener.dataset.requestOpener));
       const thing = (element) => {
         if (element.closest('[data-ticker]')) return 'ticker';
         const own = ownBlock(element);
-        const agents = own.matches('[data-agent-card]') ? [own] : [...own.querySelectorAll('[data-agent-card]')];
+        const agents = own.matches('[data-agent-group]') ? [own] : [...own.querySelectorAll('[data-agent-group]')];
         const requests = requestIdsIn(own);
-        const name = agents.length === 1 ? 'agent ' + agents[0].dataset.agentCard : requests.size === 1 ? [...requests][0] : numberedName(own);
+        const name = agents.length === 1 ? 'agent ' + agents[0].dataset.agentGroup : requests.size === 1 ? [...requests][0] : numberedName(own);
         return (element.closest('[data-state-badge]') ? 'riffle: ' : 'moving: ') + name;
       };
       const lastTransform = new WeakMap();
@@ -481,42 +497,325 @@ it.skipIf(!chromeExecutablePath)('on a touch phone every List row is at least 44
   }
 }, TEST_LIMIT_MS);
 
-it.skipIf(!chromeExecutablePath)('By agent: agents with work first; the no-agent requests and the empty agents each fold to one dashed line with "Show them"; subagents nest only where linked', async () => {
+/** The many scenario's requests in each state (MANY): what each status tab must count. A new state fails the typecheck here. */
+const MANY_BY_STATE: Record<LiveState, number> = { 'your-move': MANY.yourMove, 'needs-check': 0, working: MANY.working, idle: MANY.idle, shipped: MANY.shipped };
+const groupCount = (states: readonly LiveState[]) => states.reduce((sum, state) => sum + MANY_BY_STATE[state], 0);
+/** Requests' list rows, in order (not By agent's nor the Team board's). */
+const LIST_ROWS = `[...document.querySelectorAll('[data-board-view=list] [data-requests-row]')]`;
+/** Each status tab: its id, whether it is the one shown, its count and the status its address names. */
+const STATUS_TABS = `[...document.querySelectorAll('[data-status-tab]')].map((tab) => ({ id: tab.dataset.statusTab, current: tab.getAttribute('aria-current'), label: tab.firstChild.textContent, count: Number(tab.querySelector('span').textContent), status: new URL(tab.href).searchParams.get('status') }))`;
+/** Requests' address details, as the address holds them now. */
+const ADDRESS_DETAILS = `Object.fromEntries(['status', 'area', 'closed', 'q', 'by'].map((name) => [name, new URLSearchParams(location.search).get(name)]))`;
+const pageWords = `({ h1: document.querySelector('main h1').textContent, lead: document.querySelector('[data-requests-lead]').textContent })`;
+
+it.skipIf(!chromeExecutablePath)('Requests: its title and line, the find box, Filter and sort and By agent, then status tabs from CARD_GROUPS whose counts add up to All; a tab is a link and a history entry, and Back brings the last tab back where it was scrolled', async () => {
   try {
-    await openPage('&scenario=many');
-    await waitFor(`window.store.getState().work.load.state === 'loaded'`, 'the many-request board');
-    await chooseView('By agent');
-    await waitFor(`document.querySelector('[data-agent-fold=no-agent]')`, 'the no-agent fold');
-    // A fold row's label, the words at its right end, its height and its edge.
-    const fold = (id: string) => page!.evaluate(`(() => {
-      const trigger = document.querySelector('[data-agent-fold=${id}] [data-slot=collapsible-fold-trigger]');
-      return {
-        label: trigger.querySelector(':scope > span:not([data-slot])').textContent, end: trigger.querySelector('[data-slot=fold-trigger-count]').textContent,
-        height: trigger.getBoundingClientRect().height, edge: getComputedStyle(trigger).borderTopStyle, expanded: trigger.getAttribute('aria-expanded'),
-      };
-    })()`);
-    const noAgent = await fold('no-agent');
-    expect(noAgent).toEqual({ label: `${MANY.noAgent} requests have no agent recorded`, end: 'Show them', height: expect.any(Number), edge: 'dashed', expanded: 'false' });
-    // One line: the fold row's own 44px, not 18,066px of rows.
-    expect(noAgent.height).toBeLessThan(60);
-    // Every agent with nothing here, its subagents counted: the empty agents, the two sessions of one folder, and the
-    // subagent with no parent link.
-    const idle = await fold('idle-agents');
-    expect([idle.label, idle.end, idle.edge]).toEqual([`${MANY.emptyAgents + MANY.twins + 1} agents have nothing in this view`, 'Show them', 'dashed']);
-    expect(idle.height).toBeLessThan(60);
-    // The agents with work are cards; the linked subagents sit in a fold under their parent, not beside it.
-    expect(await page!.evaluate(`document.querySelectorAll('[data-agent-card=sub-1], [data-agent-card=sub-2], [data-agent-card=sub-3]').length`)).toBe(0);
-    expect(await page!.evaluate(`(() => { const trigger = document.querySelector('[data-agent-card=claude] [data-subagents] [data-slot=collapsible-fold-trigger]'); return [trigger.querySelector(':scope > span:not([data-slot])').textContent, trigger.querySelector('[data-slot=fold-trigger-count]').textContent] })()`)).toEqual(['Subagents', '3']);
-    // By agent shows no Sort, so it follows none: with the List sorted Newest, the no-agent requests still open as
-    // one-line rows in their state groups, Idle and Shipped folded (G4), not as one Newest list.
-    await page!.evaluate(`window.store.getState().setSort('started')`);
-    await page!.evaluate(`document.querySelector('[data-agent-fold=no-agent] [data-slot=collapsible-fold-trigger]').click()`);
-    await waitFor(`document.querySelector('[data-agent-fold=no-agent] [data-line-section=idle]')`, 'the no-agent groups');
-    expect((await fold('no-agent')).end).toBe('Hide them');
-    expect(await page!.evaluate(`document.querySelectorAll('[data-agent-fold=no-agent] [data-request-line]').length`)).toBe(0);
-    // The linked subagents, opened: the one whose launch recorded a task shows it first, on one line with the whole
-    // task in its tooltip; the one with none shows its state only.
-    await page!.evaluate(`document.querySelector('[data-agent-card=claude] [data-subagents] [data-slot=collapsible-fold-trigger]').click()`);
+    await openPage('&scenario=many&view=requests');
+    await waitFor(`${LIST_ROWS}.length === ${LINE_ROWS_PER_PAGE}`, 'the first 50 rows');
+    expect(await page!.evaluate(pageWords)).toEqual({ h1: 'All requests', lead: `${MANY_TOTAL} requests across your workspace.` });
+    // The toolbar: the find box named by its words, Filter and sort, and By agent as a link to `?by=agent`.
+    expect(await page!.evaluate(`[document.querySelector('main input[type=search]').getAttribute('aria-label'), window.nameOf(document.querySelector('[data-filter-and-sort]')),
+      [...document.querySelectorAll('main a[href]')].filter((link) => link.textContent.trim() === 'By agent').map((link) => new URL(link.href).searchParams.get('by'))]`))
+      .toEqual(['Find a request', 'Filter and sort', ['agent']]);
+    // The tabs: All, then every group of the one list, in its order and words, each counting its states. The one shown
+    // is current within the page ("true"); the bar's Requests is the current page.
+    const tabs: { id: string; current: string | null; label: string; count: number; status: string | null }[] = await page!.evaluate(STATUS_TABS);
+    expect(tabs).toEqual([
+      { id: 'all', current: 'true', label: 'All', count: MANY_TOTAL, status: null },
+      ...CARD_GROUPS.map((group) => ({ id: group.id, current: null, label: group.label, count: groupCount(group.states), status: group.id })),
+    ]);
+    expect(tabs.slice(1).reduce((sum, tab) => sum + tab.count, 0)).toBe(tabs[0].count);
+    // One line per request: its name, its area under it, its state at the right, the whole row a link to it.
+    expect(await page!.evaluate(`(() => { const row = ${LIST_ROWS}[0]; return { tag: row.tagName, request: new URL(row.href).searchParams.get('request'), view: new URL(row.href).searchParams.get('view'), title: row.querySelector('[data-row-title]').textContent, area: row.querySelector('[data-row-area]').textContent, state: row.querySelector('[data-state-words]').textContent } })()`))
+      .toEqual({ tag: 'A', request: 'g1', view: 'requests', title: 'Generated request 1', area: 'Other', state: 'Your move' });
+    // Idle: its own title and line, its rows 50 at a time, and "Show 30 more" puts focus on the first row it added.
+    await page!.evaluate(`document.querySelector('[data-status-tab=idle]').click()`);
+    await waitFor(`new URLSearchParams(location.search).get('status') === 'idle' && ${LIST_ROWS}.length === ${LINE_ROWS_PER_PAGE}`, 'the Idle tab');
+    expect(await page!.evaluate(pageWords)).toEqual({ h1: 'Idle requests', lead: `${MANY.idle} requests.` });
+    expect(await page!.evaluate(`${LIST_ROWS}.every((row) => row.dataset.requestsRow === 'idle')`)).toBe(true);
+    expect(await page!.evaluate(`window.nameOf(window.buttonsNamed('^Show 30 more')[0])`)).toBe('Show 30 more · 30 left');
+    await page!.evaluate(`window.clickNamed('^Show 30 more')`);
+    await waitFor(`${LIST_ROWS}.length === ${MANY.idle}`, 'every idle row');
+    expect(await page!.evaluate(`document.activeElement === ${LIST_ROWS}[${LINE_ROWS_PER_PAGE}]`)).toBe(true);
+    // Scrolled down, another tab: a new history entry on its first page; Back brings Idle back, scrolled where it was.
+    await page!.evaluate('window.scrollTo(0, 1500)');
+    await waitFor('Math.abs(scrollY - 1500) <= 3', 'Idle scrolled');
+    await page!.settle();
+    const idleY: number = await page!.evaluate('scrollY');
+    await page!.evaluate(`document.querySelector('[data-status-tab=working]').click()`);
+    await waitFor(`new URLSearchParams(location.search).get('status') === 'working' && ${LIST_ROWS}.length === ${MANY.working}`, 'the Working tab');
+    expect(await page!.evaluate(pageWords)).toEqual({ h1: 'Working requests', lead: `${MANY.working} requests.` });
+    await page!.evaluate('history.back()');
+    await waitFor(`new URLSearchParams(location.search).get('status') === 'idle' && document.querySelector('main h1').textContent === 'Idle requests' && Math.abs(scrollY - ${idleY}) <= 1`, 'Idle again, where it was left');
+    // The bar's Requests opens the list on All.
+    // Only the bar's Requests (the top bar's, and the phone's bottom bar's) says it is the current page.
+    expect(await page!.evaluate(`[...new Set([...document.querySelectorAll('[aria-current=page]')].map((link) => (link.closest('main') ? 'page: ' : 'bar: ') + link.textContent.trim()))]`)).toEqual([`bar: ${REQUESTS_PLACE}`]);
+    await page!.evaluate(`[...document.querySelectorAll('[data-slot=app-bar] a')].find((link) => link.textContent.trim() === ${JSON.stringify(REQUESTS_PLACE)}).click()`);
+    await waitFor(`!new URLSearchParams(location.search).get('status') && document.querySelector('main h1').textContent === 'All requests'`, 'All requests from the bar');
+    expect(fixtureErrors).toEqual([]);
+  } finally {
+    await closePage();
+  }
+}, TEST_LIMIT_MS);
+
+it.skipIf(!chromeExecutablePath)('Requests: the find box filters titles and summaries in the browser; Filter and sort chooses an area, the closed requests and the sort; a row opens its request over the page', async () => {
+  try {
+    await openPage('&scenario=many&view=requests');
+    await waitFor(`${LIST_ROWS}.length > 0`, 'the Requests rows');
+    const reads = await page!.evaluate('window.loads');
+    // The words filter the rows of the tab shown, in the page (no read); the tabs keep counting the whole view.
+    await page!.evaluate(`window.typeInto('main input[type=search]', 'Generated request 129')`);
+    await waitFor(`${LIST_ROWS}.length === 1`, 'one match');
+    expect(await page!.evaluate(`[${LIST_ROWS}[0].querySelector('[data-row-title]').textContent, document.querySelector('[data-requests-heard]').textContent, document.querySelector('[data-status-tab=all] span').textContent]`))
+      .toEqual(['Generated request 129', '1 result', String(MANY_TOTAL)]);
+    await page!.evaluate(`window.typeInto('main input[type=search]', 'zebra')`);
+    await waitFor(`document.querySelector('[data-board-view=list] [data-slot=empty]')`, 'nothing found');
+    expect(await page!.evaluate(`document.querySelector('[data-board-view=list] [data-slot=empty]').innerText.trim()`)).toBe('No request here matches “zebra”.');
+    await page!.evaluate(`window.typeInto('main input[type=search]', '')`);
+    await waitFor(`${LIST_ROWS}.length === ${LINE_ROWS_PER_PAGE}`, 'every row again');
+    expect(await page!.evaluate('window.loads')).toBe(reads);
+    // A closed request shows only with "Closed requests only", which appears once there is one.
+    await page!.evaluate(`window.receive((model) => ({ ...model, requests: model.requests.map((request) => request.id === 'g129' ? { ...request, closed: true } : request) }))`);
+    await waitFor(`document.querySelector('[data-status-tab=all] span').textContent === '${MANY_TOTAL - 1}'`, 'the closed one out of All');
+    await page!.evaluate(`document.querySelector('[data-filter-and-sort]').click()`);
+    await waitFor(`document.querySelector('[data-slot=popover-content]')`, 'Filter and sort');
+    const popover = `document.querySelector('[data-slot=popover-content]')`;
+    expect(await page!.evaluate(`[...${popover}.querySelectorAll('label')].map((label) => label.textContent)`)).toEqual(['Focus area', 'Closed requests only', 'Sort']);
+    await page!.evaluate(`${popover}.querySelector('[role=switch]').click()`);
+    await waitFor(`document.querySelector('[data-status-tab=all] span').textContent === '1'`, 'the closed requests');
+    expect(await page!.evaluate(`[${LIST_ROWS}.map((row) => row.querySelector('[data-row-title]').textContent), document.querySelector('[data-requests-lead]').textContent, document.querySelector('[data-filter-count]').textContent, ${ADDRESS_DETAILS}.closed]`))
+      .toEqual([['Generated request 129'], '1 request.', '1', '1']);
+    // The count says what it counts to a screen reader; the number alone is only drawn.
+    expect(await accessibleName('[data-filter-and-sort]')).toEqual({ role: 'button', name: 'Filter and sort 1 choice hides requests' });
+    await page!.evaluate(`${popover}.querySelector('[role=switch]').click()`);
+    await waitFor(`document.querySelector('[data-status-tab=all] span').textContent === '${MANY_TOTAL - 1}'`, 'the open requests again');
+    // An area, by the keyboard: the areas the requests sit in, named as the rows name them, in the work's order.
+    await page!.evaluate(`${popover}.querySelector('[role=combobox]').focus()`);
+    await press('Enter');
+    await waitFor(`document.querySelectorAll('[role=option]').length > 0`, 'the area choices');
+    expect(await page!.evaluate(`[...document.querySelectorAll('[role=option]')].map((option) => option.textContent)`)).toEqual(['Every focus area', 'Viewer', 'Other']);
+    await press('ArrowDown');
+    await press('ArrowDown');
+    await press('Enter');
+    await waitFor(`document.querySelector('[data-status-tab=all] span').textContent === '${MANY.yourMove}'`, 'the requests in Other');
+    expect(await page!.evaluate(STATUS_TABS)).toEqual([
+      expect.objectContaining({ id: 'all', count: MANY.yourMove }),
+      ...CARD_GROUPS.map((group) => expect.objectContaining({ id: group.id, count: group.states.includes('your-move') ? MANY.yourMove : 0 })),
+    ]);
+    expect(await page!.evaluate(`document.querySelector('[data-requests-lead]').textContent`)).toBe(`${MANY.yourMove} requests.`);
+    // The sort, by the keyboard: Newest puts the newest request first.
+    await page!.evaluate(`${popover}.querySelectorAll('[role=combobox]')[0].focus()`);
+    await press('Enter');
+    await waitFor(`document.querySelectorAll('[role=option]').length > 0`, 'the area choices again');
+    await press('ArrowUp');
+    await press('ArrowUp');
+    await press('Enter');
+    await waitFor(`document.querySelector('[data-status-tab=all] span').textContent === '${MANY_TOTAL - 1}'`, 'every area again');
+    await page!.evaluate(`[...${popover}.querySelectorAll('[role=combobox]')].at(-1).focus()`);
+    await press('Enter');
+    await waitFor(`window.store.getState().view.sort === 'attention' && [...document.querySelectorAll('[role=option]')].some((option) => option.getAttribute('aria-selected') === 'true')`, 'the sorts, Needs you first chosen');
+    await press('ArrowDown');
+    await press('Enter');
+    await waitFor(`window.store.getState().view.sort === 'started'`, 'Newest');
+    await waitFor(`${LIST_ROWS}[0].querySelector('[data-row-title]').textContent === 'Generated request 128'`, 'the newest open request first');
+    await press('Escape');
+    // A plain press on a row opens its request over the page; its address keeps the page's own.
+    await page!.evaluate(`${LIST_ROWS}[0].click()`);
+    await waitFor(`document.querySelector('[role=dialog]')?.textContent.includes('Generated request 128')`, 'the request');
+    expect(await page!.evaluate(`[new URLSearchParams(location.search).get('view'), new URLSearchParams(location.search).get('request')]`)).toEqual(['requests', 'g128']);
+    expect(fixtureErrors).toEqual([]);
+  } finally {
+    await closePage();
+  }
+}, TEST_LIMIT_MS);
+
+it.skipIf(!chromeExecutablePath)('Requests: the find words, the area and the tab are in the address; each word replaces the entry and an area is a history entry; a tab keeps the area and the words, and Back brings each back after leaving the page', async () => {
+  try {
+    await openPage('&scenario=many&view=requests');
+    await waitFor(`${LIST_ROWS}.length === ${LINE_ROWS_PER_PAGE}`, 'the first 50 rows');
+    const entries: number = await page!.evaluate('history.length');
+    // Each word typed replaces the entry: the words are in the address, and no entry is added.
+    await page!.evaluate(`window.typeInto('main input[type=search]', 'Generated')`);
+    await page!.evaluate(`window.typeInto('main input[type=search]', 'Generated request')`);
+    await waitFor(`${ADDRESS_DETAILS}.q === 'Generated request'`, 'the words in the address');
+    expect(await page!.evaluate('history.length')).toBe(entries);
+    // An area, by the keyboard: a history entry.
+    await page!.evaluate(`document.querySelector('[data-filter-and-sort]').click()`);
+    await waitFor(`document.querySelector('[data-slot=popover-content] [role=combobox]')`, 'Filter and sort');
+    await page!.evaluate(`document.querySelector('[data-slot=popover-content] [role=combobox]').focus()`);
+    await press('Enter');
+    await waitFor(`document.querySelectorAll('[role=option]').length > 0`, 'the area choices');
+    await press('ArrowDown');
+    await press('ArrowDown');
+    await press('Enter');
+    await waitFor(`${ADDRESS_DETAILS}.area === 'other'`, 'Other in the address');
+    expect(await page!.evaluate('history.length')).toBe(entries + 1);
+    await press('Escape');
+    await waitFor(`!document.querySelector('[data-slot=popover-content]')`, 'Filter and sort closed');
+    // A status tab keeps the area and the words, in its link and in the address it goes to.
+    expect(await page!.evaluate(`(() => { const url = new URL(document.querySelector('[data-status-tab=needs-you]').href); return ['status', 'area', 'q'].map((name) => url.searchParams.get(name)) })()`))
+      .toEqual(['needs-you', 'other', 'Generated request']);
+    await page!.evaluate(`document.querySelector('[data-status-tab=needs-you]').click()`);
+    await waitFor(`${ADDRESS_DETAILS}.status === 'needs-you' && ${LIST_ROWS}.length === ${MANY.yourMove}`, 'the Needs you tab in Other');
+    const shown = `[${ADDRESS_DETAILS}, document.querySelector('main h1').textContent, document.querySelector('main input[type=search]').value, document.querySelector('[data-filter-count]')?.textContent ?? null, document.querySelector('[aria-current=true][data-status-tab]').dataset.statusTab]`;
+    const needsYouAddress = { status: 'needs-you', area: 'other', closed: null, q: 'Generated request', by: null };
+    const needsYouInOther = [needsYouAddress, 'Requests that need you', 'Generated request', '1', 'needs-you'];
+    expect(await page!.evaluate(shown)).toEqual(needsYouInOther);
+    // Another page, then Back: the tab, the area and the words come back, drawn as they were.
+    await page!.evaluate(`window.store.getState().goToPage('rules')`);
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'rules'`, 'My Rules');
+    await page!.evaluate('history.back()');
+    await waitFor(`document.querySelector('main h1')?.textContent === 'Requests that need you' && ${LIST_ROWS}.length === ${MANY.yourMove}`, 'Requests again');
+    expect(await page!.evaluate(shown)).toEqual(needsYouInOther);
+    // Back again: All in Other with the words; and again: every area, with the words typed into the first entry.
+    await page!.evaluate('history.back()');
+    await waitFor(`document.querySelector('main h1').textContent === 'All requests'`, 'All in Other');
+    expect(await page!.evaluate(shown)).toEqual([{ ...needsYouAddress, status: null }, 'All requests', 'Generated request', '1', 'all']);
+    await page!.evaluate('history.back()');
+    await waitFor(`!document.querySelector('[data-filter-count]')`, 'every area');
+    expect(await page!.evaluate(shown)).toEqual([{ ...needsYouAddress, status: null, area: null }, 'All requests', 'Generated request', null, 'all']);
+    expect(fixtureErrors).toEqual([]);
+  } finally {
+    await closePage();
+  }
+}, TEST_LIMIT_MS);
+
+it.skipIf(!chromeExecutablePath)('Requests: a request whose title is still being written says so on its row, dimmed, and never shows its summary as its name', async () => {
+  try {
+    await openPage('&scenario=many&view=requests');
+    await waitFor(`${LIST_ROWS}.length === ${LINE_ROWS_PER_PAGE}`, 'the first 50 rows');
+    await page!.evaluate(`window.receive((model) => ({ ...model, requests: model.requests.map((request) => request.id === 'g1' ? { ...request, title: null, resolvesTo: undefined } : request) }))`);
+    const row = `document.querySelector('[data-board-view=list] [data-request-opener=g1]')`;
+    await waitFor(`${row}?.querySelector('[data-row-title]').textContent !== 'Generated request 1'`, 'the untitled row');
+    expect(await page!.evaluate(`(() => {
+      const title = ${row}.querySelector('[data-row-title]');
+      const named = document.querySelector('[data-board-view=list] [data-request-opener=g0] [data-row-title]');
+      const summary = window.store.getState().work.load.model.requests.find((request) => request.id === 'g1').summary;
+      return { words: title.textContent, dimmed: getComputedStyle(title).color !== getComputedStyle(named).color, summaryShown: !!summary && ${row}.textContent.includes(summary) };
+    })()`)).toEqual({ words: 'New request, title being written', dimmed: true, summaryShown: false });
+    expect(fixtureErrors).toEqual([]);
+  } finally {
+    await closePage();
+  }
+}, TEST_LIMIT_MS);
+
+it.skipIf(!chromeExecutablePath)('Requests: when the list and By agent change places by the keyboard (By agent, Request list, the crumb), focus goes to the h1 and shows', async () => {
+  try {
+    await openPage('&scenario=many&view=requests');
+    await waitFor(`${LIST_ROWS}.length > 0`, 'the Requests rows');
+    const link = (words: string) => `[...document.querySelectorAll('main a[href]')].find((link) => link.textContent.trim() === ${JSON.stringify(words)})`;
+    const focused = `({ heading: document.activeElement === document.querySelector('main h1'), words: document.activeElement.textContent, shows: window.focusShows() })`;
+    const pressLink = async (words: string, arrived: string) => {
+      await page!.evaluate(`${link(words)}.focus()`);
+      await press('Enter');
+      await waitFor(arrived, `the page after ${words}`);
+      await page!.settle();
+    };
+    await pressLink('By agent', `document.querySelector('[data-agent-group]')`);
+    expect(await page!.evaluate(focused)).toEqual({ heading: true, words: 'Requests by agent', shows: true });
+    await pressLink('Request list', `${LIST_ROWS}.length > 0`);
+    expect(await page!.evaluate(focused)).toEqual({ heading: true, words: 'All requests', shows: true });
+    await pressLink('By agent', `document.querySelector('[data-agent-group]')`);
+    // The crumb over the h1 leads back to the list.
+    await pressLink(REQUESTS_PLACE, `${LIST_ROWS}.length > 0`);
+    expect(await page!.evaluate(focused)).toEqual({ heading: true, words: 'All requests', shows: true });
+    expect(fixtureErrors).toEqual([]);
+  } finally {
+    await closePage();
+  }
+}, TEST_LIMIT_MS);
+
+it.skipIf(!chromeExecutablePath)('Requests\' By agent shows the read-error card once, above the agents; with no agent and no request it says none is recorded yet, and nothing under the alert when the saved work could not be read', async () => {
+  try {
+    await openPage(`&sample-state=${sampleState('read-errors')}&view=requests&by=agent`);
+    await waitFor(`document.querySelector('[data-read-errors=shown]') && document.querySelector('[data-agent-group]')`, 'the read-error card and the agents');
+    expect(await page!.evaluate(`(() => {
+      const cards = document.querySelectorAll('[data-read-errors]');
+      const follows = (first, second) => !!(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING);
+      return { cards: cards.length, above: [...document.querySelectorAll('[data-agent-group]')].every((group) => follows(cards[0], group)) };
+    })()`)).toEqual({ cards: 1, above: true });
+    // No agent and no request: By agent says so, as the list does (it drew nothing at all).
+    await page!.evaluate(`window.receive((model) => ({ ...model, requests: [], agents: [], requestReadErrors: [] }))`);
+    const empty = (view: string) => `document.querySelector('[data-board-view=${view}] [data-slot=empty]')`;
+    await waitFor(empty('agents'), 'nothing to show');
+    expect(await page!.evaluate(`${empty('agents')}.innerText.replace(/\\s+/g, ' ').trim()`)).toBe('No requests recorded yet. Ask an agent for something and it appears here.');
+    // The worker answered but could not read the saved work: its alert says so, and nothing is said under it.
+    await page!.evaluate(`window.receive((model) => ({ ...model, sourceHealth: { connected: false, error: 'database is locked' } }))`);
+    await waitFor(`!${empty('agents')}`, 'the empty words gone');
+    expect(await page!.evaluate(`document.querySelector('main').innerText.includes("Can't read local work right now")`)).toBe(true);
+    // The list says the same.
+    await page!.evaluate(`window.store.getState().showRequests({})`);
+    await waitFor(`document.querySelector('[data-board-view=list]')`, 'the list');
+    expect(await page!.evaluate(`[!!${empty('list')}, document.querySelector('main').innerText.includes('No requests recorded yet.')]`)).toEqual([false, false]);
+    expect(fixtureErrors).toEqual([]);
+  } finally {
+    await closePage();
+  }
+}, TEST_LIMIT_MS);
+
+it.skipIf(!chromeExecutablePath)('Requests on a touch phone: every row, tab and control is 44px or more, the toolbar wraps under the find box, and the page is as wide as the window', async () => {
+  try {
+    await openPage('&scenario=many&view=requests', { width: 390, height: 844, touch: true });
+    await waitFor(`${LIST_ROWS}.length === ${LINE_ROWS_PER_PAGE}`, 'the first 50 rows');
+    const heights = await page!.evaluate(`({
+      rows: Math.min(...${LIST_ROWS}.map((row) => row.getBoundingClientRect().height)),
+      tabs: Math.min(...[...document.querySelectorAll('[data-status-tab]')].map((tab) => tab.getBoundingClientRect().height)),
+      controls: Math.min(...[document.querySelector('main input[type=search]').closest('[data-slot=input-group]'), document.querySelector('[data-filter-and-sort]'), [...document.querySelectorAll('main a[href]')].find((link) => link.textContent.trim() === 'By agent')].map((control) => control.getBoundingClientRect().height)),
+      wraps: document.querySelector('[data-filter-and-sort]').getBoundingClientRect().top > document.querySelector('main input[type=search]').getBoundingClientRect().bottom,
+    })`);
+    expect(heights.rows).toBeGreaterThanOrEqual(44);
+    expect(heights.tabs).toBeGreaterThanOrEqual(44);
+    expect(heights.controls).toBeGreaterThanOrEqual(44);
+    expect(heights.wraps).toBe(true);
+    expect(pageFitsTheWindow(await page!.evaluate(PAGE_WIDTHS), 390, { touch: true })).toMatchObject(FITS_THE_WINDOW);
+    expect(fixtureErrors).toEqual([]);
+  } finally {
+    await closePage();
+  }
+}, TEST_LIMIT_MS);
+
+/** Opens an agent's group by its header, unless it is open. */
+async function openAgentGroup(id: string) {
+  await page!.evaluate(`(() => { const group = document.querySelector('[data-agent-group="${id}"]'); if (group.dataset.state !== 'open') group.querySelector('[data-agent-header]').click() })()`);
+  await waitFor(`document.querySelector('[data-agent-group="${id}"]').dataset.state === 'open'`, `${id} open`);
+}
+
+it.skipIf(!chromeExecutablePath)('By agent: the busiest agent open on its panel, the others rows under "Other agents" with "Agent not recorded" first, the agents with nothing here folded with their count; no agent on the rows; subagents only under their parent; sessions of one folder told apart', async () => {
+  try {
+    await openPage('&scenario=many&view=requests&by=agent');
+    await waitFor(`document.querySelector('[data-agent-group]')`, 'the agent groups');
+    expect(await page!.evaluate(`[document.querySelector('main h1').textContent, document.querySelector('[data-requests-lead]').textContent, document.querySelector('main input[type=search]').getAttribute('aria-label')]`))
+      .toEqual(['Requests by agent', 'Open an agent to see its requests.', 'Find an agent or session']);
+    // The crumb and Request list both lead back to the list, on All.
+    expect(await page!.evaluate(`[...document.querySelectorAll('main a[href]')].filter((link) => [${JSON.stringify(REQUESTS_PLACE)}, 'Request list'].includes(link.textContent.trim())).map((link) => [link.textContent.trim(), link.closest('nav') ? 'crumb' : 'toolbar', new URL(link.href).search])`))
+      .toEqual([[REQUESTS_PLACE, 'crumb', '?source=sample&scenario=many&view=requests'], ['Request list', 'toolbar', '?source=sample&scenario=many&view=requests']]);
+    // The first group is the busiest agent's, open on its panel, its most urgent request needing the owner.
+    const groups = `[...document.querySelectorAll('[data-agent-group]')]`;
+    const panel = await page!.evaluate(`(() => { const group = ${groups}[0]; return { open: group.dataset.state, heading: !!group.querySelector('h2 [data-agent-header]'), first: group.querySelector('[data-requests-row]').dataset.requestsRow } })()`);
+    expect(panel).toEqual({ open: 'open', heading: true, first: 'your-move' });
+    // "Other agents": the requests no agent is recorded for first, a group like any agent's, closed until opened.
+    expect(await page!.evaluate(`[...document.querySelectorAll('main h2')].map((heading) => heading.textContent).includes('Other agents')`)).toBe(true);
+    const unrecorded = `document.querySelector('[data-agent-group=${UNRECORDED_AGENT.id}]')`;
+    expect(await page!.evaluate(`[${groups}.indexOf(${unrecorded}), ${unrecorded}.dataset.state, ${unrecorded}.querySelector('[data-agent-name]').textContent, ${unrecorded}.querySelector('[data-agent-header]').textContent.includes('${MANY.noAgent} requests')]`))
+      .toEqual([1, 'closed', UNRECORDED_AGENT.name, true]);
+    await openAgentGroup(UNRECORDED_AGENT.id);
+    await waitFor(`${unrecorded}.querySelectorAll('[data-requests-row]').length === ${LINE_ROWS_PER_PAGE}`, 'its first 50 rows');
+    expect(await page!.evaluate(`window.nameOf([...${unrecorded}.querySelectorAll('button')].find((button) => /^Show 10 more/.test(window.nameOf(button))))`)).toBe('Show 10 more · 10 left');
+    // No row says its agent again: the group names it once.
+    expect(await page!.evaluate(`document.querySelectorAll('[data-agent-group] [data-requests-row] [role=img]').length`)).toBe(0);
+    // The agents with nothing here: one dashed line that counts them with their subagents (the empty agents, the two
+    // sessions of one folder and the subagent with no parent link).
+    const fold = await page!.evaluate(`(() => { const trigger = document.querySelector('[data-agent-fold=idle-agents] [data-slot=collapsible-fold-trigger]');
+      return { label: trigger.querySelector(':scope > span:not([data-slot])').textContent, end: trigger.querySelector('[data-slot=fold-trigger-count]').textContent, edge: getComputedStyle(trigger).borderTopStyle, height: trigger.getBoundingClientRect().height } })()`);
+    expect({ ...fold, height: fold.height < 60 }).toEqual({ label: `${MANY.emptyAgents + MANY.twins + 1} agents have nothing in this view`, end: 'Show them', edge: 'dashed', height: true });
+    // The linked subagents sit in a fold under their parent, never as groups of their own.
+    expect(await page!.evaluate(`document.querySelectorAll('[data-agent-group=sub-1], [data-agent-group=sub-2], [data-agent-group=sub-3]').length`)).toBe(0);
+    await openAgentGroup('claude');
+    expect(await page!.evaluate(`(() => { const trigger = document.querySelector('[data-agent-group=claude] [data-subagents] [data-slot=collapsible-fold-trigger]'); return [trigger.querySelector(':scope > span:not([data-slot])').textContent, trigger.querySelector('[data-slot=fold-trigger-count]').textContent] })()`)).toEqual(['Subagents', '3']);
+    // Opened, in a 768px window: the one whose launch recorded a task shows it first, on one line with the whole task in
+    // its tooltip; the one with none shows its state only.
+    await resize(768);
+    await page!.evaluate(`document.querySelector('[data-agent-group=claude] [data-subagents] [data-slot=collapsible-fold-trigger]').click()`);
     await waitFor(`document.querySelector('[data-subagent-id=sub-1] [data-subagent-task]')`, 'the subagent rows');
     expect(await page!.evaluate(`(() => {
       const task = document.querySelector('[data-subagent-id=sub-1] [data-subagent-task]');
@@ -526,23 +825,31 @@ it.skipIf(!chromeExecutablePath)('By agent: agents with work first; the no-agent
     await page!.evaluate(`document.querySelector('[data-subagent-id=sub-1] [data-subagent-task]').focus()`);
     await waitFor(`[...document.querySelectorAll('[data-slot=tooltip-content]')].some((tip) => tip.textContent.includes(${JSON.stringify(SUB_TASK)}))`, 'the whole task in the tooltip');
     expect(await page!.evaluate(`(() => { const row = document.querySelector('[data-subagent-id=sub-3]'); return [!!row.querySelector('[data-subagent-task]'), !!row.firstElementChild.querySelector('[data-subagent-status]')] })()`)).toEqual([false, true]);
-    // The empty agents, opened: their cards, and the unlinked subagent as a card of its own with its label and state.
+    // The agents with nothing here, opened: the unlinked subagent labelled so, its role once; two sessions of one folder
+    // read the same but for their sessions; an agent no other reads like adds none.
     await page!.evaluate(`document.querySelector('[data-agent-fold=idle-agents] [data-slot=collapsible-fold-trigger]').click()`);
-    await waitFor(`document.querySelector('[data-agent-fold=idle-agents] [data-agent-card=sub-alone]')`, 'the unlinked subagent card');
-    expect(await page!.evaluate(`document.querySelectorAll('[data-agent-fold=idle-agents] [data-agent-card]').length`)).toBe(MANY.emptyAgents + MANY.twins + 1);
-    // Each card's header words and the line that tells it apart, if it has one.
-    const headers: Record<string, { text: string; detail: string | null }> = await page!.evaluate(`Object.fromEntries(['sub-alone', 'twin-a', 'twin-b', 'empty-0'].map((id) => {
-      const card = document.querySelector('[data-agent-card=' + id + ']');
-      return [id, { text: card.firstElementChild.textContent, detail: card.querySelector('[data-slot=agent-header-detail]')?.textContent ?? null }];
+    await waitFor(`document.querySelector('[data-agent-fold=idle-agents] [data-agent-group=sub-alone]')`, 'the agents with nothing here');
+    expect(await page!.evaluate(`document.querySelectorAll('[data-agent-fold=idle-agents] [data-agent-group]').length`)).toBe(MANY.emptyAgents + MANY.twins + 1);
+    const headers: Record<string, { text: string; where: string | null }> = await page!.evaluate(`Object.fromEntries(['sub-alone', 'twin-a', 'twin-b', 'empty-0'].map((id) => {
+      const header = document.querySelector('[data-agent-group=' + id + '] [data-agent-header]');
+      return [id, { text: header.textContent, where: header.querySelector('[data-agent-where]')?.textContent ?? null }];
     }))`);
-    // The unlinked subagent's role reads once, beside its own "Subagent" label, though its record carries the older
-    // worker's prefix too.
+    expect(headers['sub-alone'].text).toContain('Subagent');
     expect(headers['sub-alone'].text.match(/Work viewer/g)).toEqual(['Work viewer']);
     expect(headers['sub-alone'].text).not.toContain('Subagent ·');
-    // Two sessions in one folder read the same but for their sessions; a card no other card reads like adds nothing.
-    expect([headers['twin-a'].detail, headers['twin-b'].detail]).toEqual(['Session aaaa1111', 'Session bbbb2222']);
-    expect(headers['twin-a'].text.replace('Session aaaa1111', '')).toBe(headers['twin-b'].text.replace('Session bbbb2222', ''));
-    expect(headers['empty-0'].detail).toBe(null);
+    expect([headers['twin-a'].where?.endsWith('Session aaaa1111'), headers['twin-b'].where?.endsWith('Session bbbb2222')]).toEqual([true, true]);
+    expect(headers['twin-a'].where!.replace('Session aaaa1111', '')).toBe(headers['twin-b'].where!.replace('Session bbbb2222', ''));
+    expect(headers['empty-0'].where).not.toContain('Session');
+    // The find box keeps the agents whose words hold the typed words: a session's start finds its agent.
+    await page!.evaluate(`window.typeInto('main input[type=search]', 'aaaa1111')`);
+    await waitFor(`!document.querySelector('[data-agent-group=${UNRECORDED_AGENT.id}]')`, 'only the matching agent');
+    expect(await page!.evaluate(`${groups}.map((group) => group.dataset.agentGroup)`)).toEqual(['twin-a']);
+    await page!.evaluate(`window.typeInto('main input[type=search]', 'zebra')`);
+    await waitFor(`!document.querySelector('[data-agent-group]')`, 'no agent');
+    expect(await page!.evaluate(`document.querySelector('[data-board-view=agents]').innerText.trim()`)).toBe('No agent or session matches “zebra”.');
+    // Request list goes back to the list.
+    await page!.evaluate(`[...document.querySelectorAll('main a[href]')].find((link) => link.textContent.trim() === 'Request list').click()`);
+    await waitFor(`!new URLSearchParams(location.search).get('by') && document.querySelector('main h1').textContent === 'All requests'`, 'the list again');
     expect(fixtureErrors).toEqual([]);
   } finally {
     await closePage();
@@ -551,15 +858,15 @@ it.skipIf(!chromeExecutablePath)('By agent: agents with work first; the no-agent
 
 it.skipIf(!chromeExecutablePath)('Mark finished asks first (its route cannot be undone); Cancel saves nothing, and confirmed the subagent reads Finished with focus on it', async () => {
   try {
-    await openPage(`&sample-state=${sampleState('subagents')}`);
-    await chooseView('By agent');
-    await waitFor(`document.querySelector('[data-agent-card=claude] [data-subagents]')`, 'the Claude Code card with its subagents');
-    await page!.evaluate(`document.querySelector('[data-agent-card=claude] [data-subagents] [data-slot=collapsible-fold-trigger]').click()`);
+    await openPage(`&sample-state=${sampleState('subagents')}&view=requests&by=agent`);
+    await waitFor(`document.querySelector('[data-agent-group=claude]')`, 'the Claude Code group');
+    await openAgentGroup('claude');
+    await page!.evaluate(`document.querySelector('[data-agent-group=claude] [data-subagents] [data-slot=collapsible-fold-trigger]').click()`);
     await waitFor(`document.querySelector('[data-subagent-row=working]')`, 'the subagent rows');
     // A recorded stop's time is a time in the reader's clock (the shared LocalTime), as the mapper's is, not English
     // text ("Oct 20 at 1:40 pm").
     expect(await page!.evaluate(`(() => { const status = document.querySelector('[data-subagent-id=claude-subagent-2] [data-subagent-status]'); return [!!status.querySelector('time[datetime]'), status.textContent.includes(' at ')] })()`)).toEqual([true, false]);
-    const markButtons = `[...document.querySelectorAll('[data-agent-card=claude] [data-subagent-row] button')].filter((button) => window.nameOf(button) === 'Mark finished')`;
+    const markButtons = `[...document.querySelectorAll('[data-agent-group=claude] [data-subagent-row] button')].filter((button) => window.nameOf(button) === 'Mark finished')`;
     // Only the rows with no recorded stop (working, quiet) offer it; the finished one does not.
     expect(await page!.evaluate(`${markButtons}.length`)).toBe(2);
     expect(await page!.evaluate(`document.querySelector('[data-subagent-row=finished]').textContent.includes('Mark finished')`)).toBe(false);
@@ -608,7 +915,7 @@ it.skipIf(!chromeExecutablePath)('the read-error card (sample case) is plain wor
         const card = document.querySelector('[data-read-errors]');
         const filter = [...document.querySelectorAll('[role=radiogroup]')].at(-1);
         const follows = (first, second) => !!(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING);
-        const board = [...document.querySelectorAll('[data-slot=card], [data-list-row], [data-agent-card], [data-line-section], [data-request-group]')].filter((element) => follows(filter, element));
+        const board = [...document.querySelectorAll('[data-slot=card], [data-list-row], [data-agent-group], [data-line-section], [data-request-group]')].filter((element) => follows(filter, element));
         return follows(filter, card) && board.length > 0 && board.every((element) => follows(card, element));
       })()`)).toBe(true);
     }
@@ -712,23 +1019,30 @@ it.skipIf(!chromeExecutablePath)('after a failed review, My Rules, Past focus an
   }
 }, TEST_LIMIT_MS);
 
-it.skipIf(!chromeExecutablePath)('Team view: one line for a board of one, Sort shown, a column in G4 groups, and two dashed places for teammates', async () => {
+it.skipIf(!chromeExecutablePath)('Team view on Requests: one line for a board of one, Sort in Filter and sort, a column in G4 groups, and two dashed places for teammates', async () => {
   try {
-    await openPage('&scenario=many');
+    await openPage('&scenario=many&view=requests');
     await waitFor(`window.store.getState().work.load.state === 'loaded'`, 'the many-request board');
     await page!.evaluate(`window.store.getState().setWorkspace({ team: true })`);
-    await waitFor(`[...document.querySelectorAll('[role=radio]')].some((item) => window.nameOf(item) === 'Team')`, 'the Team view');
-    await chooseView('Team');
-    await waitFor(`document.querySelector('[data-team-column]')`, 'the Team board');
+    await waitFor(`document.querySelector('[data-board-view=team] [data-team-column]')`, 'the Team board');
     expect(await page!.evaluate(`document.querySelector('[data-team-note]').innerText`)).toContain('You are the only person here.');
     expect(await page!.evaluate(`document.querySelectorAll('[data-team-place]').length`)).toBe(2);
-    expect(await page!.evaluate(`[...document.querySelectorAll('[role=combobox]')].some((sort) => window.nameOf(sort).startsWith('Sort'))`)).toBe(true);
-    // The column: Needs you and Working open as rows with their next step, Idle and Shipped one fold row each.
+    await page!.evaluate(`document.querySelector('[data-filter-and-sort]').click()`);
+    await waitFor(`document.querySelector('[data-slot=popover-content]')`, 'Filter and sort');
+    expect(await page!.evaluate(`[...document.querySelectorAll('[data-slot=popover-content] label')].some((label) => label.textContent === 'Sort')`)).toBe(true);
+    await press('Escape');
+    // The column on All, sorted Needs you first: Needs you and Working open as rows with their next step, Idle and
+    // Shipped one fold row each.
     expect(await page!.evaluate(`[...document.querySelectorAll('[data-team-column] [data-request-group], [data-team-column] [data-line-section]')].map((group) => group.dataset.requestGroup ?? group.dataset.lineSection + ':' + group.dataset.state)`))
       .toEqual(['needs-you', 'working', 'idle:closed', 'shipped:closed']);
     expect(await page!.evaluate(`document.querySelectorAll('[data-team-column] [data-request-row]').length`)).toBe(MANY.yourMove + MANY.working);
-    // Each row prints its tool's name beside the mark, as HEAD's Team cards did (rule 2), whole; the List keeps the mark
-    // alone. The open rows' agents: two Claude Codes' and one each of the others (the sample's four agents, g0-g4).
+    // A status tab keeps the columns, with that tab's requests.
+    await page!.evaluate(`document.querySelector('[data-status-tab=working]').click()`);
+    await waitFor(`document.querySelectorAll('[data-team-column] [data-request-row]').length === ${MANY.working}`, 'the Working tab in the columns');
+    await page!.evaluate(`document.querySelector('[data-status-tab=all]').click()`);
+    await waitFor(`document.querySelectorAll('[data-team-column] [data-request-row]').length === ${MANY.yourMove + MANY.working}`, 'All in the columns again');
+    // Each row prints its tool's name beside the mark, as HEAD's Team cards did (rule 2), whole. The open rows' agents:
+    // two Claude Codes' and one each of the others (the sample's four agents, g0-g4).
     const teamRowNames = `[...document.querySelectorAll('[data-team-column] [data-request-row]')].map((row) => {
       const name = row.querySelector('[role=img]')?.nextElementSibling;
       return name && name.getClientRects().length > 0 ? { text: name.textContent, whole: name.scrollWidth <= name.clientWidth + 1, height: row.getBoundingClientRect().height } : null;
@@ -777,12 +1091,11 @@ const SQUEEZED_ROW_PX = 64;
 for (const scrollbar of SCROLLBAR_MODES) {
 it.skipIf(!chromeExecutablePath)(`Team columns at 768, 1024, 1280, 1440 and on a touch phone, in English and Korean, with ${scrollbar.label}: each row’s whole title on a line of its own as wide as the row, the tool’s name whole, every status badge one line with its words whole, also squeezed`, async () => {
   try {
-    await openPage(`&scenario=team${scrollbar.query}`, { width: 768, height: 900 });
+    // On Requests, in Codex's narrower column (its widest Team column is about 300px, at 1440).
+    await openPage(`&scenario=team${scrollbar.query}&view=requests`, { width: 768, height: 900 });
     await waitFor(`window.store.getState().work.load.state === 'loaded'`, 'the sample board');
     await page!.evaluate(`window.store.getState().setWorkspace({ team: true })`);
-    await waitFor(`[...document.querySelectorAll('[role=radio]')].some((item) => window.nameOf(item) === 'Team')`, 'the Team view');
-    await chooseView('Team');
-    await waitFor(`document.querySelector('[data-team-column] [data-request-row]')`, 'the Team rows');
+    await waitFor(`document.querySelector('[data-board-view=team] [data-team-column] [data-request-row]')`, 'the Team rows');
     const teamRows = `[...document.querySelectorAll('[data-team-column] [data-request-row]')]`;
     for (const locale of ['en', 'ko'] as const) {
       await page!.evaluate(`window.setLocale(${JSON.stringify(locale)})`);
@@ -820,22 +1133,27 @@ it.skipIf(!chromeExecutablePath)(`Team columns at 768, 1024, 1280, 1440 and on a
   }
 }, TEST_LIMIT_MS);
 
-it.skipIf(!chromeExecutablePath)(`By agent cards at 768, 1024 and 1280, with ${scrollbar.label}: each request’s whole title on a line of its own as wide as its row, its status badge one line`, async () => {
+it.skipIf(!chromeExecutablePath)(`By agent rows at 768, 1024, 1280 and on a touch phone, with ${scrollbar.label}: each request’s whole title wraps on its own, its state on one line, every row a whole touch target`, async () => {
   try {
-    await openPage(`&scenario=team${scrollbar.query}`, { width: 768, height: 900 });
-    await waitFor(`window.store.getState().work.load.state === 'loaded'`, 'the sample board');
-    await chooseView('By agent');
-    await waitFor(`document.querySelector('[data-agent-card] [data-request-row]')`, 'the agent cards');
-    for (const width of [768, 1024, 1280]) {
-      await resize(width);
-      const rows: { title: string; widths: object; titleAsWideAsRow: boolean; titleWhole: boolean; badge: object }[] = await page!.evaluate(`[...document.querySelectorAll('[data-agent-card] [data-request-row]')].map(window.rowLayout)`);
-      // Every sample request has an agent: five rows on four cards.
+    await openPage(`&scenario=team${scrollbar.query}&view=requests&by=agent`, { width: 768, height: 900 });
+    await waitFor(`document.querySelector('[data-agent-group]')`, 'the agent groups');
+    const ids: string[] = await page!.evaluate(`[...document.querySelectorAll('[data-agent-group]')].map((group) => group.dataset.agentGroup)`);
+    for (const id of ids) await openAgentGroup(id);
+    for (const { width, touch = false } of [{ width: 768 }, { width: 1024 }, { width: 1280 }, { width: 390, touch: true }]) {
+      await resize(width, touch);
+      const rows: { title: string; whole: boolean; stateLines: number; height: number }[] = await page!.evaluate(`[...document.querySelectorAll('[data-agent-group] [data-requests-row]')].map((row) => {
+        const title = row.querySelector('[data-row-title]');
+        const style = getComputedStyle(title);
+        const words = row.querySelector('[data-state-words]');
+        return { title: title.textContent, whole: style.whiteSpace !== 'nowrap' && style.textOverflow !== 'ellipsis' && title.scrollWidth <= title.clientWidth + 1,
+          stateLines: Math.round(words.getBoundingClientRect().height / parseFloat(getComputedStyle(words).lineHeight)), height: row.getBoundingClientRect().height };
+      })`);
+      // Every sample request has an agent: five rows under four agents, every group open.
       expect(rows.length).toBe(5);
       for (const row of rows) {
-        expect({ width, title: row.title, widths: row.widths, asWideAsRow: row.titleAsWideAsRow, whole: row.titleWhole, badge: row.badge })
-          .toEqual({ width, title: row.title, widths: row.widths, asWideAsRow: true, whole: true, badge: { lines: 1, brokenWord: null, inside: true } });
+        expect({ width, title: row.title, whole: row.whole, stateLines: row.stateLines, target: row.height >= 44 }).toEqual({ width, title: row.title, whole: true, stateLines: 1, target: true });
       }
-      expect(pageFitsTheWindow(await page!.evaluate(PAGE_WIDTHS), width)).toMatchObject(FITS_THE_WINDOW);
+      expect(pageFitsTheWindow(await page!.evaluate(PAGE_WIDTHS), width, { touch })).toMatchObject(FITS_THE_WINDOW);
     }
     expect(fixtureErrors).toEqual([]);
   } finally {
@@ -844,20 +1162,26 @@ it.skipIf(!chromeExecutablePath)(`By agent cards at 768, 1024 and 1280, with ${s
 }, TEST_LIMIT_MS);
 }
 
-it.skipIf(!chromeExecutablePath)('one live model that changes two requests moves two things at most in the List, By agent and Team: the ticker and the newest riffle (rule 8)', async () => {
+it.skipIf(!chromeExecutablePath)('one live model that changes two requests moves two things at most: the List on Home (the ticker and the newest riffle), By agent (nothing) and Team (the newest riffle) on Requests (rule 8)', async () => {
   try {
     await openPage('&scenario=many');
     await waitFor(`window.store.getState().work.load.state === 'loaded'`, 'the many-request board');
-    // Each round flips the same two working requests in one model: on the List's table, on By agent (where two agents'
-    // cards change places), and on Team.
+    // Each round flips the same two working requests in one model: on Home's List table, on By agent (where two agents'
+    // groups change places), and on the Team board.
     const rounds: [string, string][] = [['List', 'your-move'], ['By agent', 'working'], ['Team', 'your-move']];
     for (const [view, state] of rounds) {
-      if (view === 'Team') {
-        await page!.evaluate(`window.store.getState().setWorkspace({ team: true })`);
-        await waitFor(`[...document.querySelectorAll('[role=radio]')].some((item) => window.nameOf(item) === 'Team')`, 'the Team view');
+      if (view === 'List') {
+        await chooseView('List');
+        await waitFor(`window.tableRows().length > 0`, 'the table');
       }
-      await chooseView(view);
-      if (view === 'List') await waitFor(`window.tableRows().length > 0`, 'the table');
+      if (view === 'By agent') {
+        await page!.evaluate(`window.store.getState().showRequests({ by: 'agent' })`);
+        await waitFor(`document.querySelector('[data-board-view=agents] [data-agent-group]')`, 'By agent');
+      }
+      if (view === 'Team') {
+        await page!.evaluate(`window.store.getState().setWorkspace({ team: true }); window.store.getState().showRequests({})`);
+        await waitFor(`document.querySelector('[data-board-view=team] [data-team-column]')`, 'the Team board');
+      }
       await page!.evaluate(`window.receive((model) => ({ ...model, requests: model.requests.map((request) => request.id === 'g2' || request.id === 'g3'
         ? { ...request, state: ${JSON.stringify(state)}, next: ${JSON.stringify(state)} === 'working' ? { who: 'bot', text: 'Keep going' } : { who: 'human', text: 'Look at this' } } : request) }))`);
       const seen: string[][] = await page!.evaluate(`window.movingThingsOver(1500)`);
@@ -865,6 +1189,11 @@ it.skipIf(!chromeExecutablePath)('one live model that changes two requests moves
       const everything = [...new Set(seen.flat())];
       expect({ view, most, rowsMoving: everything.filter((thing) => thing.startsWith('moving: ')) }).toEqual({ view, most: expect.any(Number), rowsMoving: [] });
       expect(most).toBeLessThanOrEqual(2);
+      if (view === 'By agent') {
+        // Requests' rows show their state in still words: nothing in By agent moves at all.
+        expect({ view, everything }).toEqual({ view, everything: [] });
+        continue;
+      }
       // The riffle was seen, so the count is not empty by accident; both changed rows say "just updated", still.
       expect(everything.some((thing) => thing.startsWith('riffle: '))).toBe(true);
       expect(await page!.evaluate(`document.querySelectorAll('[data-board-view] [data-just-updated]').length`)).toBe(2);
@@ -985,24 +1314,24 @@ it.skipIf(!chromeExecutablePath)('the sorted Cards board pages through the share
   }
 }, TEST_LIMIT_MS);
 
-it.skipIf(!chromeExecutablePath)('By agent: "Show more" among the idle agents counts only its own cards, an open Subagents fold inside one too, and the focused card shows it', async () => {
+it.skipIf(!chromeExecutablePath)('By agent: "Show more" among the agents with nothing here counts only its own groups, an open Subagents fold inside one too, and puts focus on the first header it added, shown', async () => {
   try {
-    await openPage('&scenario=idle-agents');
-    await waitFor(`window.store.getState().work.load.state === 'loaded'`, 'the idle-agents board');
-    await chooseView('By agent');
+    await openPage('&scenario=idle-agents&view=requests&by=agent');
+    await waitFor(`document.querySelector('[data-agent-fold=idle-agents]')`, 'the fold of agents with nothing here');
     await page!.evaluate(`document.querySelector('[data-agent-fold=idle-agents] [data-slot=collapsible-fold-trigger]').click()`);
-    await waitFor(`document.querySelector('[data-agent-card=idle-0] [data-subagents]')`, 'the idle cards');
-    // The first card's three subagents, opened: rows of their own list, inside the first card.
-    await page!.evaluate(`document.querySelector('[data-agent-card=idle-0] [data-subagents] [data-slot=collapsible-fold-trigger]').click()`);
-    await waitFor(`document.querySelectorAll('[data-agent-card=idle-0] [data-subagent-row]').length === 3`, 'the open Subagents fold');
-    const idleCards = `[...document.querySelectorAll('[data-agent-fold=idle-agents] [data-agent-card]')].filter((card) => !card.closest('[data-subagents]'))`;
-    expect(await page!.evaluate(`${idleCards}.length`)).toBe(LINE_ROWS_PER_PAGE);
+    await waitFor(`document.querySelector('[data-agent-group=idle-0]')`, 'the first idle groups');
+    // The first group's three subagents, opened: rows of their own list, inside the first group.
+    await openAgentGroup('idle-0');
+    await page!.evaluate(`document.querySelector('[data-agent-group=idle-0] [data-subagents] [data-slot=collapsible-fold-trigger]').click()`);
+    await waitFor(`document.querySelectorAll('[data-agent-group=idle-0] [data-subagent-row]').length === 3`, 'the open Subagents fold');
+    const idleGroups = `document.querySelectorAll('[data-agent-fold=idle-agents] [data-agent-group]')`;
+    expect(await page!.evaluate(`${idleGroups}.length`)).toBe(LINE_ROWS_PER_PAGE);
     await page!.evaluate(`window.buttonsNamed('^Show ${IDLE_CARDS - LINE_ROWS_PER_PAGE} more')[0].focus()`);
     await press('Enter');
-    await waitFor(`${idleCards}.length === ${IDLE_CARDS}`, 'every idle card');
-    // Focus is on card 51, the first one added, not three cards early, and the keyboard user sees where it went.
-    expect(await page!.evaluate(`document.activeElement.querySelector('[data-agent-card]')?.dataset.agentCard`)).toBe(`idle-${LINE_ROWS_PER_PAGE}`);
-    expect(await page!.evaluate('window.focusShows()')).toBe(true);
+    await waitFor(`${idleGroups}.length === ${IDLE_CARDS}`, 'every idle group');
+    // Focus is on group 51's header, the first one added, not three rows early, and the keyboard user sees where it went.
+    expect(await page!.evaluate(`(() => { const focused = document.activeElement; return { group: focused.closest('[data-agent-group]')?.dataset.agentGroup, header: focused.matches('[data-agent-header]'), shows: focused.matches(':focus-visible') && getComputedStyle(focused).boxShadow !== 'none' } })()`))
+      .toEqual({ group: `idle-${LINE_ROWS_PER_PAGE}`, header: true, shows: true });
     expect(fixtureErrors).toEqual([]);
   } finally {
     await closePage();

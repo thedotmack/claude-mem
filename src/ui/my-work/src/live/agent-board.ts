@@ -1,6 +1,6 @@
 // By agent's board (c-work-by-agent-view, page-02): which agents get a card and in what order, which subagents fold
 // under which parent, and which requests have no agent. Pure, with .ts imports, so `node --test` loads it
-// (pages/my-work.tsx ByAgentView draws it).
+// (pages/requests.tsx ByAgentView draws it).
 import { ATTENTION_ORDER, type Agent, type Request } from '../data.ts'
 import { UNRECORDED_AGENT } from './to-work-model.ts'
 
@@ -15,6 +15,9 @@ export interface AgentEntry {
   /** Its place in the model's list of agents, which settles every tie in the order. */
   order: number
 }
+
+/** How many agents some entries are, each with its subagents counted: "{count} agents have nothing in this view". */
+export const countAgentsWithSubagents = (entries: readonly AgentEntry[]) => entries.reduce((sum, entry) => sum + 1 + entry.subagents.length, 0)
 
 /**
  * By agent's three parts. Their order is fixed, never the board's Sort, which By agent does not show:
@@ -48,7 +51,7 @@ export function agentBoard(agents: Agent[], requests: Request[]) {
   return {
     withWork,
     idle,
-    idleAgents: idle.reduce((sum, entry) => sum + 1 + entry.subagents.length, 0),
+    idleAgents: countAgentsWithSubagents(idle),
     unrecorded: requests.filter((request) => request.agentId === UNRECORDED_AGENT.id || !ids.has(request.agentId)),
   }
 }

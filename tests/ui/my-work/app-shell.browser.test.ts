@@ -420,6 +420,11 @@ async function pressPlace(name: string, { phone = false } = {}) {
     // A page that needs the work goes back to the reading screen.
     await pressPlace('My Rules');
     await waitFor(`document.querySelector('main h1')?.textContent === 'My Rules' && document.querySelector('main [aria-busy="true"]')`, 'My Rules reading again');
+    // Requests is headed while it reads as it is once read: by its status tab, or by its grouping.
+    await page!.evaluate(`window.store.getState().showRequests({ status: 'idle' })`);
+    await waitFor(`document.querySelector('main h1')?.textContent === 'Idle requests' && document.querySelector('main [aria-busy="true"]')`, 'Idle requests while reading');
+    await page!.evaluate(`window.store.getState().showRequests({ by: 'agent' })`);
+    await waitFor(`document.querySelector('main h1')?.textContent === 'Requests by agent' && document.querySelector('main [aria-busy="true"]')`, 'Requests by agent while reading');
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }
   // 1–2s here (2026-11-27); 30s for a slow CI runner.
@@ -704,19 +709,20 @@ async function chooseInWorkspace(row: string, option: string) {
     await waitFor(`document.querySelector('main h1')?.textContent === 'My Rules' && scrollY === 0`, 'My Rules from its top');
     await page!.evaluate('history.back()');
     await waitFor(`!new URLSearchParams(location.search).get('view') && document.getElementById('all-requests') && Math.abs(scrollY - ${homeY}) <= 1`, 'home where it was left again');
-    // Requests opens at its board; the person scrolls on past it, goes Back home, then Forward: Requests comes back where
-    // it was left, not at its board (the entry left by Back keeps its own position).
-    await pressPlace('Requests');
-    await waitFor(`new URLSearchParams(location.search).get('view') === 'requests' && Math.abs(document.getElementById('all-requests').getBoundingClientRect().top - 82) <= 2`, 'Requests at its board');
+    // Focus areas opens at its board on the home page (until design pass Phase 7); the person scrolls on past it, goes
+    // Back home, then Forward: Focus areas comes back where it was left, not at its board (the entry left by Back keeps
+    // its own position). (Requests opened at its board too until it became a page of its own, Phase 5.)
+    await pressPlace('Focus areas');
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'focus' && Math.abs(document.getElementById('focus-areas').getBoundingClientRect().top - 82) <= 2`, 'Focus areas at its board');
     const atBoard: number = await page!.evaluate('Math.round(scrollY)');
     const past: number = await page!.evaluate(`Math.min(Math.round(scrollY) + 600, document.documentElement.scrollHeight - innerHeight)`);
     expect(past - atBoard).toBeGreaterThan(300);
     await page!.evaluate(`window.scrollTo(0, ${past})`);
-    await waitFor(`Math.round(scrollY) === ${past}`, 'Requests scrolled past its board');
+    await waitFor(`Math.round(scrollY) === ${past}`, 'Focus areas scrolled past its board');
     await page!.evaluate('history.back()');
     await waitFor(`!new URLSearchParams(location.search).get('view') && Math.abs(scrollY - ${homeY}) <= 1`, 'home where it was left, after Back');
     await page!.evaluate('history.forward()');
-    await waitFor(`new URLSearchParams(location.search).get('view') === 'requests' && Math.abs(scrollY - ${past}) <= 1`, 'Requests where it was left, after Forward');
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'focus' && Math.abs(scrollY - ${past}) <= 1`, 'Focus areas where it was left, after Forward');
     // A reload opens that entry where it was left too, once the work has been read again, and stays there while the
     // page settles: the focus area board above it draws taller for a frame (about 3,300px, then 670px here), and the
     // browser's scroll anchoring moved the window up by that much until the app held it at the position.
@@ -724,7 +730,7 @@ async function chooseInWorkspace(row: string, option: string) {
     await page!.send('Page.reload', {});
     // The reload draws the whole App again in about a second here (2026-11-27); 20s is for a cold CI runner.
     await withTimeout(ready, 20_000, 'the shell did not draw again after the reload');
-    await waitFor(`new URLSearchParams(location.search).get('view') === 'requests' && Math.abs(scrollY - ${past}) <= 1`, 'Requests where it was left, after a reload');
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'focus' && Math.abs(scrollY - ${past}) <= 1`, 'Focus areas where it was left, after a reload');
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }
   // 2–3s here (2026-11-27); 30s for a slow CI runner.

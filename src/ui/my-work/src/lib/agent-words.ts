@@ -1,5 +1,5 @@
 // An agent's role and the machine it ran on, in the reader's language: the agent icon's identity (components/bits.tsx
-// AgentIcon) and By agent's card headers (pages/my-work.tsx AgentCard) both word them here.
+// AgentIcon) and By agent's group headers (pages/requests.tsx AgentGroup) both word them here.
 import { interpolate } from '@/lib/i18n'
 import { isSubagent, type Agent, type Device } from '@/data'
 import { agentOwnRole, RECORDED_SESSION_ROLE, THIS_COMPUTER } from '@/live/to-work-model'

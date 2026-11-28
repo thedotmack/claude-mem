@@ -231,7 +231,7 @@ export function StateWords({ state }: { state: LiveState }) {
  *
  * `layout="line"` is a row that keeps one line (the List table's Request cell, whose cells do not wrap): there the
  * unplaced words are cut the way a placed area's name is, down to the cell's floor, its mark, a letter and a whole
- * ellipsis ("○ N…"; pages/my-work.tsx ListTableRow sets the floor), the whole words in the row's hover text and, uncut
+ * ellipsis ("○ N…"; pages/requests.tsx ListTableRow sets the floor), the whole words in the row's hover text and, uncut
  * in the page, for screen readers. Built to wrap, they were clipped mid-word with no ellipsis there, "○ Not so" (owner's
  * data at 1366 and 1440, Phase 6 re-verify).
  */
@@ -511,7 +511,7 @@ export function FailureDetails({ cause }: { cause: string | null | undefined }) 
 /**
  * The work could not be read, as one alert (G17): plain words, the raw cause folded under Details, and Try again, which
  * reads the work again (the store's retryWorkRead). The one alert for both failed reads: the worker's records
- * (pages/my-work.tsx SourceReadAlert) and the read after a save (ReadAfterSaveNotice).
+ * (SourceReadAlert, below) and the read after a save (ReadAfterSaveNotice).
  */
 export function WorkReadFailureAlert({ title, description, cause }: { title: string; description?: string; cause: string | null }) {
   const { t } = useI18n()
@@ -529,6 +529,16 @@ export function WorkReadFailureAlert({ title, description, cause }: { title: str
       </AlertAction>
     </Alert>
   )
+}
+
+/**
+ * The work model could not be read from the worker's records (sourceHealth): plain words, the worker's own message
+ * folded under Details in monospace, and Try again (G17; it printed the raw message as the description). The home page
+ * and Requests show it first (pages/my-work.tsx, pages/requests.tsx).
+ */
+export function SourceReadAlert({ error }: { error: string | null }) {
+  const { t } = useI18n()
+  return <WorkReadFailureAlert title={t("Can't read local work right now")} description={t('The worker answered, but could not read your saved work. It may be busy; try again in a moment.')} cause={error} />
 }
 
 /**
