@@ -56,6 +56,24 @@ const DEFAULT_INITIAL_DELAY_MS = 5 * 60_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 /**
+ * The 1-hour floor the settings write path enforces (SettingsRoutes): every
+ * snapshot is a full VACUUM INTO copy of the database, and the floor caps
+ * that I/O at 24 full copies a day. settings.json is hand-editable, so the
+ * read side keeps the floor too: an out-of-range interval must not turn the
+ * schedule into back-to-back full-database copies. There is deliberately no
+ * ceiling here — a hand-edited monthly cadence is a supported scenario
+ * (backup-long-cadence), and armTimer chains timer-sized steps for it.
+ */
+const BACKUP_INTERVAL_FLOOR_HOURS = 1;
+
+/**
+ * The 100-snapshot disk bound the settings write path enforces ("bounds disk
+ * use at 100 database copies"). The read side keeps it so a hand-edited
+ * retain count cannot silently lift that bound.
+ */
+const BACKUP_RETAIN_COUNT_CAP = 100;
+
+/**
  * Automatic local SQLite snapshots with retention.
  *
  * Snapshot engine extracted from the one-time v12.4.3 cleanup backup
@@ -91,10 +109,29 @@ export class BackupManager {
   private nextRunAt: number | null = null;
 
   constructor(settings: BackupSettingKeys, options: BackupManagerOptions = {}) {
-    const intervalMs = Number.parseFloat(settings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS ?? '') * 3_600_000;
-    this.intervalMs = Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : 24 * 3_600_000;
+    const rawIntervalHours = settings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS ?? '';
+    const intervalHours = rawIntervalHours === '' ? NaN : Number.parseFloat(rawIntervalHours);
+    // Fractional hours stay legal down to the floor (the write path accepts 1.5 =
+    // 90 minutes); below it the value is clamped, not rejected, because the
+    // clamped schedule is the closest safe version of what was asked for.
+    if (Number.isFinite(intervalHours) && intervalHours > 0 && intervalHours < BACKUP_INTERVAL_FLOOR_HOURS) {
+      logger.warn('BACKUP', `CLAUDE_MEM_BACKUP_INTERVAL_HOURS below ${BACKUP_INTERVAL_FLOOR_HOURS} clamped to the write path's floor`, {
+        value: rawIntervalHours,
+        clampedToHours: BACKUP_INTERVAL_FLOOR_HOURS,
+      });
+    }
+    const intervalMs = Number.isFinite(intervalHours) && intervalHours > 0
+      ? Math.max(intervalHours, BACKUP_INTERVAL_FLOOR_HOURS) * 3_600_000
+      : 24 * 3_600_000;
+    this.intervalMs = intervalMs;
     const retain = Number.parseInt(settings.CLAUDE_MEM_BACKUP_RETAIN_COUNT ?? '', 10);
-    this.retainCount = Number.isFinite(retain) && retain > 0 ? retain : 7;
+    if (Number.isFinite(retain) && retain > BACKUP_RETAIN_COUNT_CAP) {
+      logger.warn('BACKUP', `CLAUDE_MEM_BACKUP_RETAIN_COUNT above ${BACKUP_RETAIN_COUNT_CAP} clamped to the write path's cap`, {
+        value: settings.CLAUDE_MEM_BACKUP_RETAIN_COUNT,
+        clampedTo: BACKUP_RETAIN_COUNT_CAP,
+      });
+    }
+    this.retainCount = Number.isFinite(retain) && retain > 0 ? Math.min(retain, BACKUP_RETAIN_COUNT_CAP) : 7;
     this.dbPath = options.dbPath ?? DB_PATH;
     this.backupsDir = options.backupsDir ?? paths.backups();
     this.preflightDir = options.preflightDir ?? this.backupsDir;
