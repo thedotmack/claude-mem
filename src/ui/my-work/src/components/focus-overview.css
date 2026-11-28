@@ -92,8 +92,6 @@
 .focus-overview-footer svg { width: 14px; height: 14px; }
 .cmem-setup .focus-reveal-continue { position: sticky; bottom: 1rem; justify-content: flex-end; pointer-events: none; }
 .focus-reveal-continue button { pointer-events: auto; box-shadow: 0 3px 12px #30236b24; }
-.focus-area-search { display: grid; gap: .35rem; width: min(100%, 20rem); }
-.focus-area-filtering { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem 1rem; margin-bottom: .75rem; color: var(--muted-foreground); font-size: .85rem; }
 @media (max-width: 480px) {
   .focus-header-intro { grid-template-columns: 80px minmax(0, 1fr); gap: .75rem; }
   .focus-header-intro > .focus-artwork { aspect-ratio: 1; }

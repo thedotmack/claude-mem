@@ -6,7 +6,10 @@ import { createCn } from "cn/config"
  * pass Phase 3: the bar's places drew in full ink, not muted). tests/ui/my-work/class-merge.test.ts checks this list
  * against index.css, so a new size there fails until it is added here.
  */
-export const CUSTOM_FONT_SIZES = ["page-title", "page-title-phone", "place", "place-narrow", "brand", "brand-phone"] as const
+export const CUSTOM_FONT_SIZES = [
+  "page-title", "page-title-phone", "place", "place-narrow", "brand", "brand-phone",
+  "section-title", "section-title-phone", "panel-title", "panel-title-phone", "row-title",
+] as const
 
 /**
  * Joins class names and resolves Tailwind conflicts (the later class wins), knowing this app's own font sizes. Every

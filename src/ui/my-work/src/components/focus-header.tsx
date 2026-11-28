@@ -28,6 +28,7 @@ import { AreaEditDialog, type AreaEdit, type FocusChanges } from './focus-change
 import { describeFocusChange } from './focus-change-message'
 import { SharedMark, ShareFocusDialog, SharingFold } from './share-focus'
 import { FailureDetails } from './bits'
+import { ReviewFailedLine } from './review-failed-line'
 import { SaveButton } from './save-button'
 import { ShowMoreRows } from './request-rows'
 import { canShareArea } from '@/live/to-shared-focus'
@@ -442,6 +443,8 @@ export function FocusHeader({ area, requests, changes, onOpen }: { area: FocusAr
               <AreaMenu area={area} changes={changes} onEdit={setEdit} onShare={() => setSharing(true)} />
             </div>
           </div>
+          {/* The failure line, under the area's name and goal as under any page's title (design pass Phase 4). */}
+          <ReviewFailedLine />
           {navWord && <p className="text-xs text-attention-foreground">{interpolate(t('“{name}” reuses the page name “{navWord}”. Rename it so each word means one thing.'), { name: area.name, navWord })}</p>}
           <Rollup status={status} requests={requests} onOpen={onOpen} facts={<>
             <span className="text-xs text-muted-foreground tabular">{interpolate(t('{count} shipped'), { count: shipped })}</span>
@@ -510,6 +513,7 @@ export function OtherHeader({ requests, onOpen }: { requests: Request[]; onOpen?
             <AreaHeading>{t('Other')}</AreaHeading>
             <p className="text-sm text-muted-foreground">{t('Requests that fit none of your focus areas.')}</p>
           </div>
+          <ReviewFailedLine />
           <Rollup status={statusOf(null, requests)} requests={requests} onOpen={onOpen} facts={<span className="text-xs text-muted-foreground tabular">{interpolate(t('{count} shipped'), { count: shipped })}</span>} />
           <SuggestedAreasNotice />
         </HeaderFrame>

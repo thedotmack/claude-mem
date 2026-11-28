@@ -3,6 +3,7 @@ import { MotionConfig } from 'motion/react'
 import { FlaskConicalIcon } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import { useAppliedTheme } from '@/lib/use-applied-theme'
+import { PAGE_FRAME } from '@/lib/page-frame'
 import { runScrollAsk } from '@/lib/scroll-ask'
 import { Button } from '@/components/ui/button'
 import { RequestDrawerLoading, RequestDrawerSheet } from '@/components/request-drawer'
@@ -11,6 +12,8 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { ReadAfterSaveNotice } from '@/components/bits'
 import { pageHeading } from '@/components/app-bar'
 import { ShellFrame, ShellLoading, ShellReadError } from '@/components/app-shell'
+import { PageCrumb } from '@/components/page-crumb'
+import { ReviewFailedLine } from '@/components/review-failed-line'
 import { CloudTrialBanner } from '@/components/cloud-trial-banner'
 import { WorkViewOfferBanner } from '@/components/work-view-offer-banner'
 import { CloudTrialGuide } from '@/components/cloud-trial-guide'
@@ -36,6 +39,9 @@ const MyRules = lazy(() => import('@/pages/my-rules').then(module => ({ default:
 const ReviewStack = lazy(() => import('@/pages/review-stack'))
 const SuggestedAreas = lazy(() => import('@/pages/suggested-areas').then(module => ({ default: module.SuggestedAreas })))
 const PastFocus = lazy(() => import('@/pages/past-focus').then(module => ({ default: module.PastFocus })))
+const FindWork = lazy(() => import('@/pages/find-work').then(module => ({ default: module.FindWork })))
+const Workspace = lazy(() => import('@/pages/workspace').then(module => ({ default: module.Workspace })))
+const MachineAndSync = lazy(() => import('@/pages/machine-sync').then(module => ({ default: module.MachineAndSync })))
 const RequestDetail = lazy(() => import('@/components/request-detail').then(module => ({ default: module.RequestDetail })))
 
 /** The shell remains usable while a secondary page's code arrives. */
@@ -86,6 +92,7 @@ export default function App() {
  */
 function WorkApp() {
   const load = useStore((state) => state.work.load)
+  const section = useStore((state) => state.view.section)
   const startWorkSource = useStore.use.startWorkSource()
   const retryWorkRead = useStore.use.retryWorkRead()
   // "Try again" leaves the page with the failed screen, so the screen that answers the retry takes focus: the next
@@ -93,8 +100,24 @@ function WorkApp() {
   const [retried, setRetried] = useState(false)
   useEffect(() => startWorkSource(ACTIVE_SOURCE), [startWorkSource])
   if (load.state === 'loaded') return <LoadedApp focusMainOnMount={retried} />
+  if (section === 'workspace') return <WorkspaceBeforeLoad />
   if (load.state === 'loading') return <ShellLoading />
   return <ShellReadError cause={load.error} focusRetry={retried} onRetry={() => { setRetried(true); void retryWorkRead() }} />
+}
+
+/**
+ * Workspace before the work has loaded, or while it cannot be read: it reads no work (theme, language, Memory's own
+ * pages, help), so "…" opens it on the loading and failed screens too, and the person can still change the theme or
+ * the language and reach Memory while the worker does not answer. Any other page goes back to the screen it waits on.
+ */
+function WorkspaceBeforeLoad() {
+  const { t } = useI18n()
+  const heading = pageHeading('workspace', t)
+  return (
+    <ShellFrame heading={heading} compact={PAGE_FRAME.workspace.compact}>
+      <Suspense fallback={<PageLoading label={heading} />}><Workspace /></Suspense>
+    </ShellFrame>
+  )
 }
 
 /** The same page without `?source=sample`: the person's own work. */
@@ -138,18 +161,19 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
   // A focus area's page is named by its area; its own header shows the name, so the h1 is for screen readers there.
   const areaName = focusAreaId === OTHER_FOCUS_AREA_ID ? t('Other') : focusAreas.find((area) => area.id === focusAreaId)?.name
   const heading = view === 'work' && focusAreaId ? areaName ?? pageHeading('focus', t) : pageHeading(view, t)
+  const frame = PAGE_FRAME[view]
   const home = <MyWork focusAreaId={view === 'work' ? focusAreaId : null} onOpen={openRequestDrawer} onReply={(request) => openRequestDrawer(request, { reply: true })} onOpenFocus={goToFocus} onOpenRules={() => goToPage('rules')} />
-  // What each page shows. Requests and Focus areas open the home page at their boards, and Workspace, Machine and sync,
-  // Find work and Build story open it, until the design pass builds them (phases 4, 5 and 7). The same element at the
-  // same place, so moving between those keeps the home page's own state.
+  // What each page shows. Requests and Focus areas open the home page at their boards, and Build story opens it, until
+  // the design pass builds them (phases 5 and 7). The same element at the same place, so moving between those keeps the
+  // home page's own state.
   const page: Record<Section, () => ReactNode> = {
     work: () => home,
     focus: () => home,
     requests: () => home,
     'build-story': () => home,
-    workspace: () => home,
-    machine: () => home,
-    find: () => home,
+    workspace: () => <Workspace />,
+    machine: () => <MachineAndSync />,
+    find: () => <FindWork />,
     suggested: () => <SuggestedAreas onOpenFocus={goToFocus} />,
     'past-focus': () => <PastFocus onOpenFocus={goToFocus} />,
     rules: () => <MyRules />,
@@ -186,6 +210,8 @@ function LoadedApp({ focusMainOnMount = false }: { focusMainOnMount?: boolean })
           {/* R8.1: My Work at the worker's own address, read from this computer's worker and its live feed. */}
           <Req ids={['R10.3', 'R10.2', 'R8.1']} className="min-h-svh">
             <ShellFrame above={above} heading={heading} headingHidden={view === 'work' && focusAreaId !== null} mainRef={mainRef}
+              compact={frame.compact} aboveHeading={frame.crumb && <PageCrumb to={frame.crumb} />}
+              belowHeading={frame.reviewLine && !(view === 'work' && focusAreaId) && <ReviewFailedLine />}
               below={
                 // Always mounted: its code loads after first paint, and closing keeps the loaded detail for a reopen.
                 <Suspense fallback={liveOpenRequest ? <RequestDetailLoading title={liveOpenRequest.title ?? liveOpenRequest.resolvesTo?.title ?? t('Untitled request')} onClose={closeRequestDrawer} /> : null}>

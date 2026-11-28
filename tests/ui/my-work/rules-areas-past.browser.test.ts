@@ -593,25 +593,37 @@ it.skipIf(!chromeExecutablePath)('focus after a press lands where the person can
   }
 }, TEST_LIMIT_MS);
 
-it.skipIf(!chromeExecutablePath)('a failed refresh names the refresh, holds the shared refresh line, folds the cause, and marks the last good run as earlier', async () => {
+it.skipIf(!chromeExecutablePath)('a failed review is one line under My Rules\' title; Review details opens Machine and sync, with the cause and the last good run marked as earlier', async () => {
   try {
     await openPage(`&view=rules&sample-state=${sampleState('refresh-failed')}`);
     await desktop();
-    await waitFor('document.querySelector("[data-slot=learning-run-failed]")', 'the failed refresh box');
-    const box = 'document.querySelector("[data-slot=learning-run-failed]")';
-    // The refresh runs owner-goals and the learning run, so the box names the refresh, not the learning run.
-    expect(await page!.evaluate(`${box}.textContent`)).toContain('The last refresh didn’t finish');
-    // The shared refresh line sits in the box, once on the page, its raw cause folded under Details. Its Try again
-    // shows where a page can start a refresh (board-views.browser.test.ts); the sample cannot, and its pretend run
-    // keeps its own button at the foot: one control on the page.
-    expect(await page!.evaluate(`${box}.querySelector("[data-refresh-line=failed]") !== null`)).toBe(true);
-    expect(await page!.evaluate('document.querySelectorAll("[data-refresh-line=failed]").length')).toBe(1);
-    expect(await page!.evaluate('window.buttonsNamed("^(Try again|Refresh)").map((button) => window.nameOf(button))')).toEqual(['Refresh rules from preferences']);
-    expect(await page!.evaluate(`${box}.innerText.includes("preferences[3]")`)).toBe(false);
+    await waitFor('document.querySelector("[data-review-failed-line]") && window.buttonsNamed("^Approve$").length > 0', 'the failure line and the current rule');
+    // One line, right under the page's title (design pass Phase 4): no refresh box, no refresh line, no button for it.
+    expect(await page!.evaluate('document.querySelectorAll("[data-review-failed-line]").length')).toBe(1);
+    expect(await page!.evaluate('document.querySelector("main h1").nextElementSibling.matches("[data-review-failed-line]")')).toBe(true);
+    const line = await page!.evaluate('document.querySelector("[data-review-failed-line]").innerText');
+    expect(line).toContain('Review failed at');
+    expect(line).toContain('Last reviewed at');
+    expect(line).not.toContain('preferences[3]');
+    expect(await page!.evaluate('[document.querySelectorAll("[data-slot=learning-run-failed], [data-focus-review], [data-refresh-line]").length, document.querySelectorAll("[data-slot=learning-run-numbers]").length]')).toEqual([0, 0]);
+    expect(await page!.evaluate('window.buttonsNamed("^(Try again|Try review again|Refresh|Review now)").map((button) => window.nameOf(button))')).toEqual([]);
+    // Review details is a real link to Machine and sync, and a press moves there in the page.
+    const details = '[...document.querySelectorAll("[data-review-failed-line] a[href]")].find((link) => link.textContent.trim() === "Review details")';
+    expect(await page!.evaluate(`new URL(${details}.href).searchParams.get('view')`)).toBe('machine');
+    await page!.evaluate(`${details}.click()`);
+    await waitFor('new URLSearchParams(location.search).get("view") === "machine" && document.querySelector("[data-focus-review=failed]")', 'Machine and sync with the failed review');
+    const review = 'document.querySelector("[data-focus-review=failed]").closest("section")';
+    expect(await page!.evaluate(`${review}.textContent`)).toMatch(/The .+ review failed\./);
+    // Its raw cause is folded under Technical details; the sample cannot start a review, so its pretend run keeps its own
+    // button, in the review's words.
+    expect(await page!.evaluate(`${review}.innerText.includes("preferences[3]")`)).toBe(false);
+    expect(await page!.evaluate(`[...${review}.querySelectorAll("button")].map((button) => window.nameOf(button))`)).toEqual(['Review now', 'Technical details']);
     // The last good run's numbers, named as that earlier run's.
-    expect(await page!.evaluate(`${box}.querySelector("[data-slot=learning-run-numbers]") !== null`)).toBe(true);
-    expect(await page!.evaluate(`${box}.textContent`)).toContain('The last learning run that finished, ');
-    expect(await page!.evaluate(`${box}.textContent`)).toContain('Waiting for your decision after it');
+    expect(await page!.evaluate(`${review}.querySelector("[data-slot=learning-run-numbers]") !== null`)).toBe(true);
+    expect(await page!.evaluate(`${review}.textContent`)).toContain('The last learning run that finished, ');
+    expect(await page!.evaluate(`${review}.textContent`)).toContain('Waiting for your decision after it');
+    // The failure line is not repeated on the page that shows the review itself.
+    expect(await page!.evaluate('document.querySelectorAll("[data-review-failed-line]").length')).toBe(0);
     expect(fixtureErrors).toEqual([]);
   } finally {
     await closePage();
@@ -804,7 +816,7 @@ it.skipIf(!chromeExecutablePath)('a phone chip row that scrolls sideways shows a
   }
 }, TEST_LIMIT_MS);
 
-it.skipIf(!chromeExecutablePath)('in French: the learning run’s numbers, a record’s words and the machine list follow the language (rule 4, rule 9)', async () => {
+it.skipIf(!chromeExecutablePath)('in French: the learning run’s numbers (on Machine and sync), a record’s words and the machine list follow the language (rule 4, rule 9)', async () => {
   try {
     await openPage('&view=rules');
     await desktop();
@@ -815,12 +827,15 @@ it.skipIf(!chromeExecutablePath)('in French: the learning run’s numbers, a rec
       rules: `[{ ...window.store.getState().work.load.model.rules.find((rule) => rule.status === 'on'), id: 'worded-records', then: 'Keep the first screen short.',
         records: [{ kind: 'Review', label: 'request-progress · build story', at: 'Oct 20', fact: 'build-story' }, { kind: 'Instructions', label: 'Saved in My Rules on this computer', at: 'Oct 21', fact: 'saved-here' }] }]`,
     });
-    // The numbers in the reader's format: French groups thousands with a narrow space, not a comma.
-    await page!.evaluate('[...document.querySelectorAll("[data-slot=collapsible-fold-trigger]")].find((trigger) => trigger.textContent.includes("Dernière session")).click()');
+    // The numbers in the reader's format: French groups thousands with a narrow space, not a comma. They are on
+    // Machine and sync since the design pass (Phase 4) took My Rules' learning-run box away.
+    await page!.evaluate('window.store.getState().goToPage("machine")');
     await waitFor('document.querySelector("[data-slot=learning-run-numbers]")', 'the learning run numbers');
     const numbers = await page!.evaluate('document.querySelector("[data-slot=learning-run-numbers]").textContent');
     expect(numbers).toMatch(/12\s345/u);
     expect(numbers).not.toContain('12,345');
+    await page!.evaluate('window.store.getState().goToPage("rules")');
+    await waitFor('document.getElementById("rule-worded-records")', 'My Rules again');
     // A record's words: what it is, in French, not the mapper's English label.
     const block = 'document.getElementById("rule-worded-records")';
     await page!.evaluate(`[...${block}.querySelectorAll("button")].find((button) => window.nameOf(button) === "Pourquoi").click()`);
@@ -845,8 +860,8 @@ it.skipIf(!chromeExecutablePath)('in French: the learning run’s numbers, a rec
 
 /**
  * Every 16px from the top of the page to its end (each box here is 44px tall or more, so no overlap can fall between two
- * steps), one frame per step: where the sticky side list overlaps another box of the side column, the failed refresh box
- * or the main column, and at how many steps it was stuck at its offset (its bottom then within the window).
+ * steps), one frame per step: where the sticky side list overlaps another box of the side column or the main column, and
+ * at how many steps it was stuck at its offset (its bottom then within the window).
  */
 const SIDE_LIST_SCAN = `(async () => {
   const nav = document.querySelector('aside nav[aria-label=Scopes]');
@@ -856,8 +871,6 @@ const SIDE_LIST_SCAN = `(async () => {
   // Each box once, named by its first line of text, so a failure says which box the list covered.
   const named = (element) => element.innerText.trim().split('\\n')[0].slice(0, 40) || element.tagName;
   const others = new Map([...aside.children].filter((child) => child !== sticky).map((child) => [child, named(child)]));
-  const failedBox = document.querySelector('[data-slot=learning-run-failed]');
-  if (failedBox && !others.has(failedBox)) others.set(failedBox, 'failed refresh box');
   others.set(aside.previousElementSibling, 'main column');
   const overlaps = [];
   let stuck = 0;
@@ -881,11 +894,11 @@ const SIDE_LIST_SCAN = `(async () => {
   return { steps: Math.floor(end / 16) + 1, overlaps, stuck, stuckBelowWindow };
 })()`;
 
-it.skipIf(!chromeExecutablePath)('at 1440×900 the side list never covers the failed refresh box or anything else, with five scopes or twenty, and still stays in view', async () => {
+it.skipIf(!chromeExecutablePath)('at 1440×900 the side list never covers anything, with the failure line on the page and five scopes or twenty, and still stays in view', async () => {
   try {
     await openPage(`&view=rules&sample-state=${sampleState('refresh-failed')}`);
     await desktop();
-    await waitFor('document.querySelector("[data-slot=learning-run-failed]") && document.querySelector("aside nav[aria-label=Scopes]")', 'the failed refresh box and the side list');
+    await waitFor('document.querySelector("[data-review-failed-line]") && document.querySelector("aside nav[aria-label=Scopes]")', 'the failure line and the side list');
     // The sample's five scopes.
     expect(await page!.evaluate('window.store.getState().work.load.model.ruleScopes.length')).toBe(5);
     const five = await page!.evaluate(SIDE_LIST_SCAN);

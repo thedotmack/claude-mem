@@ -33,6 +33,14 @@ describe('sync evidence presentation', () => {
     expect(shown.detail).toContain('HTTP polling');
     expect(shown.isCurrent).toBe(false);
   });
+  // My Work's Machine and sync shows how many records wait to upload, as the worker counted them; never a guess.
+  test('carries the records waiting to upload when the worker counted them, and none otherwise', () => {
+    expect(presentSync({ ...current(), upload: { pending: 3 } }, 1000, 1000).pendingUpload).toBe(3);
+    expect(presentSync({ ...current(), upload: { pending: 0 } }, 1000, 1000).pendingUpload).toBe(0);
+    expect(presentSync(current(), 1000, 1000).pendingUpload).toBeNull();
+    expect(presentSync({ ...current(), upload: { pending: -1 } }, 1000, 1000).pendingUpload).toBeNull();
+    expect(presentSync({ ...current(), configured: false, state: 'unconfigured', upload: { pending: 3 } }, 1000, 1000).pendingUpload).toBeNull();
+  });
   test('expires old evidence using monotonic receipt time despite different server clocks', () => {
     const status = current();
     expect(presentSync(status, 1000, 1000).state).toBe('current');
@@ -100,8 +108,8 @@ describe('sync evidence presentation', () => {
     expect(syncDetailWords(shown, (english) => english === SYNC_REMAINING_SENTENCE ? '還有 {count} 項變更。' : english)).toContain('還有 42 項變更。');
     // Built elsewhere without its parts: the English detail as it is.
     expect(syncDetailWords({ detail: 'As written.' }, marked)).toBe('As written.');
-    // Neither header keeps a copy of the rule.
-    for (const path of ['../../../src/ui/viewer/components/Header.tsx', '../../../src/ui/my-work/src/components/bits.tsx']) {
+    // Neither the classic viewer's header nor My Work's Machine and sync keeps a copy of the rule.
+    for (const path of ['../../../src/ui/viewer/components/Header.tsx', '../../../src/ui/my-work/src/pages/machine-sync.tsx']) {
       const source = readFileSync(new URL(path, import.meta.url), 'utf8');
       expect({ path, copy: /function syncDetailWords\b/.test(source), imports: /import \{[^}]*\bsyncDetailWords\b[^}]*\} from '[^']*sync-presentation'/.test(source) })
         .toEqual({ path, copy: false, imports: true });
@@ -112,8 +120,8 @@ describe('sync evidence presentation', () => {
       expect(syncSentences().filter(sentence => !(sentence in catalog))).toEqual([]);
     }
   });
-  // My Work's connection chip words the label and each detail sentence by t() (components/bits.tsx LiveIndicator), and
-  // Turkish reads My Work's catalog alone, so each My Work catalog holds them all, in the classic viewer's words.
+  // My Work's Machine and sync words the label and each detail sentence by t() (pages/machine-sync.tsx), and Turkish
+  // reads My Work's catalog alone, so each My Work catalog holds them all, in the classic viewer's words.
   test('every label and sentence of the sync detail has a translation in each My Work catalog, the same as the viewer’s', () => {
     const words = [...Object.values(SYNC_STATE_LABELS), SYNC_LIMITED_SCOPE_LABEL, ...syncSentences()];
     for (const [name, catalog] of Object.entries({ myworkZh, myworkKo, myworkTr, myworkFr })) {

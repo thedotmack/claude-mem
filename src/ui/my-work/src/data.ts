@@ -450,7 +450,7 @@ export class SaveRefusedError extends Error {
 
 /**
  * The worker did not start a refresh. `workerReason` is the worker's own words when its answer carried any, else
- * null; the screen words the rest in the person's language (ManualRefreshButton). The message stays English for logs.
+ * null; the screen words the rest in the person's language (pages/machine-sync.tsx FocusReview). The message stays English for logs.
  */
 export class RefreshNotStartedError extends Error {
   readonly status: number
@@ -489,8 +489,7 @@ export const firstNeedingYou = (requests: readonly Request[]) => requests.filter
 
 export const isSampleHref = (href: string | undefined) => href !== undefined && (!href || href === '#')
 
-export const SAMPLE_RUNS: Record<'goals' | 'rules' | 'progress', Run> = {
+export const SAMPLE_RUNS: Record<'goals' | 'progress', Run> = {
   goals: { label: 'owner-goals', lastRunAt: 'Today, 11:02 am', deviceId: 'mbp', state: 'idle' },
-  rules: { label: 'rules from preferences', lastRunAt: 'Today, 11:05 am', deviceId: 'mbp', state: 'idle' },
   progress: { label: 'request-progress', lastRunAt: 'Today, 1:50 pm', deviceId: 'studio', state: 'idle' },
 }

@@ -67,7 +67,7 @@ export const SAMPLE_OTHER_ASKS: FocusAsk[] = [
   ask({ id: 'a-side', title: 'Side project traction', timesAsked: 2, latestAt: '10-18 21:54', quotes: [{ at: '10-18 21:54', quote: 'any new stars, issues or PRs?' }] }),
 ]
 
-/** The current owner-goals run (Past focus shows its time and machine from SAMPLE_RUNS.goals). */
+/** The current owner-goals run's window (Machine and sync's Focus review shows its time and machine, from SAMPLE_RUNS.goals). */
 export const SAMPLE_CURRENT_PERIOD: CurrentPeriod = { label: 'Sep 18 – Oct 18', windowDays: 31, promptCount: 823 }
 
 /** Saved past months (owner-goals/<start>), newest first. Their asks are archived with the month. */

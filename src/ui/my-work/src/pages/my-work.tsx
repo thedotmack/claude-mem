@@ -14,7 +14,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { Table, TableBody, TableCell, TableHead, TableHeader, TablePageFooter, TableRow } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { AgentIcon, FocusAreaChip, LocalTime, NeedsYouPill, NextMove, ProgressMeter, RecordedTime, RefreshButton, RefreshStatus, StateMark, WorkReadFailureAlert } from '@/components/bits'
+import { AgentIcon, FocusAreaChip, LocalTime, NeedsYouPill, NextMove, ProgressMeter, RecordedTime, StateMark, WorkReadFailureAlert } from '@/components/bits'
 import { sentenceWith } from '@/lib/sentence-with'
 import { TracingBeam } from '@/components/aceternity/tracing-beam'
 import { AgentMark } from '@/components/brand'
@@ -29,7 +29,7 @@ import { RequestLine } from '@/components/request-line'
 import { useWidthOf } from '@/lib/use-media'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { byAttention, firstNeedingYou, isSubagent, isWorkingNow, needsYou, OTHER_FOCUS_AREA_ID, requestTitle, SAMPLE_RUNS, startedTimestamp, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
+import { byAttention, firstNeedingYou, isSubagent, isWorkingNow, needsYou, OTHER_FOCUS_AREA_ID, requestTitle, startedTimestamp, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
 import { type WorkFilter, type WorkListView, type WorkSort, deviceById, useFreshlyUpdated, useStore, useWorkModel, useWorkspace } from '@/store'
 import { useShallow } from 'zustand/react/shallow'
 import type { BuildStory, StoryChapter } from '@/live/work-data-source'
@@ -37,7 +37,6 @@ import { asksToKeepOrDismiss, createFocusAreaResolver, focusAreaPlaceWords } fro
 import { THIS_COMPUTER } from '@/live/to-work-model'
 import { agentBoard, type AgentEntry } from '@/live/agent-board'
 import { DURATION_WORD } from '@/live/running-time'
-import { refreshLineState } from '@/live/refresh-line'
 import { CARD_SIZE, LINE_ROWS_PER_PAGE, LIST_TITLE_MIN_PX, cardGridEntries, lineSections, requestSections, type CardGroup, type CardSize } from '@/live/card-groups'
 import { datedHeading, fitLine, storyChapters, storyNumbers } from '@/live/build-story'
 import { FocusOverview } from '@/components/focus-overview'
@@ -927,15 +926,14 @@ function SourceReadAlert({ error }: { error: string | null }) {
 
 /**
  * The row above the requests (c-work-filters): the view as one joined control and the filters as chips, each with a
- * small visible label; Sort with its word and its choice; and the refresh line at the end. Chosen items show the
- * primitive's chosen look (fill, edge, weight, check; no orange) and counts are monospace. On a phone it is two 44px
- * rows: the view, then the filter chips (they scroll sideways inside their row) with Sort. It wraps instead of
- * widening the page at any width (the page measured 807–824px at a 768–820px window).
+ * small visible label; Sort with its word and its choice. Chosen items show the primitive's chosen look (fill, edge,
+ * weight, check; no orange) and counts are monospace. On a phone it is two 44px rows: the view, then the filter chips
+ * (they scroll sideways inside their row) with Sort. It wraps instead of widening the page at any width (the page
+ * measured 807–824px at a 768–820px window). The refresh line that ended it is gone (design pass Phase 4): the review's
+ * state is on Machine and sync, with one failure line under the page's title.
  */
-function WorkToolbar({ view, filter, sort, requests, team, refreshLine, refreshFailed, onView, onFilter, onSort }: {
-  view: View; filter: Filter; sort: SortKey; requests: Request[]; team: boolean; refreshLine: ReactNode
-  /** A failed refresh is an alert with its own Try again and Details: it takes a row of its own. */
-  refreshFailed: boolean
+function WorkToolbar({ view, filter, sort, requests, team, onView, onFilter, onSort }: {
+  view: View; filter: Filter; sort: SortKey; requests: Request[]; team: boolean
   onView: (view: View) => void; onFilter: (filter: Filter) => void; onSort: (sort: SortKey) => void
 }) {
   return (
@@ -976,7 +974,6 @@ function WorkToolbar({ view, filter, sort, requests, team, refreshLine, refreshF
           </Select>
         )}
       </div>
-      {refreshLine && <div className={cn('flex min-w-0 grow basis-full justify-end', !refreshFailed && 'md:basis-auto')}>{refreshLine}</div>}
     </div>
   )
 }
@@ -990,7 +987,7 @@ function WorkToolbar({ view, filter, sort, requests, team, refreshLine, refreshF
 export function MyWork({ focusAreaId, onOpen, onReply = onOpen, onOpenFocus, onOpenRules }: { focusAreaId: string | null; onOpen: (request: Request) => void; onReply?: (request: Request) => void; onOpenFocus: (focusAreaId: string) => void; onOpenRules: () => void }) {
   useI18n()
   const { team } = useWorkspace()
-  const { sourceKind, requests: allRequests, requestReadErrors: allReadErrors, unlinkedWorkCount, sourceHealth, buildStory, lastRuns, refresh, focusAreas, otherAsks } = useWorkModel()
+  const { requests: allRequests, requestReadErrors: allReadErrors, sourceHealth, buildStory, focusAreas, otherAsks } = useWorkModel()
   const area = focusAreaId && focusAreaId !== OTHER_FOCUS_AREA_ID ? focusAreas.find((entry) => entry.id === focusAreaId) ?? null : null
   const requests = useMemo(() => {
     if (!focusAreaId) return allRequests
@@ -1001,7 +998,6 @@ export function MyWork({ focusAreaId, onOpen, onReply = onOpen, onOpenFocus, onO
   const requestReadErrors = focusAreaId ? [] : allReadErrors
   // This page's saves: a failure made on another area's page, a dialog or a drawer is never offered here (Q-M1).
   const focusChanges = useFocusChanges(focusAreaId === null ? 'home' : `focus:${focusAreaId}`)
-  const sample = sourceKind === 'sample'
   // How the person likes to see My Work is saved across visits (store/create-store.ts).
   const { listView: view, filter, sort } = useStore(useShallow((state) => ({ listView: state.view.listView, filter: state.view.filter, sort: state.view.sort })))
   const focusArtwork = useStore((state) => state.view.focusArtwork)
@@ -1021,11 +1017,6 @@ export function MyWork({ focusAreaId, onOpen, onReply = onOpen, onOpenFocus, onO
   const open = requests.filter((request) => !request.closed)
   // "Show all N" lands on every request with that filter on (the home page's All requests; a focus page's own board).
   const showOnBoard = (next: Filter) => { setFilter(next); if (!focusAreaId) goToPage('requests') }
-  // Live mode shows the worker's automatic refresh, or the last review before its first run. No cost. This page's
-  // worker can start one, so the line carries its button (c-work-filters: the review's time beside Refresh).
-  const refreshLine = sample ? <RefreshButton run={SAMPLE_RUNS.progress} ids={['R14.12']} />
-    : sourceKind === 'local' ? <RefreshStatus refresh={refresh} run={lastRuns.progress} label="Last reviewed" ids={['R14.12']} canStartRefresh />
-      : (refresh || lastRuns.progress) ? <RefreshStatus refresh={refresh} run={lastRuns.progress} label="Last reviewed" ids={['R14.12']} /> : null
 
   return (
     <div className="space-y-4 md:space-y-5">
@@ -1033,7 +1024,7 @@ export function MyWork({ focusAreaId, onOpen, onReply = onOpen, onOpenFocus, onO
       <FocusChangeBar changes={focusChanges} />
       {!focusAreaId && <NeedsYouFirst requests={open} onOpen={onOpen} onReply={onReply} onOpenFocus={onOpenFocus} onShowWorking={() => showOnBoard('working')} />}
       {/* `?view=focus` (the bar's Focus areas) opens this page here, with every area shown. */}
-      {!focusAreaId && <FocusOverview anchorId="focus-areas" expandAllOn={allAreasAsked} areas={focusAreas} requests={allRequests} incomplete={allReadErrors.length > 0} onOpenArea={onOpenFocus} onOpenRequest={onOpen} artwork={focusArtwork} onArtworkChange={useStore.getState().setFocusArtwork} />}
+      {!focusAreaId && <FocusOverview anchorId="focus-areas" expandAllOn={allAreasAsked} areas={focusAreas} requests={allRequests} incomplete={allReadErrors.length > 0} onOpenArea={onOpenFocus} onOpenRequest={onOpen} artwork={focusArtwork} />}
       {/* Every request in the area, closed ones too: the combined progress counts each reviewed request (D1's rule). */}
       {area ? <FocusHeader key={area.id} area={area} requests={requests} changes={focusChanges} onOpen={onOpen} />
         : focusAreaId === OTHER_FOCUS_AREA_ID && <OtherHeader requests={requests} onOpen={onOpen} />}
@@ -1047,8 +1038,7 @@ export function MyWork({ focusAreaId, onOpen, onReply = onOpen, onOpenFocus, onO
       {/* It counts the working requests this page's Working filter counts: the page's own (isWorkingNow). */}
       <ChangeTicker requests={requests} onOpen={(requestId) => { const request = allRequests.find((entry) => entry.id === requestId); if (request) onOpen(request) }} />
 
-      <WorkToolbar view={view} filter={filter} sort={sort} requests={requests} team={team} refreshLine={refreshLine} refreshFailed={!sample && refreshLineState(refresh) === 'failed'}
-        onView={setView} onFilter={setFilter} onSort={setSort} />
+      <WorkToolbar view={view} filter={filter} sort={sort} requests={requests} team={team} onView={setView} onFilter={setFilter} onSort={setSort} />
       {/* Requests that could not be read, once, at the top of the board in every layout (only under every request). */}
       <RequestReadErrors readErrors={requestReadErrors} onAllDismissed={focusBoardHeading} />
 
@@ -1089,9 +1079,6 @@ export function MyWork({ focusAreaId, onOpen, onReply = onOpen, onOpenFocus, onO
                     : <TeamBoard requests={visible} grouped={grouped} onOpen={onOpen} />}
           </div>
         </PagingResetContext.Provider>
-      )}
-      {unlinkedWorkCount > 0 && (
-        <p className="text-xs text-muted-foreground">{interpolate(unlinkedWorkCount === 1 ? t("{count} work record isn't linked to a request yet.") : t("{count} work records aren't linked to a request yet."), { count: unlinkedWorkCount })}</p>
       )}
 
       {/* The recap and the build story are written by request-progress; with no story, both are hidden. */}

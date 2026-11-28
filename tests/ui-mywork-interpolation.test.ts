@@ -8,8 +8,8 @@ import { interpolate } from '../src/ui/i18n/locale.ts';
 import { myworkZh } from '../src/ui/i18n/mywork-zh.ts';
 import { myworkKo } from '../src/ui/i18n/mywork-ko.ts';
 import { OTHER_FOCUS_AREA_ID, type FocusArea, type FocusChange, type Request } from '../src/ui/my-work/src/data.ts';
-import { RULE_TIERS, type OwnerRule, type RuleScope } from '../src/ui/my-work/src/data-rules.ts';
-import { renderRulesFile, type SavedRule } from '../src/services/work-view/my-rules.mjs';
+import { RULE_TIERS, ruleInUse, type OwnerRule, type RuleScope } from '../src/ui/my-work/src/data-rules.ts';
+import { RULE_SET_BY, renderRulesFile, SAVED_RULE_STATUSES, type SavedRule } from '../src/services/work-view/my-rules.mjs';
 
 const components = new URL('../src/ui/my-work/src/components/', import.meta.url);
 const pages = new URL('../src/ui/my-work/src/pages/', import.meta.url);
@@ -153,14 +153,19 @@ test('My Work pages and components do not use string replacement for placeholder
 });
 
 const rulesSource = ts.createSourceFile('my-rules.tsx', readFileSync(new URL('my-rules.tsx', pages), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-const fileHelpers = new Set(['scopeHeading', 'strengthScore', 'byStrength', 'lowerFirst', 'SET_BY_ORDER', 'rulesFileLines']);
-const fileFormatter = rulesSource.statements.filter(node =>
+const fileHelpers = new Set(['scopeHeading', 'strengthScore', 'byStrength', 'SET_BY_ORDER', 'rulesFileLines']);
+// lowerFirst is shared with Find work's rule rows (lib/rule-words.ts, design pass Phase 4); taken from there, as written.
+const ruleWordsSource = ts.createSourceFile('rule-words.ts', readFileSync(new URL('../src/ui/my-work/src/lib/rule-words.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+const sharedHelpers = ruleWordsSource.statements.filter(node =>
+  ts.isVariableStatement(node) && node.declarationList.declarations.some(declaration => declaration.name.getText(ruleWordsSource) === 'lowerFirst')
+).map(node => node.getText(ruleWordsSource).replace(/^export /, ''));
+const fileFormatter = [...sharedHelpers, ...rulesSource.statements.filter(node =>
   (ts.isFunctionDeclaration(node) && fileHelpers.has(node.name?.text ?? '')) ||
   (ts.isVariableStatement(node) && node.declarationList.declarations.some(declaration => fileHelpers.has(declaration.name.getText(rulesSource))))
-).map(node => node.getText(rulesSource)).join('\n');
-const rulesFileLines = new Function('RULE_TIERS',
+).map(node => node.getText(rulesSource))].join('\n');
+const rulesFileLines = new Function('RULE_TIERS', 'ruleInUse',
   ts.transpileModule(fileFormatter, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText + '\nreturn rulesFileLines;'
-)(RULE_TIERS) as (rules: OwnerRule[], scopes: RuleScope[]) => { text: string; ruleId: string | null }[];
+)(RULE_TIERS, ruleInUse) as (rules: OwnerRule[], scopes: RuleScope[]) => { text: string; ruleId: string | null }[];
 
 test('rules preview matches renderRulesFile with whole-day recency, English headings and exact whitespace', () => {
   const now = Date.parse('2026-11-03T12:00:00Z');
@@ -196,6 +201,20 @@ test('rules preview matches renderRulesFile with whole-day recency, English head
   assert.deepEqual(lines.flatMap(line => line.ruleId ? [line.ruleId] : []), ['global', 'alpha', 'recent', 'old', 'approved', 'situation']);
   assert.equal(JSON.stringify({ rules, scopes }), before, 'preview must not reorder the shared model');
   assert.equal(rulesFileLines([], scopes).map(line => line.text).join('\n') + '\n', renderRulesFile([], now).markdown);
+});
+
+// My Work's "rule in use" (data-rules.ts ruleInUse: Find work's rules, My Rules' count and file preview, rule receipts)
+// and the worker's MY-RULES.md (my-rules.mjs renderRulesFile) are written in two modules the page and the worker cannot
+// share, so they must agree on every saved status and every setter the worker records, a new one included.
+test('a rule is in use in My Work exactly when the worker writes it to MY-RULES.md', () => {
+  const now = Date.parse('2026-11-28T12:00:00Z');
+  for (const setBy of RULE_SET_BY) {
+    for (const status of SAVED_RULE_STATUSES) {
+      const saved = { ruleId: `${setBy}-${status}`, setBy, status, scopeTier: 'everywhere', scopeName: 'Everywhere', when: '', then: 'Rule',
+        timesSeen: 1, latestAt: new Date(now).toISOString(), kind: 'directive', quotes: [], replacedBy: null, replacedAt: null, savedAt: null } as unknown as SavedRule;
+      assert.equal(ruleInUse({ setBy, status } as Pick<OwnerRule, 'setBy' | 'status'>), renderRulesFile([saved], now).approvedCount === 1, `${setBy} / ${status}`);
+    }
+  }
 });
 
 test('rule receipts retain user text and render again after a language switch', () => {
@@ -267,20 +286,6 @@ for (const language of ['en', 'zh-CN']) {
     }, language), language === 'en' ? 'Why it’s suggested: $& {reason}' : '建议原因：$& {reason}');
   });
 }
-
-// FeedbackLink and GitHubStars (components/bits.tsx) keep their aria-labels, and each name must hold the words the
-// button shows (label in name, WCAG 2.5.3): French named them without the visible "Commentaires" and "Ajouter aux favoris".
-test('the Star and Feedback buttons are named with their visible words in every language', async () => {
-  const { myworkKo } = await import('../src/ui/i18n/mywork-ko.ts');
-  const { myworkTr } = await import('../src/ui/i18n/mywork-tr.ts');
-  const { myworkFr } = await import('../src/ui/i18n/mywork-fr.ts');
-  for (const [locale, catalog] of Object.entries({ zh: myworkZh, ko: myworkKo, tr: myworkTr, fr: myworkFr })) {
-    for (const [visible, name] of [['Star', 'Star claude-mem on GitHub'], ['Feedback', 'Send feedback about My Work on GitHub']]) {
-      const shown = catalog[visible].toLocaleLowerCase(locale);
-      assert.ok(catalog[name].toLocaleLowerCase(locale).includes(shown), `${locale}: "${catalog[name]}" does not hold "${catalog[visible]}"`);
-    }
-  }
-});
 
 // Phase 6 fix AP-L10: "Shared" and its comment count are one sentence, one key, in the Sharing row and on the mark; the
 // row joined two translations with a fixed " · " outside t().

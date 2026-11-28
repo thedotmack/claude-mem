@@ -9,6 +9,10 @@ import {
   type DevToolsPage, type OwnedChrome,
 } from '../../helpers/chrome-devtools';
 import { THEME_PRE_PAINT_SCRIPT } from '../../../src/ui/my-work/src/lib/theme-pre-paint';
+import { THEME_CHOICES } from '../../../src/ui/my-work/src/lib/theme';
+import { PAGE_FRAME } from '../../../src/ui/my-work/src/lib/page-frame';
+import { FIND_RESULT_GROUPS } from '../../../src/ui/my-work/src/live/find-work';
+import { WORK_VIEW_SECTIONS } from '../../../src/shared/work-view-pages';
 import { MEMORY_PLACE, MY_WORK_PLACES } from '../../../src/ui/app-places';
 
 failOnCiWithoutChrome('CI requires Chrome for the My Work shell regressions.');
@@ -16,14 +20,20 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work shell regressions.');
 /**
  * The app shell (My Work design pass, Phase 3: one look and one bar), on the real App with the sample source, the
  * app's real stylesheet, its Geist font and the pre-paint theme script the build puts in index.html:
- * - the bar: the brain mark, the five places in order (src/ui/app-places.ts), Memory and one "…" menu; the active
- *   place is marked; a press moves to the place's page; nothing runs past the window at 1440 or at 768;
- * - the bar draws on the loading and failed screens too, its places and Memory working, and Try again keeps focus;
- * - the menu opens with Enter, moves with the arrows, closes with Escape and returns focus;
- * - G8: Theme in the menu changes <html> and is saved, System follows the OS, setup stays light, and a `?theme=`
- *   address lasts the visit without being saved;
- * - phones: the places are the bottom bar, every bar control and menu row is at least 44px on a coarse pointer, the
- *   page is exactly 390 wide, the page ends above the pinned bottom bar, and no focused control sits under the bars;
+ * - the bar: the brain mark, the five places in order (src/ui/app-places.ts), Find work, Memory and "…" (the Workspace
+ *   page, design pass Phase 4); the active place is marked; a press moves to the place's page; nothing runs past the
+ *   window at 1440 or at 768;
+ * - the bar draws on the loading and failed screens too, its places, Find work, Memory and "…" working, and Try again
+ *   keeps focus; "…" opens Workspace there, whose Theme and Language work while the work cannot be read;
+ * - Workspace: one choice open at a time; G8: Theme there changes <html> and is saved, System follows the OS, setup
+ *   stays light, and a `?theme=` address lasts the visit without being saved; no star count is asked of GitHub;
+ * - Find work: Cmd K (Ctrl K) opens it from any page, typing finds focus areas, requests and rules in use, the arrow
+ *   keys move, Enter opens the marked result, the words live in the address, and how many it found is read out; it
+ *   works at 390px; Cmd K does nothing while a dialog is open, so a typed edit survives it;
+ * - the failure line: one line under the title of the pages that showed the refresh banner, when the last review
+ *   failed, and its Review details opens Machine and sync;
+ * - phones: the places are the bottom bar, every bar control and Workspace row is at least 44px on a coarse pointer,
+ *   the page is exactly 390 wide, the page ends above the pinned bottom bar, and no focused control sits under the bars;
  * - the places not shown are muted, the one shown green with an edge along its foot (not colour alone);
  * - Back, Forward and a reload land where the page was left scrolled (the app restores it: scrollRestoration manual);
  *   Account & billing on the cloud viewer; names that contain their visible words in every language; the sample
@@ -119,14 +129,12 @@ beforeAll(async () => {
     const report = (message) => fetch('/fixture-error', { method: 'POST', body: String(message) });
     window.addEventListener('error', (event) => report(event.error?.stack ?? event.message));
     window.addEventListener('unhandledrejection', (event) => report(event.reason?.stack ?? event.reason));
-    // The star count would come from GitHub; a test never calls out, so the page reads this one.
+    // No page of My Work asks GitHub for its star count since the design pass (Phase 4); any read is counted here and
+    // answered without calling out.
     const realFetch = window.fetch.bind(window);
     window.githubStarReads = 0;
-    // \`&github=refuse\`: GitHub gives no count (a network failure, as a rate-limited or offline page sees).
-    const githubRefuses = new URLSearchParams(location.search).get('github') === 'refuse';
     window.fetch = (input, init) => String(input).startsWith('https://api.github.com/')
-      ? (window.githubStarReads++, githubRefuses ? Promise.reject(new TypeError('Failed to fetch'))
-        : Promise.resolve(new Response(JSON.stringify({ stargazers_count: 117482 }), { headers: { 'Content-Type': 'application/json' } })))
+      ? (window.githubStarReads++, Promise.resolve(new Response(JSON.stringify({ stargazers_count: 117482 }), { headers: { 'Content-Type': 'application/json' } })))
       : realFetch(input, init);
     // \`&fail-reads=N\`: the first N reads of the work fail as an unreachable worker's do, then the sample answers.
     const failReads = Number(new URLSearchParams(location.search).get('fail-reads') ?? 0);
@@ -158,6 +166,19 @@ beforeAll(async () => {
         const more = Object.create(source);
         more.loadWorkModel = () => source.loadWorkModel().then(withMoreAreas);
         more.subscribeToLiveUpdates = (onModel, onConnection) => source.subscribeToLiveUpdates((model) => onModel(withMoreAreas(model)), onConnection);
+        return startWorkSource(more);
+      } });
+    }
+    // \`&requests=many\`: every model carries 60 more requests named "Zebracopy <n>", so Find work pages them 50 at a
+    // time (LINE_ROWS_PER_PAGE) and offers "Show 10 more".
+    if (new URLSearchParams(location.search).get('requests') === 'many') {
+      const withMoreRequests = (model) => ({ ...model, requests: [...model.requests, ...Array.from({ length: 60 }, (_, index) =>
+        ({ ...model.requests[0], id: 'zebracopy-' + (index + 1), title: 'Zebracopy ' + (index + 1), summary: null }))] });
+      const startWorkSource = useStore.getState().startWorkSource;
+      useStore.setState({ startWorkSource: (source) => {
+        const more = Object.create(source);
+        more.loadWorkModel = () => source.loadWorkModel().then(withMoreRequests);
+        more.subscribeToLiveUpdates = (onModel, onConnection) => source.subscribeToLiveUpdates((model) => onModel(withMoreRequests(model)), onConnection);
         return startWorkSource(more);
       } });
     }
@@ -219,11 +240,6 @@ beforeAll(async () => {
         requestAnimationFrame(check);
       })();
     });
-    // Row heights are layout heights: the menu opens with a short zoom, and a box read mid-zoom is scaled down.
-    window.menu = () => {
-      const menu = document.querySelector('[role="menu"]');
-      return menu ? { rows: [...menu.querySelectorAll('[role^="menuitem"]')].filter(visible).map((row) => ({ name: nameOf(row).slice(0, 40), role: row.getAttribute('role'), height: row.offsetHeight, checked: row.getAttribute('aria-checked') })) } : null;
-    };
     // Tab from the top of the page. A blurred element stays the starting point of the next Tab, so the shell itself
     // takes focus first (not as a stop of its own: tabindex -1).
     window.focusPageStart = () => {
@@ -233,11 +249,6 @@ beforeAll(async () => {
       window.scrollTo(0, 0);
     };
     window.visibleIn = (selector) => [...document.querySelectorAll(selector)].filter(visible);
-    window.clickMenuRow = (name) => {
-      const row = [...document.querySelectorAll('[role="menu"] [role^="menuitem"]')].find((element) => nameOf(element).startsWith(name));
-      if (!row) throw new Error('no menu row ' + name);
-      row.click();
-    };
     window.isDark = () => document.documentElement.classList.contains('dark');
     window.savedTheme = () => JSON.parse(localStorage.getItem('claude-mem:my-work:preferences') ?? '{}').state?.theme ?? null;
     // The pinned bottom bar's edges, and where the page's own content ends.
@@ -276,9 +287,9 @@ async function desktop() {
 }
 
 /**
- * Tabs from the top of the page until `match` is focused. With sample data the menu button is the 13th stop (skip link,
- * the strip's two switch items, Use my data, Hide banner, the brand, five places, Memory, More); 16 leaves room without
- * letting a missed control tab through the whole page.
+ * Tabs from the top of the page until `match` is focused. With sample data "…" is the 14th stop (skip link, the strip's
+ * two switch items, Use my data, Hide banner, the brand, five places, Find work, Memory, Workspace); 16 leaves room
+ * without letting a missed control tab through the whole page.
  */
 async function tabTo(match: (focus: any) => boolean, what: string, limit = 16) {
   await page!.evaluate('window.focusPageStart()');
@@ -296,6 +307,8 @@ async function tabTo(match: (focus: any) => boolean, what: string, limit = 16) {
 const PLACES = MY_WORK_PLACES.map((place) => place.label);
 const PHONE_PLACES = MY_WORK_PLACES.map((place) => place.shortLabel);
 const MEMORY = MEMORY_PLACE.label;
+/** The bar after the places: Find work, Memory, and "…", named for the Workspace page it opens. */
+const BAR_END = ['Find work', MEMORY, 'Workspace'];
 const currentPlace = (controls: { name: string; current: string | null }[]) => controls.filter((control) => control.current === 'page').map((control) => control.name);
 
 /** Presses a place in the top bar (or the bottom bar with `phone`) the way a person does: a plain left click. */
@@ -304,12 +317,12 @@ async function pressPlace(name: string, { phone = false } = {}) {
   await page!.settle();
 }
 
-(chromeExecutablePath ? it : it.skip)('the bar holds the brand, the five places in order, Memory and one menu; the place shown is marked and each press moves there', async () => {
+(chromeExecutablePath ? it : it.skip)('the bar holds the brand, the five places in order, Find work, Memory and "…"; the place shown is marked and each press moves there', async () => {
   await openShell();
   try {
     await desktop();
     const controls: { name: string; height: number; current: string | null }[] = await page!.evaluate('window.headerControls()');
-    expect(controls.map((control) => control.name)).toEqual(['claude-mem', ...PLACES, MEMORY, 'More']);
+    expect(controls.map((control) => control.name)).toEqual(['claude-mem', ...PLACES, ...BAR_END]);
     expect(currentPlace(controls)).toEqual(['My Work']);
     // Every control in the bar is 44px tall (Codex's nav links and icon button), the brand's 34px mark aside.
     expect(controls.filter((control) => control.name !== 'claude-mem' && control.height < 44)).toEqual([]);
@@ -355,15 +368,16 @@ async function pressPlace(name: string, { phone = false } = {}) {
     await page!.evaluate(`document.querySelector('[data-slot="app-bar"] a[href]').click()`);
     await waitFor(`!new URLSearchParams(location.search).get('view') && !new URLSearchParams(location.search).get('focus')`, 'home');
     expect(currentPlace(await page!.evaluate('window.headerControls()'))).toEqual(['My Work']);
-    // 768px: the five places and Memory's mark still fit in the bar, and Memory keeps its name for screen readers.
+    // 768px: the five places, Find work's and Memory's marks still fit in the bar, and both keep their names for screen readers.
     await page!.send('Emulation.setDeviceMetricsOverride', { width: 768, height: 900, deviceScaleFactor: 1, mobile: false });
     await page!.settle();
-    expect((await page!.evaluate('window.headerControls()')).map((control: { name: string }) => control.name)).toEqual(['claude-mem', ...PLACES, MEMORY, 'More']);
+    expect((await page!.evaluate('window.headerControls()')).map((control: { name: string }) => control.name)).toEqual(['claude-mem', ...PLACES, ...BAR_END]);
     expect((await accessibleText(`document.querySelector('[data-slot="app-bar"] a[href="${MEMORY_PLACE.address}"]')`)).name).toBe(MEMORY);
+    expect((await accessibleText(`document.querySelector('[data-slot="app-bar"] a[aria-keyshortcuts]')`)).name).toBe('Find work');
     expect(pageFitsTheWindow(await page!.evaluate(PAGE_WIDTHS), 768)).toMatchObject(FITS_THE_WINDOW);
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }
-  // About 3s here (2026-11-27); 30s for a slow CI runner.
+  // 1.7–1.9s here (2026-11-28, three runs); 30s for a slow CI runner.
 }, 30_000);
 
 (chromeExecutablePath ? it : it.skip)('each press of Focus areas shows every area, also after the person folded the board back to its first areas', async () => {
@@ -388,7 +402,7 @@ async function pressPlace(name: string, { phone = false } = {}) {
   try {
     await desktop();
     const controls = await page!.evaluate('window.headerControls()');
-    expect(controls.map((control: { name: string }) => control.name)).toEqual(['claude-mem', ...PLACES, MEMORY, 'More']);
+    expect(controls.map((control: { name: string }) => control.name)).toEqual(['claude-mem', ...PLACES, ...BAR_END]);
     expect(currentPlace(controls)).toEqual(['My Work']);
     expect(await page!.evaluate(`[document.querySelector('main h1').textContent, document.querySelector('main [role="status"]').textContent]`)).toEqual(['My Work', 'Reading local work…']);
     // The placeholders sit in the page's content area only.
@@ -398,11 +412,14 @@ async function pressPlace(name: string, { phone = false } = {}) {
     await waitFor(`new URLSearchParams(location.search).get('view') === 'rules' && document.querySelector('main h1')?.textContent === 'My Rules'`, 'My Rules while reading');
     expect(currentPlace(await page!.evaluate('window.headerControls()'))).toEqual(['My Rules']);
     expect(await page!.evaluate(`!!document.querySelector('main [aria-busy="true"]')`)).toBe(true);
-    // The "…" menu opens there too: it reads no work model.
-    await tabTo((focus) => focus.name === 'More', 'the menu button');
-    await press('Enter');
-    await waitFor('window.menu()', 'the menu on the loading screen');
-    await press('Escape');
+    // "…" opens Workspace there (it reads no work model): its rows, in place of the reading screen, while the read goes on.
+    await page!.evaluate(`document.querySelector('[data-slot="app-bar"] a[aria-label="Workspace"]').click()`);
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'workspace' && document.querySelector('main h1')?.textContent === 'Workspace' && document.querySelector('[data-workspace-row]')`, 'Workspace while reading');
+    expect(await page!.evaluate(`document.querySelector('[data-slot="app-bar"] a[aria-label="Workspace"]').getAttribute('aria-current')`)).toBe('page');
+    expect(await page!.evaluate(`!!document.querySelector('main [aria-busy="true"]')`)).toBe(false);
+    // A page that needs the work goes back to the reading screen.
+    await pressPlace('My Rules');
+    await waitFor(`document.querySelector('main h1')?.textContent === 'My Rules' && document.querySelector('main [aria-busy="true"]')`, 'My Rules reading again');
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }
   // 1–2s here (2026-11-27); 30s for a slow CI runner.
@@ -412,7 +429,7 @@ async function pressPlace(name: string, { phone = false } = {}) {
   await openShell({ query: '&fail-reads=1' });
   try {
     await desktop();
-    expect((await page!.evaluate('window.headerControls()')).map((control: { name: string }) => control.name)).toEqual(['claude-mem', ...PLACES, MEMORY, 'More']);
+    expect((await page!.evaluate('window.headerControls()')).map((control: { name: string }) => control.name)).toEqual(['claude-mem', ...PLACES, ...BAR_END]);
     const alert = await page!.evaluate(`(() => { const alert = document.querySelector('[role="alert"]'); return {
       heading: alert.querySelector('h2').textContent, text: alert.querySelector('p').textContent,
       actions: [...alert.querySelectorAll('button, a[href]')].map((control) => [control.textContent.trim(), control.getAttribute('href')]) } })()`);
@@ -429,67 +446,105 @@ async function pressPlace(name: string, { phone = false } = {}) {
   // 1–2s here (2026-11-27); 30s for a slow CI runner.
 }, 30_000);
 
-(chromeExecutablePath ? it : it.skip)('the "…" menu opens with Enter, moves with the arrows, closes with Escape and returns focus', async () => {
+/** Workspace's rows as the page draws them: each row's words (title, quiet line, value), and whether it is open. */
+const WORKSPACE_ROWS = `[...document.querySelectorAll('main [data-workspace-row] > button, main a[href].rounded-none')].map((row) => ({ title: row.querySelector('.text-row-title').textContent, name: row.innerText.replace(/\\s+/g, ' ').trim().slice(0, 60), expanded: row.getAttribute('aria-expanded'), height: row.offsetHeight }))`;
+/** Opens Workspace from the bar's "…", the way a person does. */
+async function openWorkspace() {
+  await page!.evaluate(`document.querySelector('[data-slot="app-bar"] a[aria-label="Workspace"]').click()`);
+  await waitFor(`new URLSearchParams(location.search).get('view') === 'workspace' && document.querySelector('[data-workspace-row]')`, 'Workspace');
+}
+/** A Workspace row that opens its choice under itself, found by the words it starts with. */
+const workspaceRow = (words: string) => `[...document.querySelectorAll('main [data-workspace-row] > button')].find((button) => button.textContent.trim().startsWith(${JSON.stringify(words)}))`;
+/** Opens one of Workspace's choices by its row and presses one of its options (a toggle), by its words or its lang. */
+async function chooseInWorkspace(row: string, option: string) {
+  if (await page!.evaluate(`${workspaceRow(row)}.getAttribute('aria-expanded')`) !== 'true') await page!.evaluate(`${workspaceRow(row)}.click()`);
+  await waitFor(`${workspaceRow(row)}.getAttribute('aria-expanded') === 'true'`, `the ${row} choice open`);
+  await page!.evaluate(`[...document.getElementById(${workspaceRow(row)}.getAttribute('aria-controls')).querySelectorAll('[role="radio"]')].find((item) => item.textContent.trim() === ${JSON.stringify(option)} || item.getAttribute('lang') === ${JSON.stringify(option)}).click()`);
+  await page!.settle();
+}
+
+(chromeExecutablePath ? it : it.skip)('while the work cannot be read, "…" opens Workspace, and its Theme and Language work there', async () => {
+  await openShell({ query: '&fail-reads=1' });
+  try {
+    await desktop();
+    expect(await page!.evaluate(`document.querySelector('main [role="alert"] h2')?.textContent ?? null`)).toBe('Local work couldn’t load');
+    await openWorkspace();
+    // Workspace, in place of the failed screen, every row there. Machine and sync's quiet line names no feed state,
+    // since no feed was read: the fixture's source is the sample, so it says that, as Machine and sync does.
+    expect(await page!.evaluate(`[document.querySelector('main h1').textContent, !!document.querySelector('main [role="alert"]')]`)).toEqual(['Workspace', false]);
+    const rows: { title: string; name: string }[] = await page!.evaluate(WORKSPACE_ROWS);
+    expect(rows.map((row) => row.title)).toEqual(['Theme', 'Language', 'Focus area artwork', 'Machine and sync', 'Memory viewer', 'Memory settings', 'Team view', 'Help and feedback', 'Developer options']);
+    expect(rows.find((row) => row.title === 'Machine and sync')?.name).toBe('Machine and sync Sample data · not your work');
+    await page!.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
+    await chooseInWorkspace('Theme', 'Dark mode');
+    expect(await page!.evaluate('[window.isDark(), window.savedTheme()]')).toEqual([true, 'dark']);
+    await chooseInWorkspace('Language', 'fr');
+    await waitFor(`document.documentElement.lang === 'fr' && document.querySelector('main h1')?.textContent === 'Espace de travail'`, 'Workspace in French');
+    // Another page goes back to the failed screen, in the language and theme just chosen.
+    await pressPlace('Mes règles');
+    await waitFor(`document.querySelector('main [role="alert"]')`, 'the failed screen again');
+    expect(await page!.evaluate('window.isDark()')).toBe(true);
+    await page!.evaluate(`window.setLocale('en')`);
+    await page!.send('Emulation.setEmulatedMedia', { features: [] });
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeShell(); }
+  // 1.2–1.4s here (2026-11-28, three runs); 30s for a slow CI runner.
+}, 30_000);
+
+(chromeExecutablePath ? it : it.skip)('"…" opens Workspace: its sections and rows, one choice open at a time, and no star count asked of GitHub', async () => {
   await openShell();
   try {
     await desktop();
-    const trigger = await tabTo((focus) => focus.name === 'More', 'the menu button');
-    expect(trigger.expanded).toBe('false');
-    // The star count is seen only in the menu, so GitHub is asked when the menu first opens, not when the page loads.
+    const trigger = await tabTo((focus) => focus.name === 'Workspace', 'the "…" link');
+    expect(trigger.inBar).toBe(true);
+    await press('Enter');
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'workspace' && document.querySelector('[data-workspace-row]')`, 'Workspace from "…"');
+    expect(await page!.evaluate(`[document.querySelector('main h1').textContent, ...[...document.querySelectorAll('main h2')].map((heading) => heading.textContent)]`))
+      .toEqual(['Workspace', 'Appearance', 'This computer', 'Tools and support']);
+    // "…" is marked while Workspace is shown; no place is.
+    expect(currentPlace(await page!.evaluate('window.headerControls()'))).toEqual(['Workspace']);
+    const rows: { title: string; name: string; expanded: string | null; height: number }[] = await page!.evaluate(WORKSPACE_ROWS);
+    expect(rows.map((row) => row.title)).toEqual(['Theme', 'Language', 'Focus area artwork', 'Machine and sync', 'Memory viewer', 'Memory settings', 'Team view', 'Help and feedback', 'Developer options']);
+    // A choice says its value on its row: the theme in use (System, from the OS) and the language.
+    expect(rows.slice(0, 2).map((row) => row.name)).toEqual(['Theme System', 'Language English']);
+    // This computer's rows go somewhere: Machine and sync in the page, and Memory's own pages.
+    expect(await page!.evaluate(`[...document.querySelectorAll('main a[href].rounded-none')].map((link) => { const url = new URL(link.href); url.searchParams.delete('source'); return url.pathname + url.search + url.hash; })`))
+      .toEqual(['/?view=machine', '/viewer', '/viewer#/settings']);
+    // Account & billing is for the cloud viewer only; the star count and the team plan promotion left with the menu.
+    expect(rows.some((row) => row.name.startsWith('Account & billing'))).toBe(false);
+    expect(await page!.evaluate(`document.querySelectorAll('[data-star-count]').length`)).toBe(0);
+    // Desktop rows are at least 40px (D b9 M 191); every choice starts closed.
+    for (const row of rows) expect(row.height).toBeGreaterThanOrEqual(40);
+    expect(rows.filter((row) => row.expanded === 'true')).toEqual([]);
+    // A closed row names nothing it controls: its choice is drawn only while it is open.
+    expect(await page!.evaluate(`[...document.querySelectorAll('main [data-workspace-row] > button')].filter((button) => button.hasAttribute('aria-controls')).length`)).toBe(0);
+    // One choice open at a time: opening Language closes Theme, so every language and theme are never shown at once.
+    await page!.evaluate(`${workspaceRow('Theme')}.focus()`);
+    await press('Enter');
+    await waitFor(`${workspaceRow('Theme')}.getAttribute('aria-expanded') === 'true'`, 'Theme open');
+    expect(await page!.evaluate(`[...document.querySelectorAll('main [role="radio"]')].map((item) => item.dataset.themeChoice)`)).toEqual([...THEME_CHOICES]);
+    await page!.evaluate(`${workspaceRow('Language')}.focus()`);
+    await press('Enter');
+    await waitFor(`${workspaceRow('Language')}.getAttribute('aria-expanded') === 'true' && ${workspaceRow('Theme')}.getAttribute('aria-expanded') === 'false'`, 'Language open and Theme closed');
+    expect(await page!.evaluate(`[...document.querySelectorAll('main [role="radio"]')].map((item) => item.getAttribute('lang'))`)).toEqual(LOCALES);
+    // The artwork choice moved here from the home page's board: the same saved preference.
+    await chooseInWorkspace('Focus area artwork', 'Off');
+    expect(await page!.evaluate(`window.store.getState().view.focusArtwork`)).toBe('off');
+    expect(JSON.parse(await page!.evaluate(`localStorage.getItem('claude-mem:my-work:preferences')`)).state.focusArtwork).toBe('off');
+    // Developer options opens its own switch.
+    await page!.evaluate(`${workspaceRow('Developer options')}.click()`);
+    await page!.evaluate(`document.getElementById(${workspaceRow('Developer options')}.getAttribute('aria-controls')).querySelector('[role="switch"]').click()`);
+    await waitFor(`window.store.getState().view.showSpec === true`, 'spec IDs shown');
+    await page!.evaluate(`window.store.getState().setShowSpec(false)`);
+    // Help and feedback: the documentation, the feedback form and the repository, each another site.
+    await page!.evaluate(`${workspaceRow('Help and feedback')}.click()`);
+    await waitFor(`${workspaceRow('Help and feedback')}.getAttribute('aria-expanded') === 'true'`, 'Help and feedback open');
+    expect(await page!.evaluate(`[...document.getElementById(${workspaceRow('Help and feedback')}.getAttribute('aria-controls')).querySelectorAll('a[href]')].map((link) => [link.textContent.trim(), link.target])`))
+      .toEqual([['Documentation', '_blank'], ['Send feedback', '_blank'], ['claude-mem on GitHub', '_blank']]);
     expect(await page!.evaluate('window.githubStarReads')).toBe(0);
-    await press('Enter');
-    await waitFor('window.menu()', 'the menu');
-    const first = await focused();
-    expect(first.inMenu).toBe(true);
-    await press('ArrowDown');
-    const second = await focused();
-    expect(second.inMenu).toBe(true);
-    expect(second.name).not.toBe(first.name);
-    await press('ArrowUp');
-    expect((await focused()).name).toBe(first.name);
-    const menu = await page!.evaluate('window.menu()');
-    // G6's rows: Team view, the team plan, Language, the three themes, Feedback, Star with its count, Show spec IDs.
-    const names = menu.rows.map((row: { name: string }) => row.name);
-    for (const expected of ['Team view', 'Start team plan', 'Language', 'System', 'Light mode', 'Dark mode', 'Send feedback', 'Star on GitHub', 'Show spec IDs']) {
-      expect(names.some((name: string) => name.startsWith(expected))).toBe(true);
-    }
-    expect(names.find((name: string) => name.startsWith('Star on GitHub'))).toContain('117.5K');
-    // Memory is in the bar at this width, so not in the menu; Account & billing is for the cloud viewer only.
-    expect(names.some((name: string) => name.startsWith(MEMORY) || name.startsWith('Account & billing'))).toBe(false);
-    // Desktop rows are at least 40px (D b9 M 191).
-    for (const row of menu.rows) expect(row.height).toBeGreaterThanOrEqual(40);
-    await press('Escape');
-    await waitFor('!window.menu()', 'the menu to close');
-    expect((await focused()).name).toBe('More');
-    // Opened again, the menu shows the count it has: one read for the page.
-    await press('Enter');
-    await waitFor('window.menu()', 'the menu again');
-    expect(await page!.evaluate('window.githubStarReads')).toBe(1);
-    await press('Escape');
-    await waitFor('!window.menu()', 'the menu to close again');
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }
-  // 1–2s here (2026-11-16); 30s for a slow CI runner.
-}, 30_000);
-
-(chromeExecutablePath ? it : it.skip)('a star count GitHub does not give shows "—" with its reason, not a loading bar that never ends', async () => {
-  await openShell({ query: '&github=refuse' });
-  try {
-    await desktop();
-    await tabTo((focus) => focus.name === 'More', 'the menu button');
-    await press('Enter');
-    await waitFor('window.menu()', 'the menu');
-    const starCount = `document.querySelector('[role="menu"] [data-star-count]')`;
-    await waitFor(`${starCount}?.getAttribute('data-star-count') === 'unavailable'`, 'the star count to say it is unavailable');
-    const shown = await page!.evaluate(`({ text: ${starCount}.textContent, loadingBars: ${starCount}.querySelectorAll('[aria-hidden="true"].rounded-full').length })`);
-    expect(shown.text).toContain('—');
-    expect(shown.text).toContain('Star count unavailable');
-    expect(shown.loadingBars).toBe(0);
-    expect(await page!.evaluate('window.githubStarReads')).toBe(1);
-    await press('Escape');
-    expect(fixtureErrors).toEqual([]);
-  } finally { await closeShell(); }
-  // 1–2s here, like the menu test above (2026-11-16); 30s for a slow CI runner.
+  // 1–2s here (2026-11-27); 30s for a slow CI runner.
 }, 30_000);
 
 (chromeExecutablePath ? it : it.skip)('G8: a ?theme= address lasts the visit and is never saved, even after other changes are', async () => {
@@ -507,14 +562,10 @@ async function pressPlace(name: string, { phone = false } = {}) {
     await page!.evaluate("window.store.getState().setFilter('working')");
     await page!.settle();
     expect(await page!.evaluate('[window.isDark(), window.savedTheme()]')).toEqual([true, 'system']);
-    // A choice in the menu is the person's own: saved, and the address stops overriding it.
-    await tabTo((focus) => focus.name === 'More', 'the menu button');
-    await press('Enter');
-    await waitFor('window.menu()', 'the menu');
-    expect((await page!.evaluate('window.menu()')).rows.find((row: { name: string }) => row.name.startsWith('Dark mode'))?.checked).toBe('true');
-    await page!.evaluate('window.clickMenuRow("Light mode")');
-    await waitFor('!window.menu()', 'the menu to close');
-    await page!.settle();
+    // A choice on Workspace is the person's own: saved, and the address stops overriding it.
+    await openWorkspace();
+    expect(await page!.evaluate(`[...document.querySelectorAll('main [data-workspace-row] > button')].find((button) => button.textContent.trim().startsWith('Theme')).textContent`)).toContain('Dark mode');
+    await chooseInWorkspace('Theme', 'Light mode');
     expect(await page!.evaluate('[window.isDark(), window.savedTheme(), new URL(location.href).searchParams.has("theme")]')).toEqual([false, 'light', false]);
     // ...and stop carrying it once it no longer sets the visit's theme (a new tab or a copied link would force dark).
     expect(new Set(await page!.evaluate(linkThemes))).toEqual(new Set([null]));
@@ -523,19 +574,13 @@ async function pressPlace(name: string, { phone = false } = {}) {
   // 1–2s here (2026-11-16); 30s for a slow CI runner.
 }, 30_000);
 
-(chromeExecutablePath ? it : it.skip)('G8: Theme in the menu changes the page and is saved; System follows the OS; setup stays light', async () => {
+(chromeExecutablePath ? it : it.skip)('G8: Theme on Workspace changes the page and is saved; System follows the OS; setup stays light', async () => {
   await openShell();
   try {
     await desktop();
     await page!.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
-    const choose = async (theme: string) => {
-      await tabTo((focus) => focus.name === 'More', 'the menu button');
-      await press('Enter');
-      await waitFor('window.menu()', 'the menu');
-      await page!.evaluate(`window.clickMenuRow(${JSON.stringify(theme)})`);
-      await waitFor('!window.menu()', 'the menu to close');
-      await page!.settle();
-    };
+    await openWorkspace();
+    const choose = (theme: string) => chooseInWorkspace('Theme', theme);
     await choose('Dark mode');
     expect(await page!.evaluate('[window.isDark(), window.savedTheme()]')).toEqual([true, 'dark']);
     await choose('Light mode');
@@ -567,9 +612,9 @@ async function pressPlace(name: string, { phone = false } = {}) {
     // Nothing scrolls sideways, at the width named: the window is that wide, the page that wide or a classic scrollbar
     // narrower (Linux CI draws a 15px one; a touch phone none), and nothing runs past it.
     expect(pageFitsTheWindow(await page!.evaluate(PAGE_WIDTHS), 390, { touch: true })).toMatchObject(FITS_THE_WINDOW);
-    // The top keeps the brand and the menu, which holds Memory; the places are the bottom bar.
+    // The top keeps the brand, Find work's mark and "…" (Workspace, which holds Memory); the places are the bottom bar.
     const controls: { name: string; height: number; width: number }[] = await page!.evaluate('window.headerControls()');
-    expect(controls.map((control) => control.name)).toEqual(['claude-mem', 'More']);
+    expect(controls.map((control) => control.name)).toEqual(['claude-mem', 'Find work', 'Workspace']);
     expect(controls.filter((control) => control.height < 44 || control.width < 44)).toEqual([]);
     const places: { name: string; height: number; width: number; current: string | null }[] = await page!.evaluate('window.bottomBarControls()');
     expect(places.map((place) => place.name)).toEqual(PHONE_PLACES);
@@ -590,22 +635,25 @@ async function pressPlace(name: string, { phone = false } = {}) {
     // (The switch items' "· localhost:37777" and "· cmem.ai" are drawn from 768px up only.)
     expect(strip.map((control) => control.name.split('·')[0].trim())).toEqual(['At home', 'On the go', 'Use my data', 'Hide banner']);
     expect(strip.filter((control) => control.height < 44 || control.width < 44)).toEqual([]);
-    await tabTo((focus) => focus.name === 'More', 'the menu button');
-    await press('Enter');
-    await waitFor('window.menu()', 'the menu');
-    const menu = await page!.evaluate('window.menu()');
-    expect(menu.rows.some((row: { name: string }) => row.name.startsWith(MEMORY))).toBe(true);
-    expect(menu.rows.filter((row: { height: number }) => row.height < 44)).toEqual([]);
-    // Every language is a row of the menu itself at this width, wholly on the screen (a side menu opened 18px past the
-    // left edge and cut the first letters of each name).
-    const languages: { lang: string; left: number; right: number }[] = await page!.evaluate(`[...document.querySelectorAll('[role="menu"] [role="menuitemradio"][lang]')]
-      .map((row) => { const box = row.getBoundingClientRect(); return { lang: row.getAttribute('lang'), left: Math.floor(box.left), right: Math.ceil(box.right) } })`);
+    // Workspace holds Memory on a phone, and every row there is 44px or more.
+    await openWorkspace();
+    const rows: { name: string; height: number }[] = await page!.evaluate(WORKSPACE_ROWS);
+    expect(rows.some((row) => row.name.startsWith('Memory viewer'))).toBe(true);
+    expect(rows.filter((row) => row.height < 44)).toEqual([]);
+    expect(pageFitsTheWindow(await page!.evaluate(PAGE_WIDTHS), 390, { touch: true })).toMatchObject(FITS_THE_WINDOW);
+    // Every language is a choice under its row, wholly on the screen (a side menu once opened 18px past the left edge
+    // and cut the first letters of each name), each 44px or more.
+    await page!.evaluate(`${workspaceRow('Language')}.click()`);
+    await waitFor(`${workspaceRow('Language')}.getAttribute('aria-expanded') === 'true'`, 'the Language choice open');
+    const languages: { lang: string; left: number; right: number; height: number }[] = await page!.evaluate(`[...document.querySelectorAll('main [role="radio"][lang]')]
+      .map((row) => { const box = row.getBoundingClientRect(); return { lang: row.getAttribute('lang'), left: Math.floor(box.left), right: Math.ceil(box.right), height: box.height } })`);
     expect(languages.map((language) => language.lang)).toEqual(LOCALES);
-    expect(languages.filter((language) => language.left < 0 || language.right > 390)).toEqual([]);
-    await page!.evaluate(`document.querySelector('[role="menuitemradio"][lang="pt-BR"]').click()`);
-    await waitFor('!window.menu()', 'the menu to close');
+    expect(languages.filter((language) => language.left < 0 || language.right > 390 || language.height < 44)).toEqual([]);
+    await chooseInWorkspace('Language', 'pt-BR');
     await waitFor(`document.documentElement.lang === 'pt-BR' && document.querySelector('[data-slot="bottom-bar"][aria-label="Páginas"]')`, 'the navigation in Brazilian Portuguese');
     await page!.evaluate("window.setLocale('en')");
+    await pressPlace('My Work', { phone: true });
+    await waitFor(`!new URLSearchParams(location.search).get('view')`, 'home again');
     await page!.settle();
     // The page ends above the pinned bottom bar.
     await page!.evaluate('window.scrollTo(0, document.documentElement.scrollHeight)');
@@ -647,11 +695,15 @@ async function pressPlace(name: string, { phone = false } = {}) {
     // The app restores positions itself, once the page is drawn; the browser's own restore is off.
     expect(await page!.evaluate('history.scrollRestoration')).toBe('manual');
     await page!.evaluate('window.scrollTo(0, 1200)');
-    await waitFor('Math.round(scrollY) === 1200', 'the home page scrolled');
+    // The sample strip folds away as the page scrolls (hideOnScroll), and the browser's scroll anchoring may then move
+    // the window by a pixel or two: the position the person left is wherever it settles.
+    await waitFor('Math.abs(scrollY - 1200) <= 3', 'the home page scrolled');
+    await page!.settle();
+    const homeY: number = await page!.evaluate('scrollY');
     await pressPlace('My Rules');
     await waitFor(`document.querySelector('main h1')?.textContent === 'My Rules' && scrollY === 0`, 'My Rules from its top');
     await page!.evaluate('history.back()');
-    await waitFor(`!new URLSearchParams(location.search).get('view') && document.getElementById('all-requests') && Math.abs(scrollY - 1200) <= 1`, 'home at 1200px again');
+    await waitFor(`!new URLSearchParams(location.search).get('view') && document.getElementById('all-requests') && Math.abs(scrollY - ${homeY}) <= 1`, 'home where it was left again');
     // Requests opens at its board; the person scrolls on past it, goes Back home, then Forward: Requests comes back where
     // it was left, not at its board (the entry left by Back keeps its own position).
     await pressPlace('Requests');
@@ -662,7 +714,7 @@ async function pressPlace(name: string, { phone = false } = {}) {
     await page!.evaluate(`window.scrollTo(0, ${past})`);
     await waitFor(`Math.round(scrollY) === ${past}`, 'Requests scrolled past its board');
     await page!.evaluate('history.back()');
-    await waitFor(`!new URLSearchParams(location.search).get('view') && Math.abs(scrollY - 1200) <= 1`, 'home at 1200px after Back');
+    await waitFor(`!new URLSearchParams(location.search).get('view') && Math.abs(scrollY - ${homeY}) <= 1`, 'home where it was left, after Back');
     await page!.evaluate('history.forward()');
     await waitFor(`new URLSearchParams(location.search).get('view') === 'requests' && Math.abs(scrollY - ${past}) <= 1`, 'Requests where it was left, after Forward');
     // A reload opens that entry where it was left too, once the work has been read again, and stays there while the
@@ -678,36 +730,32 @@ async function pressPlace(name: string, { phone = false } = {}) {
   // 2–3s here (2026-11-27); 30s for a slow CI runner.
 }, 30_000);
 
-(chromeExecutablePath ? it : it.skip)('on the cloud viewer, Account & billing is a named, translated row of the "…" menu; on this computer it is not there', async () => {
+(chromeExecutablePath ? it : it.skip)('on the cloud viewer, Account & billing is a named, translated row of Workspace; on this computer it is not there', async () => {
   await openShell({ hostname: CLOUD_HOSTNAME });
   try {
     await desktop();
-    await tabTo((focus) => focus.name === 'More', 'the menu button');
-    await press('Enter');
-    await waitFor('window.menu()', 'the menu');
-    const row = `document.querySelector('[role="menu"] a[href="https://cmem.ai/account"]')`;
+    await openWorkspace();
+    // The middle panel is the cloud viewer, as Machine and sync calls it there: the page reads no computer of yours.
+    expect(await page!.evaluate(`[...document.querySelectorAll('main h2')].map((heading) => heading.textContent)`)).toEqual(['Appearance', 'Cloud viewer', 'Tools and support']);
+    const row = `document.querySelector('main a[href="https://cmem.ai/account"]')`;
     expect((await accessibleText(row)).name).toBe('Account & billing');
     expect(await page!.evaluate(`${row}.offsetHeight`)).toBeGreaterThanOrEqual(40);
-    await press('Escape');
-    await waitFor('!window.menu()', 'the menu to close');
     // Rule 4: through t(), in the reader's language.
     await page!.evaluate("window.setLocale('fr')");
     await page!.settle();
-    await page!.evaluate(`document.querySelector('[data-slot="app-bar"] button[aria-haspopup="menu"]').focus()`);
-    await press('Enter');
-    await waitFor('window.menu()', 'the menu in French');
     expect((await accessibleText(row)).name).toBe('Compte et facturation');
-    await press('Escape');
+    await page!.evaluate("window.setLocale('en')");
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }
-  // 2–3s here (2026-11-27); 30s for a slow CI runner.
+  // 1.1–1.3s here (2026-11-28, three runs); 30s for a slow CI runner.
 }, 30_000);
 
-(chromeExecutablePath ? it : it.skip)('the bar\'s places and the menu\'s feedback row are named by their visible words in every language (label in name)', async () => {
+(chromeExecutablePath ? it : it.skip)('the bar\'s places and Workspace\'s rows are named by their visible words in every language (label in name)', async () => {
   await openShell();
   try {
+    await desktop();
+    await openWorkspace();
     for (const locale of LOCALES) {
-      await desktop();
       await page!.evaluate(`window.setLocale(${JSON.stringify(locale)})`);
       await page!.settle();
       const places: number = await page!.evaluate(`document.querySelectorAll('[data-slot="app-bar"] nav a[href]').length`);
@@ -716,20 +764,19 @@ async function pressPlace(name: string, { phone = false } = {}) {
         const link = `document.querySelectorAll('[data-slot="app-bar"] nav a[href]')[${index}]`;
         expect({ locale, name: (await accessibleText(link)).name }).toEqual({ locale, name: await page!.evaluate(`${link}.textContent.trim()`) });
       }
-      await page!.evaluate(`document.querySelector('[data-slot="app-bar"] button[aria-haspopup="menu"]').focus()`);
-      await press('Enter');
-      await waitFor('window.menu()', `the menu in ${locale}`);
-      const feedback = `document.querySelector('[role="menu"] a[href*="my-work-feedback"]')`;
-      const words: string = await page!.evaluate(`${feedback}.querySelector('span').textContent.trim()`);
-      const row = await accessibleText(feedback);
-      expect({ locale, contains: row.name.includes(words), name: row.name }).toEqual({ locale, contains: true, name: row.name });
-      expect(row.description.length).toBeGreaterThan(words.length);
-      await press('Escape');
-      await waitFor('!window.menu()', 'the menu to close');
+      // Each Workspace row's name holds its visible title, whatever the language.
+      const rows: number = await page!.evaluate(`document.querySelectorAll('main [data-workspace-row] > button, main a[href].rounded-none').length`);
+      for (let index = 0; index < rows; index++) {
+        const row = `document.querySelectorAll('main [data-workspace-row] > button, main a[href].rounded-none')[${index}]`;
+        const title: string = await page!.evaluate(`${row}.querySelector('.text-row-title').textContent.trim()`);
+        const { name } = await accessibleText(row);
+        expect({ locale, title, contains: name.includes(title) }).toEqual({ locale, title, contains: true });
+      }
     }
+    await page!.evaluate("window.setLocale('en')");
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }
-  // About 3s here for five languages (2026-11-16); 45s for a slow CI runner.
+  // About 3s here for seven languages (2026-11-27); 45s for a slow CI runner.
 }, 45_000);
 
 (chromeExecutablePath ? it : it.skip)('Tab reaches the skip link, then the bar in order; Hide banner hands focus on to the bar', async () => {
@@ -741,11 +788,11 @@ async function pressPlace(name: string, { phone = false } = {}) {
     // The bar's stops in the order it draws them, after the sample strip's.
     const order: string[] = [];
     await tabTo((focus) => focus.name === 'claude-mem', 'the brand');
-    for (let step = 0; step < PLACES.length + 2; step++) {
+    for (let step = 0; step < PLACES.length + BAR_END.length; step++) {
       await press('Tab');
       order.push((await focused()).name);
     }
-    expect(order).toEqual([...PLACES, MEMORY, 'More']);
+    expect(order).toEqual([...PLACES, ...BAR_END]);
     // Hide banner: the strip leaves the page and focus goes on to the bar's first control.
     await tabTo((focus) => focus.name === 'Hide banner', 'Hide banner');
     await press('Enter');
@@ -808,4 +855,250 @@ async function pressPlace(name: string, { phone = false } = {}) {
     expect(fixtureErrors).toEqual([]);
   } finally { await closeShell(); }
   // 1–2s here (2026-11-16); 30s for a slow CI runner.
+}, 30_000);
+
+/**
+ * Presses the K key with Cmd (Meta, CDP modifier 4) or Ctrl (2), as a person opens Find work from the keyboard. `key`:
+ * the character the layout gives that key ("л" on a Russian layout).
+ */
+async function pressFindShortcut(modifier: 'meta' | 'ctrl', key = 'k') {
+  const modifiers = modifier === 'meta' ? 4 : 2;
+  await page!.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key, code: 'KeyK', windowsVirtualKeyCode: 75, nativeVirtualKeyCode: 75, modifiers });
+  await page!.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: 'KeyK', windowsVirtualKeyCode: 75, nativeVirtualKeyCode: 75, modifiers });
+  await page!.settle();
+}
+/** Find work's results as the list draws them: each group's heading words and its options, then the marked option. */
+const FIND_RESULTS = `(() => {
+  const groups = [...document.querySelectorAll('main [cmdk-group]')].map((group) => ({
+    heading: group.querySelector('[cmdk-group-heading]')?.textContent.replace(/\\s+/g, ' ').trim() ?? null,
+    options: [...group.querySelectorAll('[role="option"]')].map((option) => option.dataset.findResult ?? null),
+  }));
+  const selected = document.querySelector('main [role="option"][aria-selected="true"]');
+  return { groups, selected: selected ? selected.dataset.value ?? selected.getAttribute('data-value') : null,
+    activedescendant: document.querySelector('main [cmdk-input]').getAttribute('aria-activedescendant'), selectedId: selected?.id ?? null };
+})()`;
+
+(chromeExecutablePath ? it : it.skip)('Cmd K opens Find work from any page; typing finds focus areas, requests and rules in use; the arrows move and Enter opens the marked result', async () => {
+  await openShell();
+  try {
+    await desktop();
+    await pressPlace('My Rules');
+    await waitFor(`document.querySelector('main h1')?.textContent === 'My Rules'`, 'My Rules');
+    const entries: number = await page!.evaluate('history.length');
+    await pressFindShortcut('meta');
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'find' && document.activeElement?.hasAttribute('data-find-work-input')`, 'Find work open with its box focused');
+    expect(await page!.evaluate(`[document.querySelector('main h1').textContent, document.querySelector('[data-slot="app-bar"] a[aria-label="Find work"]').getAttribute('aria-current')]`)).toEqual(['Find work', 'page']);
+    // Nothing typed: one line saying what it finds, no results.
+    expect(await page!.evaluate(`document.querySelectorAll('main [role="option"]').length`)).toBe(0);
+    await page!.send('Input.insertText', { text: 'work' });
+    await waitFor(`document.querySelectorAll('main [role="option"]').length > 0`, 'the results');
+    const found = await page!.evaluate(FIND_RESULTS);
+    // Grouped by what each opens, in the order FIND_RESULT_GROUPS gives, each heading with its own count; Memory's search last.
+    expect(found.groups.map((group: { options: string[] }) => group.options[0])).toEqual([...FIND_RESULT_GROUPS, 'memory']);
+    for (const group of found.groups.slice(0, 3)) {
+      expect(group.options.length).toBeGreaterThan(0);
+      expect(group.heading).toEndWith(`${group.options.length} ${group.options.length === 1 ? 'match' : 'matches'}`);
+    }
+    expect(found.groups.flatMap((group: { options: string[] }) => group.options).at(-1)).toBe('memory');
+    // The words are in the address, written in place: Back leaves Find work, not one letter.
+    expect(await page!.evaluate(`new URLSearchParams(location.search).get('q')`)).toBe('work');
+    expect(await page!.evaluate('history.length')).toBe(entries + 1);
+    // One status region, there from the start, says how many results the words found (Memory's row is not one).
+    const results = found.groups.slice(0, FIND_RESULT_GROUPS.length).reduce((total: number, group: { options: string[] }) => total + group.options.filter((option) => option !== null).length, 0);
+    expect(await page!.evaluate(`document.querySelector('main [data-find-heard]').textContent`)).toBe(`${results} results`);
+    // The bar's Find work pressed on Find work keeps the words and the address, and puts the cursor back in the box.
+    await page!.evaluate('document.activeElement.blur()');
+    await page!.evaluate(`document.querySelector('[data-slot="app-bar"] a[aria-label="Find work"]').click()`);
+    await waitFor(`document.activeElement?.hasAttribute('data-find-work-input')`, 'the box focused by the bar link');
+    expect(await page!.evaluate(`[new URLSearchParams(location.search).get('q'), history.length]`)).toEqual(['work', entries + 1]);
+    // The first result is marked, so Enter opens it; the arrows move the mark and the box says which (activedescendant:
+    // cmdk names the marked result once the keyboard has moved it).
+    expect(found.groups[0].options[0]).toBe('areas');
+    expect(found.selectedId).toBe(await page!.evaluate(`document.querySelector('main [role="option"]').id`));
+    const first = found.selectedId;
+    await press('ArrowDown');
+    const moved = await page!.evaluate(FIND_RESULTS);
+    expect(moved.selectedId).not.toBe(first);
+    expect(moved.activedescendant).toBe(moved.selectedId);
+    await press('ArrowUp');
+    const back = await page!.evaluate(FIND_RESULTS);
+    expect([back.selectedId, back.activedescendant]).toEqual([first, first]);
+    const firstArea: string = await page!.evaluate(`document.querySelector('main [role="option"][aria-selected="true"]').textContent`);
+    await press('Enter');
+    await waitFor(`new URLSearchParams(location.search).get('focus') && document.querySelector('[data-focus-header]')`, 'the first area opened');
+    expect(firstArea).toContain(await page!.evaluate(`document.querySelector('[data-focus-header] h2').textContent`));
+    // Back returns to Find work with the same words and results.
+    await page!.evaluate('history.back()');
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'find' && document.querySelector('main [data-find-work-input]')?.value === 'work' && document.querySelectorAll('main [role="option"]').length > 0`, 'Find work again, with its words');
+    // Ctrl K while Find work is open puts the cursor back in its box.
+    await page!.evaluate('document.activeElement.blur()');
+    await pressFindShortcut('ctrl');
+    await waitFor(`document.activeElement?.hasAttribute('data-find-work-input')`, 'the box focused by Ctrl K');
+    // The same key on a Russian layout (it types "л") is the same shortcut: the key is read by its place.
+    await page!.evaluate('document.activeElement.blur()');
+    await pressFindShortcut('ctrl', 'л');
+    await waitFor(`document.activeElement?.hasAttribute('data-find-work-input')`, 'the box focused by Ctrl K on a Russian layout');
+    // A rule in use opens My Rules at that rule, once its page has drawn it.
+    const rule = `document.querySelector('main [role="option"][data-find-result="rules"]')`;
+    const ruleId: string = await page!.evaluate(`${rule}.dataset.value ?? ${rule}.getAttribute('data-value')`);
+    await page!.evaluate(`${rule}.click()`);
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'rules' && document.getElementById(${JSON.stringify(ruleId.replace('rule:', 'rule-'))})`, 'My Rules with the rule');
+    await waitFor(`(() => { const box = document.getElementById(${JSON.stringify(ruleId.replace('rule:', 'rule-'))}).getBoundingClientRect(); return box.top >= 0 && box.top < innerHeight; })()`, 'the rule in view');
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeShell(); }
+  // 1.6–1.7s here (2026-11-28, three runs); 30s for a slow CI runner.
+}, 30_000);
+
+(chromeExecutablePath ? it : it.skip)('on a touch phone, Find work\'s mark in the bar opens it; results fit the 390px page, each 44px or more, and a request opens over it', async () => {
+  await openShell();
+  try {
+    await page!.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await page!.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+    await page!.settle();
+    await page!.evaluate(`document.querySelector('[data-slot="app-bar"] a[aria-label="Find work"]').click()`);
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'find' && document.querySelector('main [data-find-work-input]')`, 'Find work');
+    await page!.evaluate(`document.querySelector('main [data-find-work-input]').focus()`);
+    await page!.send('Input.insertText', { text: 'work' });
+    await waitFor(`document.querySelectorAll('main [role="option"]').length > 0`, 'the results');
+    expect(pageFitsTheWindow(await page!.evaluate(PAGE_WIDTHS), 390, { touch: true })).toMatchObject(FITS_THE_WINDOW);
+    const small = await page!.evaluate(`[...document.querySelectorAll('main [role="option"]')].map((option) => ({ name: option.textContent.trim().slice(0, 30), height: option.getBoundingClientRect().height })).filter((option) => option.height < 44)`);
+    expect(small).toEqual([]);
+    // A request opens over Find work: its drawer, with the words kept in the address for the way back.
+    await page!.evaluate(`document.querySelector('main [role="option"][data-find-result="requests"]').click()`);
+    await waitFor(`new URLSearchParams(location.search).get('request') && new URLSearchParams(location.search).get('q') === 'work'`, 'the request opened over Find work');
+    await page!.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeShell(); }
+  // 1–2s here (2026-11-28); 30s for a slow CI runner.
+}, 30_000);
+
+(chromeExecutablePath ? it : it.skip)('Find work\'s "Show 10 more" marks the first request it added, so the arrows and Enter carry on from there (G4)', async () => {
+  await openShell({ query: '&requests=many' });
+  try {
+    await desktop();
+    await pressFindShortcut('meta');
+    await waitFor(`document.activeElement?.hasAttribute('data-find-work-input')`, 'Find work with its box focused');
+    await page!.send('Input.insertText', { text: 'zebracopy' });
+    const more = `document.querySelector('main [role="option"][data-value="requests:more"]')`;
+    await waitFor(more, 'Show more');
+    expect(await page!.evaluate(`[document.querySelectorAll('main [role="option"][data-find-result="requests"]').length, ${more}.textContent.trim()]`)).toEqual([50, 'Show 10 more · 10 left']);
+    await page!.evaluate(`${more}.click()`);
+    await waitFor(`document.querySelectorAll('main [role="option"][data-find-result="requests"]').length === 60`, 'the ten added requests');
+    await page!.settle();
+    const marked = `document.querySelector('main [role="option"][aria-selected="true"]')?.dataset.value ?? null`;
+    expect(await page!.evaluate(marked)).toBe('request:zebracopy-51');
+    // The cursor stays in the box, and the arrows go on from the first added request.
+    expect(await page!.evaluate(`document.activeElement?.hasAttribute('data-find-work-input')`)).toBe(true);
+    await press('ArrowDown');
+    expect(await page!.evaluate(marked)).toBe('request:zebracopy-52');
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeShell(); }
+  // 1.5–1.6s here (2026-11-28, three runs); 30s for a slow CI runner.
+}, 30_000);
+
+(chromeExecutablePath ? it : it.skip)('Cmd K does nothing while a dialog is open: the edit typed in a focus area\'s Rename dialog stays', async () => {
+  await openShell();
+  try {
+    await desktop();
+    await page!.evaluate(`window.store.getState().goToFocus(window.store.getState().work.load.model.focusAreas.find((area) => area.status === 'kept').id)`);
+    await waitFor(`document.querySelector('[data-focus-header] button[aria-label^="Change "]')`, 'a focus area page');
+    // Rename, from the area's menu, by the keyboard.
+    await page!.evaluate(`document.querySelector('[data-focus-header] button[aria-label^="Change "]').focus()`);
+    await press('Enter');
+    await waitFor(`document.querySelector('[role="menu"]')`, 'the area menu');
+    await page!.evaluate(`[...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent.trim() === 'Rename').focus()`);
+    await press('Enter');
+    await waitFor(`document.querySelector('[role="dialog"] input')`, 'the Rename dialog');
+    await page!.evaluate(`document.querySelector('[role="dialog"] input').focus()`);
+    await page!.send('Input.insertText', { text: ' typed' });
+    const typed: string = await page!.evaluate(`document.querySelector('[role="dialog"] input').value`);
+    expect(typed).toEndWith(' typed');
+    const address: string = await page!.evaluate('location.href');
+    await pressFindShortcut('meta');
+    await pressFindShortcut('ctrl');
+    expect(await page!.evaluate(`[location.href, document.querySelector('[role="dialog"] input')?.value ?? null, document.activeElement === document.querySelector('[role="dialog"] input')]`))
+      .toEqual([address, typed, true]);
+    expect(await page!.evaluate(`document.querySelectorAll('[role="dialog"][data-state="open"]').length`)).toBe(1);
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeShell(); }
+  // 1.1–1.3s here (2026-11-28, three runs); 30s for a slow CI runner.
+}, 30_000);
+
+(chromeExecutablePath ? it : it.skip)('a failed review is one line under the title of each page that showed the refresh banner, and Review details opens Machine and sync', async () => {
+  await openShell({ query: `&sample-state=refresh-failed` });
+  try {
+    await desktop();
+    const lineUnderTitle = `document.querySelector('main h1 + [data-review-failed-line]')`;
+    // Every page, from the one page list, split by the frame each page is drawn in (lib/page-frame.ts).
+    for (const section of WORK_VIEW_SECTIONS.filter((page) => PAGE_FRAME[page].reviewLine)) {
+      await page!.evaluate(`window.store.getState().goToPage(${JSON.stringify(section)})`);
+      await waitFor(lineUnderTitle, `the failure line on ${section}`);
+      expect({ section, lines: await page!.evaluate(`document.querySelectorAll('[data-review-failed-line]').length`) }).toEqual({ section, lines: 1 });
+    }
+    // A focus area's page names it in its own header, so the line sits under the area's name there.
+    await page!.evaluate(`window.store.getState().goToFocus(window.store.getState().work.load.model.focusAreas.find((area) => area.status === 'kept').id)`);
+    await waitFor(`document.querySelector('[data-focus-header] [data-review-failed-line]')`, 'the failure line in the area header');
+    expect(await page!.evaluate(`document.querySelectorAll('[data-review-failed-line]').length`)).toBe(1);
+    // Not on pages that never had the banner, nor on Machine and sync, which shows the review itself.
+    for (const section of WORK_VIEW_SECTIONS.filter((page) => !PAGE_FRAME[page].reviewLine)) {
+      await page!.evaluate(`window.store.getState().goToPage(${JSON.stringify(section)})`);
+      await waitFor(`new URLSearchParams(location.search).get('view') === ${JSON.stringify(section)} && document.querySelector('main h1')`, section);
+      await page!.settle();
+      expect({ section, lines: await page!.evaluate(`document.querySelectorAll('[data-review-failed-line]').length`) }).toEqual({ section, lines: 0 });
+    }
+    await page!.evaluate(`window.store.getState().goToPage('work')`);
+    await waitFor(lineUnderTitle, 'the failure line on Home again');
+    const line: string = await page!.evaluate(`${lineUnderTitle}.innerText`);
+    // The failure was on screen when the line was drawn: page text, not news.
+    expect(await page!.evaluate(`${lineUnderTitle}.getAttribute('role')`)).toBe('status');
+    expect(line).toContain('Review failed at');
+    expect(line).toContain('Last reviewed at');
+    await page!.evaluate(`[...${lineUnderTitle}.querySelectorAll('a[href]')].find((link) => link.textContent.trim() === 'Review details').click()`);
+    await waitFor(`new URLSearchParams(location.search).get('view') === 'machine' && document.querySelector('[data-focus-review=failed]')`, 'Machine and sync with the failed review');
+    expect(await page!.evaluate(`[document.querySelectorAll('[data-review-failed-line]').length, document.querySelector('main nav[aria-label="Breadcrumb"] a')?.textContent ?? null]`)).toEqual([0, 'Workspace']);
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeShell(); }
+  // 1.3–1.4s here (2026-11-28, three runs); 30s for a slow CI runner.
+}, 30_000);
+
+(chromeExecutablePath ? it : it.skip)('a review that fails while the page is open is announced: its failure line is an alert', async () => {
+  await openShell();
+  try {
+    await desktop();
+    await waitFor(`document.querySelector('main h1')?.textContent === 'My Work'`, 'Home');
+    expect(await page!.evaluate(`document.querySelectorAll('[data-review-failed-line]').length`)).toBe(0);
+    // The worker's record turns failed while Home is open, as refresh.json does when a review fails.
+    await page!.evaluate(`window.store.setState((state) => ({ work: { ...state.work, load: { ...state.work.load, model: { ...state.work.load.model,
+      refresh: { state: 'failed', finishedAt: 'Nov 28 at 2:40 am', finishedAtIso: '2026-11-28T10:40:00.000Z', error: 'a new cause' } } } } }))`);
+    await waitFor(`document.querySelector('main h1 + [data-review-failed-line]')`, 'the failure line');
+    expect(await page!.evaluate(`document.querySelector('main h1 + [data-review-failed-line]').getAttribute('role')`)).toBe('alert');
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeShell(); }
+  // 0.9s here (2026-11-28, three runs); 30s for a slow CI runner.
+}, 30_000);
+
+(chromeExecutablePath ? it : it.skip)('Machine and sync\'s Focus review says when the goals run last finished, and when its result could not be read, what failed', async () => {
+  const goalsRun = `document.querySelector('main [data-goals-run]')`;
+  await openShell();
+  try {
+    await desktop();
+    await page!.evaluate(`window.store.getState().goToPage('machine')`);
+    await waitFor(goalsRun, 'the goals run on Machine and sync');
+    expect(await page!.evaluate(`[${goalsRun}.dataset.goalsRun, ${goalsRun}.innerText.replace(/\\s+/g, ' ').trim()]`))
+      .toEqual(['read', 'Last goals run Today, 11:02 am Suggested and Past focus come from it. Ran on MacBook Pro.']);
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeShell(); }
+  await openShell({ query: '&sample-state=months-unreadable' });
+  try {
+    await desktop();
+    await page!.evaluate(`window.store.getState().goToPage('machine')`);
+    await waitFor(goalsRun, 'the goals run on Machine and sync');
+    expect(await page!.evaluate(`[${goalsRun}.dataset.goalsRun, ${goalsRun}.querySelector('p').textContent]`)).toEqual(['unreadable', 'The last goals run could not be read.']);
+    // What failed is one press away, folded (G17).
+    expect(await page!.evaluate(`${goalsRun}.innerText.includes('owner-goals/2026-10-18')`)).toBe(false);
+    await page!.evaluate(`[...${goalsRun}.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Technical details').click()`);
+    await waitFor(`${goalsRun}.innerText.includes('owner-goals/2026-10-18 is unreadable')`, 'the cause under Technical details');
+    expect(fixtureErrors).toEqual([]);
+  } finally { await closeShell(); }
+  // 2.3–2.4s for its two Chromes here (2026-11-28, three runs); 30s for a slow CI runner.
 }, 30_000);

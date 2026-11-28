@@ -10,6 +10,8 @@ export interface SyncStatusForDisplay {
   observedAt: number;
   message: string;
   download: { lastSuccessAt: number | null } | null;
+  /** Records on this device still waiting to upload: the worker's status carries it (src/shared/viewer-sync-status.ts); a status built elsewhere may leave it out. */
+  upload?: { pending: number } | null;
   projection: { remaining: string | null };
   completeness: { pushQuarantine: number; pullQuarantine: number; excludedNative: number | null; scope: 'eligible' | 'local-history-excluded' | 'unknown' };
 }
@@ -27,9 +29,14 @@ export interface SyncPresentation {
   detailParts?: SyncDetailParts;
   tone: 'neutral' | 'positive' | 'warning';
   isCurrent: boolean;
+  /**
+   * How many records on this device are waiting to upload, as the worker counted them; null when it did not say (sync
+   * off, or an older worker). My Work's Machine and sync shows it.
+   */
+  pendingUpload?: number | null;
 }
 
-type SyncDeliveryMode = Exclude<SyncStatusForDisplay['mode'], 'disabled'>;
+export type SyncDeliveryMode = Exclude<SyncStatusForDisplay['mode'], 'disabled'>;
 type SyncDetailParts = { sentence: string; mode: SyncDeliveryMode | null; remaining: string | null };
 
 /** The sentence after the state sentence that says how updates arrive. */
@@ -48,7 +55,7 @@ export const SYNC_VIEWER_SENTENCES = {
   unconfirmed: 'Cloud freshness has not been confirmed.',
 } as const;
 
-/** The short label for each sync state (the classic viewer's header and My Work's connection chip word it by t()). */
+/** The short label for each sync state (the classic viewer's header and My Work's Machine and sync page word it by t()). */
 export const SYNC_STATE_LABELS: Record<SyncStatusForDisplay['state'], string> = {
   unconfigured: 'Cloud sync off', unknown: 'Cloud freshness unknown', current: 'Cloud data current',
   'catching-up': 'Cloud catching up', paused: 'Cloud sync paused', offline: 'Cloud sync unavailable',
@@ -69,7 +76,7 @@ function joinSyncDetail(parts: SyncDetailParts, t: (english: string) => string):
 
 /**
  * The sync state's full words in the reader's language (`t`): the one rule for them, which the classic viewer's
- * header and My Work's connection chip both take, as presentSync takes it for the English `detail`. A presentation
+ * header and My Work's Machine and sync page both take, as presentSync takes it for the English `detail`. A presentation
  * built without its parts (detailParts) keeps its English detail as it is.
  */
 export function syncDetailWords(sync: Pick<SyncPresentation, 'detail' | 'detailParts'>, t: (english: string) => string): string {
@@ -101,8 +108,10 @@ export function presentSync(status: SyncStatusForDisplay | null, receivedAt: num
   }
   if (!status.configured) {
     return { state: 'unconfigured', label: SYNC_STATE_LABELS.unconfigured, detail: status.message,
-      detailParts: { sentence: status.message, mode: null, remaining: null }, tone: 'neutral', isCurrent: false };
+      detailParts: { sentence: status.message, mode: null, remaining: null }, tone: 'neutral', isCurrent: false, pendingUpload: null };
   }
+  const pending = status.upload?.pending;
+  const pendingUpload = typeof pending === 'number' && Number.isSafeInteger(pending) && pending >= 0 ? pending : null;
   const checked = status.checkedAt;
   const pulled = status.download?.lastSuccessAt ?? null;
   // A fresh authoritative head equal to the applied cursor proves quiet data is current;
@@ -125,5 +134,5 @@ export function presentSync(status: SyncStatusForDisplay | null, receivedAt: num
   const detailParts = { sentence, mode, remaining };
   const detail = joinSyncDetail(detailParts, (english) => english);
   return { state, label: limitedHistory ? SYNC_LIMITED_SCOPE_LABEL : SYNC_STATE_LABELS[state], detail, detailParts,
-    tone: state === 'current' ? 'positive' : limitedHistory || state === 'unknown' ? 'neutral' : 'warning', isCurrent: state === 'current' };
+    tone: state === 'current' ? 'positive' : limitedHistory || state === 'unknown' ? 'neutral' : 'warning', isCurrent: state === 'current', pendingUpload };
 }

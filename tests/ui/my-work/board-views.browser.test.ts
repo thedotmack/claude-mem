@@ -683,24 +683,29 @@ it.skipIf(!chromeExecutablePath)('the read-error card: Try again says what it di
   }
 }, TEST_LIMIT_MS);
 
-it.skipIf(!chromeExecutablePath)('after a failed refresh, My Rules, Past focus and Suggested areas each offer one control, worded Try again, that starts one refresh', async () => {
+/** Presses the failure line's Review details (a link) and waits for Machine and sync's failed review. */
+async function openReviewDetails() {
+  await page!.evaluate(`[...document.querySelectorAll('[data-review-failed-line] a[href]')].find((link) => link.textContent.trim() === 'Review details').click()`);
+  await waitFor(`new URLSearchParams(location.search).get('view') === 'machine' && document.querySelector('[data-focus-review=failed]')`, 'Machine and sync with the failed review');
+}
+
+it.skipIf(!chromeExecutablePath)('after a failed review, My Rules, Past focus and Suggested areas each show one line under their title and no control; Machine and sync\'s one Try review again starts one review', async () => {
   try {
     await openPage('&scenario=failed-refresh&view=rules');
-    let started = 0;
     for (const view of ['rules', 'past-focus', 'suggested']) {
       await page!.evaluate(`history.pushState(null, '', '?source=sample&scenario=failed-refresh&view=${view}'); dispatchEvent(new PopStateEvent('popstate'))`);
-      await waitFor(`document.querySelector('[data-refresh-line=failed]')`, `the failed refresh on ${view}`);
-      // Every visible button that starts a refresh: exactly one, and it reads Try again.
-      expect(await page!.evaluate(`window.buttonsNamed('^(Try again|Refresh now|Refresh)$').map((button) => window.nameOf(button))`)).toEqual(['Try again']);
-      // One failed line on the page, not two.
-      expect(await page!.evaluate(`document.querySelectorAll('[data-refresh-line=failed]').length`)).toBe(1);
-      // Try again sits inside its line's box, also in My Rules' narrow side column (beside the words it ran out of it).
-      const inside = await page!.evaluate(`(() => { const box = document.querySelector('[data-refresh-line=failed] [role=alert]').getBoundingClientRect(); const button = window.buttonsNamed('^Try again$')[0].getBoundingClientRect(); return button.left >= box.left && button.right <= box.right && button.top >= box.top && button.bottom <= box.bottom })()`);
-      expect({ view, inside }).toEqual({ view, inside: true });
-      await page!.evaluate(`window.clickNamed('^Try again$')`);
-      started++;
-      await waitFor(`window.refreshStarts === ${started}`, `the refresh Try again starts on ${view}`);
+      await waitFor(`document.querySelector('main h1 + [data-review-failed-line]')`, `the failure line under the title on ${view}`);
+      // One line on the page, right under its title (design pass Phase 4), and no button that starts a review there.
+      expect(await page!.evaluate(`document.querySelectorAll('[data-review-failed-line]').length`)).toBe(1);
+      expect(await page!.evaluate(`document.querySelectorAll('[data-refresh-line], [data-focus-review]').length`)).toBe(0);
+      expect({ view, buttons: await page!.evaluate(`window.buttonsNamed('^(Try again|Try review again|Refresh now|Refresh|Review now)$').map((button) => window.nameOf(button))`) }).toEqual({ view, buttons: [] });
     }
+    // The review's one control is on Machine and sync, worded for the failure, and it starts one review.
+    await openReviewDetails();
+    expect(await page!.evaluate(`window.buttonsNamed('^(Try again|Try review again|Refresh now|Refresh|Review now)$').map((button) => window.nameOf(button))`)).toEqual(['Try review again']);
+    expect(await page!.evaluate(`document.querySelectorAll('[data-review-failed-line]').length`)).toBe(0);
+    await page!.evaluate(`window.clickNamed('^Try review again$')`);
+    await waitFor(`window.refreshStarts === 1`, 'Try review again to start a review');
     expect(fixtureErrors).toEqual([]);
   } finally {
     await closePage();
@@ -1004,15 +1009,16 @@ it.skipIf(!chromeExecutablePath)('By agent: "Show more" among the idle agents co
   }
 }, TEST_LIMIT_MS);
 
-it.skipIf(!chromeExecutablePath)('My Rules with no rules yet and a failed refresh shows the failed line and one Try again', async () => {
+it.skipIf(!chromeExecutablePath)('My Rules with no rules yet and a failed review shows the failure line, and Machine and sync\'s Try review again starts one review', async () => {
   try {
     await openPage('&scenario=failed-refresh-no-rules&view=rules');
     await waitFor(`document.querySelector('[data-slot=empty]')`, 'My Rules with no rules');
     expect(await page!.evaluate(`document.querySelector('[data-slot=empty]').innerText`)).toContain('No rules yet');
-    await waitFor(`document.querySelector('[data-refresh-line=failed]')`, 'the failed refresh line');
-    expect(await page!.evaluate(`window.buttonsNamed('^(Try again|Refresh now|Refresh)$').map((button) => window.nameOf(button))`)).toEqual(['Try again']);
-    await page!.evaluate(`window.clickNamed('^Try again$')`);
-    await waitFor(`window.refreshStarts === 1`, 'the refresh Try again starts');
+    await waitFor(`document.querySelector('main h1 + [data-review-failed-line]')`, 'the failure line under the title');
+    expect(await page!.evaluate(`window.buttonsNamed('^(Try again|Try review again|Refresh now|Refresh)$').map((button) => window.nameOf(button))`)).toEqual([]);
+    await openReviewDetails();
+    await page!.evaluate(`window.clickNamed('^Try review again$')`);
+    await waitFor(`window.refreshStarts === 1`, 'Try review again to start a review');
     expect(fixtureErrors).toEqual([]);
   } finally {
     await closePage();

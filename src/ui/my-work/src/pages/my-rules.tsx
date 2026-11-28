@@ -2,7 +2,7 @@ import { recordedTimeWords } from '@/lib/display-time'
 import { getLocale, t, useI18n, interpolate } from '@/lib/i18n'
 import { uiMessage, renderUiMessage, type UiMessage } from '../../../ui-message'
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
-import { ArrowDownIcon, ArrowUpIcon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, CircleCheckIcon, CircleXIcon, CloudIcon, CopyIcon, EyeIcon, FileTextIcon, GlobeIcon, LaptopIcon, PencilIcon, PlusIcon, RefreshCcwIcon, RefreshCwIcon, SaveIcon, SparklesIcon, TriangleAlertIcon, Undo2Icon, XIcon, type LucideIcon } from 'lucide-react'
+import { ArrowDownIcon, ArrowUpIcon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, CircleCheckIcon, CircleXIcon, CloudIcon, CopyIcon, EyeIcon, FileTextIcon, GlobeIcon, LaptopIcon, PencilIcon, PlusIcon, RefreshCcwIcon, RefreshCwIcon, SaveIcon, Undo2Icon, XIcon, type LucideIcon } from 'lucide-react'
 import { Artifact, ArtifactActions, ArtifactContent, ArtifactHeader, ArtifactTitle } from '@/components/ai-elements/artifact'
 import { Confirmation, ConfirmationAccepted, ConfirmationAction, ConfirmationActions, ConfirmationRejected, ConfirmationRequest, ConfirmationTitle } from '@/components/ai-elements/confirmation'
 import { InlineCitation, InlineCitationCard, InlineCitationCardBody, InlineCitationCardTrigger, InlineCitationText } from '@/components/ai-elements/inline-citation'
@@ -17,21 +17,22 @@ import { Switch } from '@/components/ui/switch'
 import { LIST_ROWS_PER_PAGE, TablePageFooter } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { RefreshButton, RefreshStatus, StateBadge } from '@/components/bits'
+import { API_PROVIDER_GUIDE_URL, StateBadge } from '@/components/bits'
 import { DECISION_CARD_BODY, STICKY_ABOVE_BOTTOM_BAR, SwipeHint, SwipeToDecide } from '@/components/swipe-to-decide'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { ErrorDetails } from '@/components/error-details'
 import { MoreQuotesFold } from '@/components/more-quotes'
 import { useIsPhone } from '@/lib/swipe-to-decide'
 import { cn } from '@/lib/utils'
+import { lowerFirst, ruleLineWords, ruleScopeWords } from '@/lib/rule-words'
+import { isWaitingForAgentReason } from '../../../../shared/work-view-refresh-reasons.ts'
 import { Req } from '@/spec/req'
-import { SAMPLE_DEVICES, SAMPLE_RUNS, type SkillRun } from '@/data'
+import { SAMPLE_DEVICES } from '@/data'
 import { type RuleChangeRecord, type RuleSaveOutcome, useStore, useWorkModel, useWorkspace } from '@/store'
 import { RULE_CHANGED_SINCE_EDIT } from '@/store/slices/rules-slice'
-import { RULE_TIERS, type OwnerRule, type RuleChange, type RuleQuote, type RuleRecord, type RuleRecordFact, type RuleScope, type RuleStatus, type RuleTier, type RulesLearning } from '@/data-rules'
+import { RULE_TIERS, ruleElementId, ruleInUse, type OwnerRule, type RuleChange, type RuleQuote, type RuleRecord, type RuleRecordFact, type RuleScope, type RuleStatus, type RuleTier } from '@/data-rules'
 import { addedRuleFromSave, currentRuleDecisions, ruleUndoIsCurrent, ruleVersion, type RuleDecision } from '@/live/rule-actions'
 import { currentIn, inShownOrder, keepShownOrder, stepFrom, upNextAfter } from '@/live/rule-queue'
-import { refreshLineState } from '@/live/refresh-line'
 import { recordedTime } from '@/live/to-work-model'
 import type { AutoRefresh, RuleSaveResult } from '@/live/work-data-source'
 
@@ -44,7 +45,7 @@ function useRuleScope(scopeId: string): RuleScope {
   return scope
 }
 const scopeHeading = (scope: RuleScope) => scope.tier === 'everywhere' ? 'Everywhere' : scope.tier === 'project' ? `In ${scope.name}` : scope.name
-const displayScope = (scope: RuleScope) => scope.tier === 'everywhere' ? t('Everywhere') : scope.tier === 'project' ? interpolate(t('In {name}'), { name: scope.name }) : scope.name
+const displayScope = (scope: RuleScope) => ruleScopeWords(scope, t)
 
 /** Strength (§14): times seen × how recent. Shown in words, never as a raw score. */
 const strengthScore = (rule: OwnerRule) => rule.timesSeen / (1 + rule.latestDaysAgo / 7)
@@ -73,10 +74,9 @@ const RULE_DECISION_MARK: Record<RuleDecision, { icon: LucideIcon; iconClass: st
 const RULE_STATUS_WORDS: Record<RuleStatus, string> = { on: 'On', off: 'Off', suggested: 'Suggested', replaced: 'Replaced', dismissed: 'Rejected' }
 const setByText = (rule: OwnerRule) => t(rule.setBy === 'owner' ? 'Set by you' : rule.setBy === 'approved' ? 'Learned, approved by you' : 'Learned, not approved yet')
 const sourceText = (rule: OwnerRule) => rule.source === 'you' ? t('From your own instructions.') : interpolate(t('Found by {source}.'), { source: rule.source })
-const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1)
 const scrollToId = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' })
 /** The rule as one line, the way MY-RULES.md writes it (rulesFileLines below). */
-const ruleLine = (rule: Pick<OwnerRule, 'when' | 'then'>) => rule.when.trim() ? interpolate(t('When {when}: {then}'), { when: rule.when.trim(), then: lowerFirst(rule.then.trim()) }) : rule.then.trim()
+const ruleLine = (rule: Pick<OwnerRule, 'when' | 'then'>) => ruleLineWords(rule, t)
 
 function ruleReceipt(source: string, values: UiMessage['values']) {
   const message = uiMessage(source, values)
@@ -316,7 +316,7 @@ function RuleBlock({ rule, replaces, justApproved, highlighted, toggled, actions
   return (
     <Req ids={['R14.3', 'R14.9', 'R10.2']}>
       <Collapsible asChild>
-        <article id={`rule-${rule.id}`} className={cn('px-4 py-3 first:rounded-t-xl last:rounded-b-xl motion-safe:transition-colors motion-safe:duration-700', off ? 'bg-muted/50' : 'bg-card', highlighted && 'bg-accent')}>
+        <article id={ruleElementId(rule.id)} className={cn('px-4 py-3 first:rounded-t-xl last:rounded-b-xl motion-safe:transition-colors motion-safe:duration-700', off ? 'bg-muted/50' : 'bg-card', highlighted && 'bg-accent')}>
           <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
             <div className="min-w-0 flex-1 basis-64"><RuleSentence rule={rule} id={sentenceId} /></div>
             <Req ids={['R14.9', 'R11.1']}>
@@ -384,7 +384,7 @@ function RuleBlock({ rule, replaces, justApproved, highlighted, toggled, actions
 function ReplacedRow({ rule, replacement, onJump }: { rule: OwnerRule; replacement: OwnerRule | undefined; onJump: (ruleId: string) => void }) {
   return (
     <Req ids={['R14.4', 'R14.7']}>
-      <div id={`rule-${rule.id}`} data-slot="replaced-rule" className="space-y-2 px-4 py-3">
+      <div id={ruleElementId(rule.id)} data-slot="replaced-rule" className="space-y-2 px-4 py-3">
         <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
           <span className="inline-flex items-center gap-1.5 rounded-full border border-control-edge px-2.5 py-0.5 font-medium text-foreground">
             <RefreshCcwIcon aria-hidden="true" className="size-3.5" />{t(RULE_STATUS_WORDS.replaced)}
@@ -964,7 +964,7 @@ const SET_BY_ORDER: Record<OwnerRule['setBy'], number> = { owner: 0, approved: 1
 
 /** The rules file as claude-mem writes it (my-rules.mjs renderRulesFile): approved rules that are on, by scope, set by you first, then strength. */
 function rulesFileLines(rules: OwnerRule[], scopes: RuleScope[]) {
-  const loaded = rules.filter((rule) => rule.status === 'on' && (rule.setBy === 'owner' || rule.setBy === 'approved'))
+  const loaded = rules.filter(ruleInUse)
   // The file is agent input, not UI chrome: keep its headings and whitespace verbatim.
   const ordered = [...scopes].sort((a, b) => RULE_TIERS.findIndex(({ tier }) => tier === a.tier) - RULE_TIERS.findIndex(({ tier }) => tier === b.tier) || a.name.localeCompare(b.name))
   return [
@@ -1017,7 +1017,7 @@ function AgentFile({ rules, changed, open, onOpenChange }: { rules: OwnerRule[];
   const { sourceKind, ruleScopes, rulesFile } = useWorkModel()
   const [loadError, setLoadError] = useState<string | null>(null)
   const { copied, copy, reset } = useCopy()
-  const loaded = rules.filter((rule) => rule.status === 'on' && rule.setBy !== 'learned').length
+  const loaded = rules.filter(ruleInUse).length
   const lines = rulesFileLines(rules, ruleScopes)
   const path = rulesFile?.path ?? '~/.claude-mem/MY-RULES.md'
   const { folder, file } = splitPath(path)
@@ -1138,87 +1138,6 @@ function WhereEditsGo() {
               ))}
             </ul>
           )}
-        </CollapsibleContent>
-      </Collapsible>
-    </Req>
-  )
-}
-
-/** A learning run's three numbers as a small table (c-rules-learning-run M1), in the reader's number format (rule 9). */
-function LearningRunNumbers({ learning, run, earlier }: { learning: RulesLearning; run: SkillRun; earlier: boolean }) {
-  const { t, locale } = useI18n()
-  const alreadyDecided = learning.preferencesFound - learning.newSuggestions
-  return (
-    <div data-slot="learning-run-numbers" className="space-y-2 text-xs">
-      <table className="w-full">
-        <tbody className="divide-y">
-          <tr><th scope="row" className="py-1.5 text-left font-normal text-muted-foreground">{t('Request reviews read')}</th><td className="mono-number py-1.5 text-right">{learning.reviewsRead.toLocaleString(locale)}</td></tr>
-          <tr><th scope="row" className="py-1.5 text-left font-normal text-muted-foreground">{t('Preferences found')}</th><td className="mono-number py-1.5 text-right">{learning.preferencesFound.toLocaleString(locale)}</td></tr>
-          <tr>
-            <th scope="row" className="py-1.5 text-left font-normal text-muted-foreground">{earlier ? t('Waiting for your decision after it') : t('Waiting for your decision')}</th>
-            <td className="mono-number py-1.5 text-right text-attention-foreground">{learning.newSuggestions.toLocaleString(locale)}</td>
-          </tr>
-        </tbody>
-      </table>
-      {/* Why found and waiting differ (F3): a found preference you already decided is not suggested again. */}
-      {alreadyDecided > 0 && <p className="text-muted-foreground">{interpolate(alreadyDecided === 1 ? t('The other {count} is already decided.') : t('The other {count} are already decided.'), { count: alreadyDecided.toLocaleString(locale) })}</p>}
-      <p className="text-muted-foreground">{interpolate(t('Ran on {device}.'), { device: run.deviceName })}</p>
-    </div>
-  )
-}
-
-/**
- * What the last learning run (request-progress) read and found, and where it ran (§14; c-rules-learning-run): a fold
- * row with the run's time, holding the three numbers as a small table. When the latest refresh failed, the box says so
- * in plain words: the refresh runs owner-goals and request-progress, so it names the refresh, not the learning run (a
- * failure can come from either). It holds the shared refresh line (RefreshStatus): when the refresh failed, the raw
- * cause folded under Details (G17), and the page's one refresh control, Try again, where this page can start one. The
- * line leaves the foot of the page meanwhile, so one failure shows once with one button (it showed here with Refresh
- * now and again at the foot with Try again). The last good run's numbers are marked as that earlier run's, never
- * presented as current.
- */
-function LearningRun({ refresh }: { refresh: AutoRefresh | null }) {
-  const { t } = useI18n()
-  const { mode } = useWorkspace()
-  const { sourceKind, rulesLearning, lastRuns } = useWorkModel()
-  const run = lastRuns.progress
-  if (refreshLineState(refresh) === 'failed') {
-    return (
-      <Req ids={['R14.10', 'R14.13', 'R7.3']}>
-        <div data-slot="learning-run-failed" className="space-y-3 rounded-xl border border-attention-border bg-card p-4 text-sm shadow-panel">
-          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 font-medium">
-            <TriangleAlertIcon aria-hidden="true" className="size-4 shrink-0 text-attention-foreground" />{t('The last refresh didn’t finish')}
-          </p>
-          <p>{t('A refresh updates your goals and learns new rules from your requests. This one stopped, so rules from your latest requests may be missing.')}</p>
-          {/* When it failed is in the line; the earlier run's day is below, so the line names no run. */}
-          <RefreshStatus refresh={refresh} run={null} ids={['R14.13']} />
-          {/* The cloud viewer cannot start a run on a computer, so its line has no button. */}
-          {sourceKind === 'cloud' && <p className="text-xs text-muted-foreground">{t('claude-mem learns again on its own whenever new work is due, using the agent you are logged in to.')}</p>}
-          {rulesLearning && run && (
-            <div className="space-y-2 border-t pt-3">
-              <p className="text-xs font-medium">{interpolate(t('The last learning run that finished, {date}'), { date: recordedTimeWords(run.lastRunAtIso, run.lastRunAt) })}</p>
-              <LearningRunNumbers learning={rulesLearning} run={run} earlier />
-            </div>
-          )}
-        </div>
-      </Req>
-    )
-  }
-  if (!rulesLearning || !run) return null
-  return (
-    <Req ids={['R14.10', 'R14.13', 'R7.3']}>
-      <Collapsible>
-        <CollapsibleFoldTrigger>
-          <span className="flex items-start gap-2">
-            <SparklesIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-            <span className="min-w-0">{t("Last learning run")}<span className="mono-number block text-xs font-normal text-muted-foreground">{recordedTimeWords(run.lastRunAtIso, run.lastRunAt)}</span></span>
-          </span>
-        </CollapsibleFoldTrigger>
-        <CollapsibleContent>
-          <div className="space-y-2 px-1 pt-2 text-xs">
-            <LearningRunNumbers learning={rulesLearning} run={run} earlier={false} />
-            <p className="text-muted-foreground">{sourceKind !== 'sample' ? t("claude-mem learns again on its own whenever new work is due, using the agent you are logged in to.") : mode === 'web' ? t("From the web, Refresh queues the run for the next machine online; it needs your local transcripts.") : t("Refresh runs on this machine’s worker, which reads your Claude Code and Codex transcripts.")}</p>
-          </div>
         </CollapsibleContent>
       </Collapsible>
     </Req>
@@ -1374,13 +1293,13 @@ export function NoRulesYet({ onAdd, readError, refresh }: { onAdd: () => void; r
         <EmptyHeader>
           <EmptyTitle>{readError ? t("Can’t read your rules right now") : t("No rules yet")}</EmptyTitle>
           <EmptyDescription>{readError ? t('My Rules could not read your saved rules. Nothing was changed; they show here again once the read works.') : description}</EmptyDescription>
-          {/* Waiting for an agent, or failed: the shared refresh line, with Try again after a failure, as the page with
-              rules shows it (a first refresh that failed left this page with no word of it). */}
-          {!readError && (waiting || refreshLineState(refresh) === 'failed') && <RefreshStatus refresh={refresh} run={null} ids={['R14.13']} />}
-          {/* Waiting for an agent: where to set My Work up to refresh through an API provider instead (#6214). */}
+          {/* Waiting for an agent: the runner's own sentence for why (#5535: the "why" in sight), then where to set My
+              Work up to refresh through an API provider instead (#6214). The review's whole state is on Machine and
+              sync (design pass Phase 4). */}
+          {!readError && waiting && isWaitingForAgentReason(refresh?.error) && <EmptyDescription>{interpolate(t('Waiting to review: {reason}'), { reason: t(refresh.error) })}</EmptyDescription>}
           {!readError && waiting && (
             <EmptyDescription>
-              <a href="https://docs.claude-mem.ai/configuration#my-work-refresh-models" target="_blank" rel="noopener noreferrer">
+              <a href={API_PROVIDER_GUIDE_URL} target="_blank" rel="noopener noreferrer">
                 {t('Configure My Work to use an API provider')}
               </a>
             </EmptyDescription>
@@ -1415,7 +1334,7 @@ const JUMP_HIGHLIGHT_MS = 1800
 export function MyRules() {
   useI18n()
   const { mode } = useWorkspace()
-  const { sourceKind, rules, ruleScopes, rulesLearning, rulesReadError, lastRuns, refresh } = useWorkModel()
+  const { sourceKind, rules, ruleScopes, rulesLearning, rulesReadError, refresh } = useWorkModel()
   const sample = sourceKind === 'sample'
   // Saves, their receipts and Undo live in the store (rules-slice.ts), so live updates and leaving the page keep them.
   const { savedDecisions, history, changedIds, saving, saveError } = useStore.use.rules()
@@ -1457,7 +1376,7 @@ export function MyRules() {
   const save = (change: RuleChange, describe: (saved: RuleSaveResult) => RuleSaveOutcome): Promise<boolean> =>
     runRuleSave(change, describe).then((saved) => saved !== null, (error: unknown) => { setRuleSaveError(error instanceof Error ? error.message : String(error)); return false })
   const jump = (ruleId: string) => {
-    scrollToId(`rule-${ruleId}`)
+    scrollToId(ruleElementId(ruleId))
     setHighlighted(ruleId)
     setTimeout(() => setHighlighted(null), JUMP_HIGHLIGHT_MS)
   }
@@ -1591,14 +1510,6 @@ export function MyRules() {
               <ScopeSection key={scope.id} scope={scope} rules={rules.filter((rule) => rule.scopeId === scope.id)} counts={countsByScope.get(scope.id)!}
                 approvedNow={approvedNow} highlighted={highlighted} toggled={toggled} actions={actions} onReview={review} />
             ))}
-            {/* The shared refresh line, at the foot of the page (page-07 M5). While the last refresh failed it sits in the
-                learning-run box instead (LearningRun, c-rules-learning-run: "a failed run shows here, with Try again"),
-                so the failure and its one Try again show once. The sample's pretend run keeps its own button. */}
-            {(sample || refreshLineState(refresh) !== 'failed') && (
-              <div className="min-w-0 border-t pt-3 [overflow-wrap:anywhere]">
-                {sample ? <RefreshButton run={SAMPLE_RUNS.rules} ids={['R14.13', 'R11.1']} /> : <RefreshStatus refresh={refresh} run={lastRuns.progress} ids={['R14.13']} />}
-              </div>
-            )}
           </div>
 
           {/* Only the jump list stays in view while the page scrolls (a whole sticky column was taller than a 900px
@@ -1609,7 +1520,6 @@ export function MyRules() {
           <aside className="space-y-4">
             <AgentFile rules={rules} changed={changed} open={fileOpen} onOpenChange={setFileOpen} />
             <WhereEditsGo />
-            <LearningRun refresh={refresh} />
             <div className="hidden lg:sticky lg:top-20 lg:block"><ScopeNav countsByScope={countsByScope} waiting={waiting} /></div>
           </aside>
         </div>

@@ -1,6 +1,7 @@
-// Sentences the worker's goals-and-progress refresh writes for people, which My Work's refresh line shows as they are,
-// in the reader's language (components/bits.tsx RefreshStatus). Any other text the worker sends with a refresh is
-// folded under "Details" below a plain line (decision G17), because it can be a raw error with a path or an id in it.
+// Sentences the worker's goals-and-progress refresh writes for people, which My Work's focus review shows as they are,
+// in the reader's language (src/ui/my-work/src/pages/machine-sync.tsx FocusReview). Any other text the worker sends
+// with a refresh is folded under its details below a plain line (decision G17), because it can be a raw error with a
+// path or an id in it.
 // No Node imports: My Work compiles this file too (docs/architecture/state-machines.md).
 
 /**

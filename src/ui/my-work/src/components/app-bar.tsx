@@ -1,10 +1,12 @@
 // The one bar (My Work design pass, Phase 3; Codex D14, Claude D01): the brain mark and its name, My Work's places
-// (src/ui/app-places.ts), then Memory and "…", on every page, the loading and failed screens included. It reads only
-// where the person is (the store's view), never the work model or the live feed, so it draws before the work has
-// loaded and while it cannot be read. Under 768px the places move to a bottom bar and the top keeps the mark and "…".
-import type { ReactNode } from 'react'
-import { BookMarkedIcon, GalleryVerticalEndIcon, HouseIcon, LayersIcon, LibraryIcon, ListChecksIcon, type LucideIcon } from 'lucide-react'
+// (src/ui/app-places.ts), then Find work, Memory and "…" (the Workspace page, Phase 4), on every page, the loading and
+// failed screens included. It reads only where the person is (the store's view), never the work model or the live
+// feed, so it draws before the work has loaded and while it cannot be read. Under 768px the places move to a bottom
+// bar and the top keeps the mark, Find work's search mark and "…". Cmd K (Ctrl K) opens Find work from any page.
+import { useEffect, type ReactNode } from 'react'
+import { BookMarkedIcon, GalleryVerticalEndIcon, HouseIcon, LayersIcon, LibraryIcon, ListChecksIcon, MoreHorizontalIcon, SearchIcon, type LucideIcon } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
+import { underWorkspace } from '@/lib/page-frame'
 import { placeLinkPress, usePageHref } from '@/lib/place-link'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
@@ -13,7 +15,6 @@ import { activePlace } from '@/store/slices/view-slice'
 import { MEMORY_PLACE, MY_WORK_PLACE_IDS, MY_WORK_PLACES, myWorkPlace, type MyWorkPlace, type MyWorkPlaceId } from '../../../app-places'
 import type { Translate } from './bits'
 import { CmemMark } from './brand'
-import { HeaderMenu } from './header-menu'
 
 /** Each place's mark in the phone's bottom bar (Codex's phone mockups; Review Stack keeps the mark it had). */
 const PLACE_ICON: Record<MyWorkPlaceId, LucideIcon> = {
@@ -26,16 +27,56 @@ const PLACE_ICON: Record<MyWorkPlaceId, LucideIcon> = {
 
 /**
  * The h1 of each page that is not one of the bar's places (a place's page is headed by the place's own words,
- * src/ui/app-places.ts). Until the design pass builds them, Workspace, Machine and sync, Find work and Build story open
- * My Work's home page (phases 4 and 7), so they are headed My Work.
+ * src/ui/app-places.ts). Until the design pass builds it, Build story opens My Work's home page (Phase 7), so it is
+ * headed My Work.
  */
 const OTHER_PAGE_HEADING: Record<Exclude<Section, MyWorkPlaceId>, (t: Translate) => string> = {
   suggested: (t) => t('Suggested'),
   'past-focus': (t) => t('Past focus'),
   'build-story': (t) => t(myWorkPlace('work').label),
-  workspace: (t) => t(myWorkPlace('work').label),
-  machine: (t) => t(myWorkPlace('work').label),
-  find: (t) => t(myWorkPlace('work').label),
+  workspace: (t) => t('Workspace'),
+  machine: (t) => t('Machine and sync'),
+  find: (t) => t('Find work'),
+}
+
+/** The attribute Cmd K finds Find work's box by when Find work is already the page shown (pages/find-work.tsx). */
+export const FIND_WORK_INPUT_ATTRIBUTE = 'data-find-work-input'
+
+/** Apple's keyboards say ⌘ for the shortcut; every other says Ctrl. Read once: the keyboard does not change in a visit. */
+const APPLE_KEYBOARD = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent)
+
+const isTextField = (target: EventTarget | null) => target instanceof HTMLElement
+  && (target.isContentEditable || target instanceof HTMLTextAreaElement || (target instanceof HTMLInputElement && !['checkbox', 'radio', 'button', 'submit'].includes(target.type)))
+
+/** An open dialog (Radix marks its dialogs and alert dialogs open; it sets no aria-modal, so that is not read). */
+const OPEN_DIALOG_SELECTOR = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]'
+
+/** Opens Find work, or, when it is the page shown, puts the cursor back in its box and keeps its words. */
+function openFindWork() {
+  const { view, goToPage } = useStore.getState()
+  if (view.section === 'find') document.querySelector<HTMLElement>(`[${FIND_WORK_INPUT_ATTRIBUTE}]`)?.focus()
+  else goToPage('find')
+}
+
+/**
+ * Cmd K or Ctrl K, from any My Work page, opens Find work, or puts the cursor in its box when it is already open.
+ * The key is read by its place on the keyboard (`code`), so it works on every layout (Ctrl K on a Russian layout sends
+ * "л"). On Apple keyboards Ctrl K inside a text field is the field's own command (delete to the end of the line), so
+ * there it is left to the field; Cmd K always opens Find work. Nothing happens while a dialog is open (moving would
+ * take the page and its unsaved edit away under it) or when something on the page already handled the key.
+ */
+function useFindWorkShortcut() {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.code !== 'KeyK' || event.altKey || event.shiftKey || !(event.metaKey || event.ctrlKey)) return
+      if (event.defaultPrevented || document.querySelector(OPEN_DIALOG_SELECTOR)) return
+      if (APPLE_KEYBOARD && !event.metaKey && isTextField(event.target)) return
+      event.preventDefault()
+      openFindWork()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 }
 
 const isPlaceId = (section: Section): section is MyWorkPlaceId => (MY_WORK_PLACE_IDS as readonly Section[]).includes(section)
@@ -85,15 +126,51 @@ function BrandLink() {
 }
 
 /**
+ * Find work in the bar (Codex's `.search-short`): from 1280px a box with its name and the shortcut, narrower its search
+ * mark alone in the box, which a phone shows without the box. Its words wait for 1280px, not Codex's 850px, because the
+ * bar holds five places, not four: at 1024px the words ran the bar 60px past the window (measured). A real link to the
+ * page; marked while Find work is shown, and pressed there it puts the cursor back in the box, as Cmd K does.
+ */
+function FindWorkLink() {
+  const { t } = useI18n()
+  const href = usePageHref('find')
+  const current = useStore((state) => state.view.section === 'find')
+  return (
+    <a href={href} aria-label={t('Find work')} aria-current={current ? 'page' : undefined} aria-keyshortcuts="Meta+K Control+K" onClick={placeLinkPress(openFindWork)}
+      className="touch-target-size inline-flex h-11 shrink-0 items-center justify-center gap-2.5 rounded-lg px-2.5 text-sm whitespace-nowrap text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 md:border md:border-border md:bg-background aria-[current=page]:bg-place-active aria-[current=page]:text-place-active-foreground md:aria-[current=page]:bg-place-active xl:gap-4 xl:pr-2.5 xl:pl-3">
+      <SearchIcon aria-hidden="true" className="size-5 md:size-4.5" />
+      <span className="sr-only xl:not-sr-only">{t('Find work')}</span>
+      <kbd aria-hidden="true" className="hidden rounded border border-border px-1 font-terminal text-xs text-muted-foreground xl:inline">{APPLE_KEYBOARD ? '⌘ K' : 'Ctrl K'}</kbd>
+    </a>
+  )
+}
+
+/** "…", the Workspace page (it replaced the bar's menu): its mark alone, named for screen readers; marked on Workspace and the pages reached from it (lib/page-frame.ts). */
+function WorkspaceLink() {
+  const { t } = useI18n()
+  const href = usePageHref('workspace')
+  const current = useStore((state) => underWorkspace(state.view.section))
+  return (
+    <a href={href} aria-label={t('Workspace')} aria-current={current ? 'page' : undefined} onClick={placeLinkPress(() => useStore.getState().goToPage('workspace'))}
+      className="touch-target-size inline-flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 aria-[current=page]:bg-place-active aria-[current=page]:text-place-active-foreground">
+      <MoreHorizontalIcon aria-hidden="true" className="size-5" />
+    </a>
+  )
+}
+
+/**
  * The top of every page: sticky, so the places stay one press away while the page scrolls. Below 1024px the brand, the
- * places and the gaps take Codex's narrow sizes (its 850px step), so all five places fit from 768px up.
+ * places and the gaps take Codex's narrow sizes (its 850px step), and the bar's three parts sit 8px apart (Codex: 12px),
+ * so all five places and Find work's mark fit from 768px up, also beside a classic 15px scrollbar (at 12px the bar ran
+ * 4px past a 753px page, measured).
  */
 export function AppTopBar() {
   const { t } = useI18n()
   const active = useStore((state) => activePlace(state.view))
+  useFindWorkShortcut()
   return (
     <header data-slot="app-bar" className="sticky top-0 z-30 h-top-bar-phone border-b border-border bg-card md:h-top-bar">
-      <div className="mx-auto flex h-full max-w-bar-content items-center gap-2 px-4.5 md:gap-3 md:px-4 lg:gap-4 lg:px-6.5 xl:gap-7.5 xl:px-11.5">
+      <div className="mx-auto flex h-full max-w-bar-content items-center gap-2 px-4.5 md:px-4 lg:gap-4 lg:px-6.5 xl:gap-7.5 xl:px-11.5">
         <BrandLink />
         <nav aria-label={t('Pages')} className="hidden items-center gap-0.5 md:flex lg:gap-1">
           {MY_WORK_PLACES.map((place) => (
@@ -103,13 +180,15 @@ export function AppTopBar() {
           ))}
         </nav>
         <div className="ml-auto flex items-center gap-0.5 md:gap-1 lg:gap-3">
-          {/* Memory is another page; from 768px up it is in the bar (its name from 1024px), on a phone in "…". */}
+          <FindWorkLink />
+          <span aria-hidden="true" className="hidden h-6 w-px bg-border xl:block" />
+          {/* Memory is another page; from 768px up it is in the bar (its name from 1024px), on a phone in Workspace. */}
           <a href={MEMORY_PLACE.address}
             className="touch-target-size hidden h-11 items-center gap-2 rounded-lg px-2.5 text-sm whitespace-nowrap text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 md:inline-flex">
             <LibraryIcon aria-hidden="true" className="size-4.5" />
             <span className="sr-only lg:not-sr-only">{t(MEMORY_PLACE.label)}</span>
           </a>
-          <HeaderMenu />
+          <WorkspaceLink />
         </div>
       </div>
     </header>

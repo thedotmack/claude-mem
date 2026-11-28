@@ -9,7 +9,6 @@ import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { RefreshButton, RefreshStatus } from '@/components/bits'
 import { ErrorDetails } from '@/components/error-details'
 import { Quotes } from '@/components/focus-header'
 import { clockDay } from '@/lib/display-time'
@@ -17,7 +16,7 @@ import { READING_MEASURE } from '@/lib/reading-measure'
 import { cn } from '@/lib/utils'
 import { timesLabel } from '@/lib/words'
 import { Req } from '@/spec/req'
-import { SAMPLE_RUNS, type PastPeriod } from '@/data'
+import type { PastPeriod } from '@/data'
 import { useStore, useWorkModel } from '@/store'
 import { resolveFocusAreaId } from '@/live/to-focus-model'
 
@@ -248,7 +247,7 @@ function MonthsReadFailure({ cause }: { cause: string }) {
 
 export function PastFocus({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) => void }) {
   useI18n()
-  const { sourceKind, currentPeriod, goalsReadError, lastRuns, refresh } = useWorkModel()
+  const { currentPeriod, goalsReadError } = useWorkModel()
   return (
     <Req ids={['R16.7', 'R12.1']}>
       <div className="space-y-8">
@@ -266,13 +265,6 @@ export function PastFocus({ onOpenFocus }: { onOpenFocus: (focusAreaId: string) 
             {goalsReadError && <EmptyContent><MonthsReadFailure cause={goalsReadError} /></EmptyContent>}
           </Empty>
         )}
-        {/* The shared refresh line, at the foot of the page (page-09 M4), and the page's one refresh control: "Refresh
-            now", or "Try again" after a failed refresh. It sat beside its own Refresh now (two buttons for one failure),
-            and the empty months repeated the line (two alerts); the foot is right below them. */}
-        <div className="min-w-0 border-t pt-3 [overflow-wrap:anywhere]">
-          {sourceKind === 'sample' ? <RefreshButton run={SAMPLE_RUNS.goals} ids={['R14.10']} />
-            : <RefreshStatus refresh={refresh} run={lastRuns.goals} ids={['R14.10']} canStartRefresh={sourceKind === 'local'} />}
-        </div>
       </div>
     </Req>
   )

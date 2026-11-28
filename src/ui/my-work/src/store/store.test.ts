@@ -425,10 +425,12 @@ describe('where the person is', () => {
       'http://localhost/?focus=other',
       'http://localhost/?focus=fa-sync&request=r1',
       'http://localhost/?view=requests&request=r1',
+      'http://localhost/?view=find&q=viewer%20sync',
+      'http://localhost/?view=find&q=viewer&request=r1',
     ]
     for (const href of hrefs) {
       const route = readRoute(new URL(href))
-      const place = { section: route.section, focusChoice: route.focusChoice, openRequest: route.requestId ? { id: route.requestId, fromLiveFeed: null, fallback: null } : null }
+      const place = { section: route.section, focusChoice: route.focusChoice, openRequest: route.requestId ? { id: route.requestId, fromLiveFeed: null, fallback: null } : null, findQuery: route.findQuery }
       // Only what writeRoute writes can come back: the clean address keeps just the source, which is not the place's.
       const clean = new URL('http://localhost/')
       const source = new URL(href).searchParams.get('source')
@@ -446,6 +448,37 @@ describe('where the person is', () => {
       back(written)
       assert.deepEqual([store.getState().view.section, store.getState().view.focusChoice], [section, null], section)
     }
+  })
+
+  it('Find work\'s words live in the address on its page only: written in place as they are typed, empty or elsewhere they read as none', () => {
+    assert.equal(readRoute(new URL('http://localhost/?view=find&q=viewer')).findQuery, 'viewer')
+    assert.equal(readRoute(new URL('http://localhost/?view=find&q=')).findQuery, null, 'empty words are none')
+    assert.equal(readRoute(new URL('http://localhost/?view=find')).findQuery, null)
+    assert.equal(readRoute(new URL('http://localhost/?view=rules&q=viewer')).findQuery, null, 'on another page the words are no detail of it')
+    assert.equal(writeRoute(new URL('http://localhost/?view=rules&q=viewer'), { section: 'rules', focusChoice: null, openRequest: null, findQuery: 'viewer' }).searchParams.has('q'), false)
+    const { store, urls, back } = testStore({ href: 'http://localhost/?source=sample' })
+    store.getState().goToPage('find')
+    assert.deepEqual(urls.at(-1), { href: 'http://localhost/?source=sample&view=find', replace: false })
+    store.getState().setFindQuery('view')
+    store.getState().setFindQuery('viewer')
+    assert.deepEqual(urls.slice(-2), [{ href: 'http://localhost/?source=sample&view=find&q=view', replace: true }, { href: 'http://localhost/?source=sample&view=find&q=viewer', replace: true }], 'each word replaces the entry: Back leaves Find work, not one letter')
+    assert.equal(store.getState().view.findQuery, 'viewer')
+    // A result opened over Find work keeps the words; another page drops them, and Back brings them again.
+    store.getState().openRequestDrawer(LOCAL_MODEL.requests[0])
+    assert.equal(urls.at(-1)?.href, `http://localhost/?source=sample&view=find&q=viewer&request=${LOCAL_MODEL.requests[0].id}`)
+    store.getState().closeRequestDrawer()
+    store.getState().goToPage('rules')
+    assert.deepEqual([store.getState().view.findQuery, new URL(urls.at(-1)!.href).searchParams.has('q')], [null, false])
+    back('http://localhost/?source=sample&view=find&q=viewer')
+    assert.deepEqual([store.getState().view.section, store.getState().view.findQuery], ['find', 'viewer'])
+    store.getState().setFindQuery('')
+    assert.equal(urls.at(-1)?.href, 'http://localhost/?source=sample&view=find', 'clearing the box clears the address')
+  })
+
+  it('a rule Find work opens lands My Rules at that rule once it has drawn', () => {
+    const { store } = testStore({ href: 'http://localhost/?view=find&q=draft' })
+    store.getState().goToPage('rules', { elementId: 'rule-no-draft-pr' })
+    assert.deepEqual([store.getState().view.section, store.getState().view.scrollAsk?.target], ['rules', { to: 'element', elementId: 'rule-no-draft-pr' }])
   })
 
   it('old addresses still land: the home anchors, Suggested, Past focus and an area with its request', () => {
@@ -471,8 +504,10 @@ describe('where the person is', () => {
   it('each place opens the page its address names, and the bar marks the place each page sits under', () => {
     for (const place of MY_WORK_PLACES) assert.equal(readRoute(new URL(place.address, 'http://localhost/')).section, place.id, place.label)
     const marked = (href: string) => activePlace(readRoute(new URL(href)))
-    assert.deepEqual(['/', '/?view=focus', '/?view=suggested', '/?view=past-focus', '/?focus=fa-sync', '/?focus=other', '/?view=requests', '/?view=review-stack', '/?view=rules&tab=dismissed', '/?view=find']
-      .map((path) => marked(`http://localhost${path}`)), ['work', 'focus', 'focus', 'focus', 'focus', 'focus', 'requests', 'review-stack', 'rules', 'work'])
+    assert.deepEqual(['/', '/?view=focus', '/?view=suggested', '/?view=past-focus', '/?focus=fa-sync', '/?focus=other', '/?view=requests', '/?view=review-stack', '/?view=rules&tab=dismissed']
+      .map((path) => marked(`http://localhost${path}`)), ['work', 'focus', 'focus', 'focus', 'focus', 'focus', 'requests', 'review-stack', 'rules'])
+    // Find work, Workspace and Machine and sync are reached from the bar's own links, which mark themselves: no place.
+    assert.deepEqual(['/?view=find', '/?view=workspace', '/?view=machine'].map((path) => marked(`http://localhost${path}`)), [null, null, null])
   })
 
   it('a move scrolls its page once it has drawn: a new page from its top, Requests and Focus areas at their boards', () => {

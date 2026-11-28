@@ -24,9 +24,9 @@ import { PageHeading, SetupActions, SetupButton, ToolMark, type SetupBack } from
  */
 const FOCUS_OVERVIEW_FIRST_AREAS = 4
 /**
- * A search box past this many areas. Source: focus-overview.tsx:46 (`> 8`). Reason (search-accessible): eight rows take
- * 870px at 1440 (same measurement), the most that fit one 900px screen; past that, finding an area by eye takes
- * scrolling.
+ * A search box past this many areas. It matched My Work's home board until the design pass (Phase 4) moved finding an
+ * area to Find work; the reason is setup's own. Reason (search-accessible): eight rows take 870px at 1440 (same
+ * measurement), the most that fit one 900px screen; past that, finding an area by eye takes scrolling.
  */
 const FOCUS_OVERVIEW_SEARCH_PAST = 8
 /**

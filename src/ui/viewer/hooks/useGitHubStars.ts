@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 
-// The repository's GitHub star count, for the header menu's "Star" link. The same rules as My Work's star count
-// (src/ui/my-work/src/live/github-star-count.ts), so the two behave alike: GitHub's own 10 s request limit, one read
+// The repository's GitHub star count, for the header menu's "Star" link: GitHub's own 10 s request limit, one read
 // per page that is kept (a failed one too), a count that is a whole number of stars, a count read within GitHub's
 // hourly window kept across reloads, GitHub's word that this address has used up its hourly limit kept until the
 // reset it names, and no count when GitHub gives none, with the reason in the console.

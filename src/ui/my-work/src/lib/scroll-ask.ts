@@ -5,7 +5,8 @@ import type { ScrollTarget } from '@/store'
 const PERSON_INPUT = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const
 
 /**
- * Scrolls to `target` and returns the stop. A new page goes to its top, Requests and Focus areas to their boards.
+ * Scrolls to `target` and returns the stop. A new page goes to its top, Requests and Focus areas to their boards, and
+ * an element asked for by id to that element, once the page has drawn it.
  * Back, Forward and a reload go to where the person left the page, and hold it there: the page can still change after
  * it first draws. A page that reads its data again on each visit (Review Stack) or whose code is still loading draws
  * short, so the window can only go part of the way; artwork and layout that settle a frame later change the height
@@ -15,10 +16,32 @@ const PERSON_INPUT = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const
 export function runScrollAsk(target: ScrollTarget): () => void {
   if (target.to === 'top') { window.scrollTo(0, 0); return () => {} }
   if (target.to === 'element') {
-    const element = document.getElementById(target.elementId)
-    if (element) element.scrollIntoView({ block: 'start' })
-    else console.warn(`[my-work] #${target.elementId} is not on the page`)
-    return () => {}
+    const { elementId } = target
+    const element = document.getElementById(elementId)
+    if (element) { element.scrollIntoView({ block: 'start' }); return () => {} }
+    // A page whose code is still loading (My Rules, for a rule Find work opened) draws the element later: it is
+    // scrolled to once it is on the page, unless the person scrolls, presses or types first, or the next move asks.
+    // A wait that ends with no such element says so: the id that was asked for is not on the page.
+    let waiting = true
+    const arrival = new MutationObserver(() => {
+      const arrived = document.getElementById(elementId)
+      if (!arrived) return
+      stopObserving()
+      arrived.scrollIntoView({ block: 'start' })
+    })
+    function stopObserving() {
+      waiting = false
+      arrival.disconnect()
+      for (const type of PERSON_INPUT) window.removeEventListener(type, stopWaiting, true)
+    }
+    function stopWaiting() {
+      if (!waiting) return
+      stopObserving()
+      console.warn(`[my-work] #${elementId} is not on the page`)
+    }
+    arrival.observe(document.body, { childList: true, subtree: true })
+    for (const type of PERSON_INPUT) window.addEventListener(type, stopWaiting, { capture: true, passive: true })
+    return stopWaiting
   }
   const { y } = target
   window.scrollTo(0, y)

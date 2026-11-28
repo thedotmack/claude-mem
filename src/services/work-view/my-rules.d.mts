@@ -1,4 +1,8 @@
 export const MY_RULES_LIST: 'my-rules';
+/** Who set a saved rule, every value the worker records. */
+export const RULE_SET_BY: readonly SavedRule['setBy'][];
+/** Every status a saved rule can have. */
+export const SAVED_RULE_STATUSES: readonly SavedRule['status'][];
 export function isMyRulesList(name: unknown): boolean;
 export function ruleIdForPreference(preference: string): string;
 export interface SavedRule {

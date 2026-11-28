@@ -48,7 +48,7 @@ describe('empty Rules page (#5535)', () => {
   it('says rule learning is waiting for an agent, and why, instead of promising it happens on its own', () => {
     const html = renderNoRules(null, { state: 'waiting-for-agent', finishedAt: null, error: NO_AGENT });
     expect(html).toContain('Rule learning is waiting for an agent.');
-    expect(html).toContain(`Waiting to refresh: ${NO_AGENT}`);
+    expect(html).toContain(`Waiting to review: ${NO_AGENT}`);
     expect(html).toContain('Configure My Work to use an API provider');
     expect(html).toContain('https://docs.claude-mem.ai/configuration#my-work-refresh-models');
     expect(html).toContain('Add rule');
@@ -59,7 +59,7 @@ describe('empty Rules page (#5535)', () => {
     const html = renderNoRules(null, null);
     expect(html).toContain(LEARNS_ON_ITS_OWN);
     expect(html).toContain('Add rule');
-    expect(html).not.toContain('Waiting to refresh');
+    expect(html).not.toContain('Waiting to review');
     expect(html).not.toContain('Configure My Work to use an API provider');
   });
 
@@ -67,7 +67,7 @@ describe('empty Rules page (#5535)', () => {
     const html = renderNoRules('x', { state: 'waiting-for-agent', finishedAt: null, error: NO_AGENT });
     expect(html).toContain('Can’t read your rules right now');
     expect(html).not.toContain('Add rule');
-    expect(html).not.toContain('Waiting to refresh');
+    expect(html).not.toContain('Waiting to review');
     expect(html).not.toContain('Configure My Work to use an API provider');
   });
 

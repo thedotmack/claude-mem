@@ -119,7 +119,7 @@ export const REQUIREMENTS: Requirement[] = [
   { id: 'R14.7', section: '14', kind: 'ui', text: 'Then sorted by strength (times seen × recency); newer wins a conflict.' },
   { id: 'R14.8', section: '14', kind: 'ui', text: 'Rules merge request-progress preferences and owner-goals "how they want work done"; source is shown.' },
   { id: 'R14.9', section: '14', kind: 'ui', text: 'Owner can approve, edit, turn off or add a rule.' },
-  { id: 'R14.10', section: '14', kind: 'ui', text: 'Refresh buttons on My Goals and My Rules: last run time, machine, progress and cost.', wireframe: 'Cost part dropped by the owner on Oct 20, 2026; last run time, machine and progress stay.' },
+  { id: 'R14.10', section: '14', kind: 'ui', text: 'Machine and sync’s Focus review shows when the owner-goals and request-progress runs last finished, on which machine, the review’s progress, and Review now.', wireframe: 'Reworded 2026-11-28 (My Work design pass, Phase 4): the refresh buttons on My Goals and My Rules became the one Focus review on Machine and sync. Cost part dropped by the owner on Oct 20, 2026.' },
   { id: 'R14.11', section: '14', kind: 'ui', text: 'On the web, Refresh queues a run for the next online machine.' },
   { id: 'R14.12', section: '14', kind: 'ui', text: 'request-progress gets a Refresh button too.' },
   { id: 'R14.13', section: '14', kind: 'ui', text: 'At home, Refresh runs on the local worker, which reads the Claude Code and Codex transcripts; the web cannot.' },
@@ -152,7 +152,7 @@ export const REQUIREMENTS: Requirement[] = [
   { id: 'R17.5', section: '17', kind: 'backend', text: 'The shared page carries display text only: no prompts, quotes, transcripts, evidence links, files or machine names.', wireframe: 'to-shared-focus.ts builds the page; cmem.ai keeps only the shared shape (claude-mem-pro src/lib/focus-share/snapshot.ts).' },
 
   // 18. Account (added 2026-11-05, append only): the cloud viewer is where viewer accounts land, so billing is reachable from it.
-  { id: 'R18.1', section: '18', kind: 'ui', text: 'On the cloud viewer only, the bar’s "…" menu links "Account & billing" to cmem.ai/account. My Work served from this computer shows no such link.' },
+  { id: 'R18.1', section: '18', kind: 'ui', text: 'On the cloud viewer only, the Workspace page (the bar’s "…") links "Account & billing" to cmem.ai/account. My Work served from this computer shows no such link.' },
 ]
 
 export const REQUIREMENTS_BY_ID = new Map(REQUIREMENTS.map((requirement) => [requirement.id, requirement]))

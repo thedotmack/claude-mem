@@ -109,6 +109,8 @@ export interface ViewState {
   /** The area My Work is filtered to (an area id or Other); null shows every request. */
   focusChoice: string | null
   openRequest: OpenRequest | null
+  /** The words typed in Find work (`?q=`), on its page only; null when none. */
+  findQuery: string | null
   /** The last move's scroll, once its page has drawn; each move asks with a new `sequence` (App.tsx runs it once). */
   scrollAsk: { sequence: number; target: ScrollTarget } | null
   /** Sample mode's place and TeamBrain switches. Outside sample mode the place comes from the source. */
@@ -130,9 +132,14 @@ export interface ViewState {
 
 export interface ViewSlice {
   view: ViewState
-  /** Shows a page from its top (Requests and Focus areas at their boards on the home page, for now). */
-  goToPage: (page: Section) => void
+  /**
+   * Shows a page from its top (Requests and Focus areas at their boards on the home page, for now), or, with
+   * `elementId`, at that element once the page has drawn it (a rule Find work opened on My Rules).
+   */
+  goToPage: (page: Section, options?: { elementId?: string }) => void
   goToFocus: (focusAreaId: string) => void
+  /** Find work's words, written to the address in place (no new history entry); '' clears them. */
+  setFindQuery: (query: string) => void
   /** Opens a request's drawer; `{ reply: true }` opens it on its reply box (Reply on a card or the summary, G2). */
   openRequestDrawer: (request: Request, options?: { reply?: boolean }) => void
   closeRequestDrawer: () => void

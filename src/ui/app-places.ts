@@ -37,3 +37,11 @@ export const MY_WORK_PLACES: readonly MyWorkPlace[] = MY_WORK_PLACE_IDS.map(myWo
  * page shown. Its words go through t() like the places' (tests/ui-i18n.test.ts).
  */
 export const MEMORY_PLACE = { label: 'Memory', address: '/viewer' } as const
+
+/**
+ * Memory's own pages that My Work links to: its settings (the Workspace page) and its search of loaded memories with
+ * the words typed in Find work. The memory viewer opens its timeline for any address it does not read yet; reading
+ * these two is design pass Phase 11's (`#/settings/<section>` and `#/?find=<words>`).
+ */
+export const MEMORY_SETTINGS_ADDRESS = `${MEMORY_PLACE.address}#/settings`
+export const memoryFindAddress = (words: string): string => `${MEMORY_PLACE.address}#/?find=${encodeURIComponent(words)}`

@@ -1,7 +1,7 @@
 // The wireframe fixtures as a data source, for design review (`?source=sample`). Nothing here is real.
 import { assertConsistentRequest, OTHER_FOCUS_AREA_ID, SAMPLE_AGENTS, SAMPLE_DEVICES, SAMPLE_PEOPLE, SAMPLE_REQUESTS, SAMPLE_RUNS, type Agent, type FocusArea, type FocusChange, type Request } from '../data.ts'
 import { SAMPLE_CURRENT_PERIOD, SAMPLE_FOCUS_AREAS, SAMPLE_OTHER_ASKS, SAMPLE_PAST_PERIODS } from '../data-goals.ts'
-import { SAMPLE_OWNER_RULES, SAMPLE_RULE_SCOPES, SAMPLE_RULES_LEARNING, type OwnerRule, type RuleChange, type RuleScope } from '../data-rules.ts'
+import { ruleInUse, SAMPLE_OWNER_RULES, SAMPLE_RULE_SCOPES, SAMPLE_RULES_LEARNING, type OwnerRule, type RuleChange, type RuleScope } from '../data-rules.ts'
 import { getConnectionStatus } from './connection-status.ts'
 import { answerFocusShareCallsInPage, type FocusShare, type FocusShareAnswerInPage, type FocusShareComment } from './focus-shares.ts'
 import { byFocusPriority, resolveFocusAreaId } from './to-focus-model.ts'
@@ -161,7 +161,8 @@ function applySampleFocusChange({ action, focusAreaId, subFocusId, intoSubFocusI
  * Sample states the fixtures never reach on their own, chosen with `&sample-state=` on a `?source=sample` address, so
  * every state a page draws can be seen and shot (plan rule 10). The one definition of them:
  * - `rules-unreadable`: My Rules cannot read the saved rules (NoRulesYet's read failure, with Try again);
- * - `refresh-failed`: the last learning run failed, as refresh.json reports it (My Rules' learning-run box);
+ * - `refresh-failed`: the last review (the learning run) failed, as refresh.json reports it (the failure line under a
+ *   page's title, and Machine and sync's focus review);
  * - `rule-saves-fail`: every rule save and "Load my rules into Claude Code" fails, as a refusing worker answers (the
  *   failure lines on My Rules, and where focus stays after a failed decision);
  * - `months-unreadable`: Past focus cannot read the saved months (its read failure, with Try again);
@@ -374,15 +375,16 @@ const sampleModel = (sampleState: SampleState | null): WorkModel => ({
     writtenAt: SAMPLE_RUNS.progress.lastRunAt,
   },
   // With failing saves, the rules are not loaded yet, so "Load my rules into Claude Code" shows (and fails).
-  rulesFile: { path: '~/.claude-mem/MY-RULES.md', approvedCount: sampleRules.filter((rule) => rule.status === 'on').length, loadedInClaudeCode: sampleState !== 'rule-saves-fail' },
+  rulesFile: { path: '~/.claude-mem/MY-RULES.md', approvedCount: sampleRules.filter(ruleInUse).length, loadedInClaudeCode: sampleState !== 'rule-saves-fail' },
   rulesReadError: sampleState === 'rules-unreadable' ? SAMPLE_RULES_READ_ERROR : null,
   lastRuns: {
-    goals: { label: SAMPLE_RUNS.goals.label, lastRunAt: SAMPLE_RUNS.goals.lastRunAt, deviceName: sampleDeviceName(SAMPLE_RUNS.goals.deviceId) },
+    // As the mapper reads a goals run it cannot read: no run, and the reason in goalsReadError (live/to-work-model.ts).
+    goals: sampleState === 'months-unreadable' ? null : { label: SAMPLE_RUNS.goals.label, lastRunAt: SAMPLE_RUNS.goals.lastRunAt, deviceName: sampleDeviceName(SAMPLE_RUNS.goals.deviceId) },
     progress: { label: SAMPLE_RUNS.progress.label, lastRunAt: SAMPLE_RUNS.progress.lastRunAt, deviceName: sampleDeviceName(SAMPLE_RUNS.progress.deviceId) },
   },
   refresh: sampleState === 'refresh-failed' ? SAMPLE_FAILED_REFRESH : null,
   sourceHealth: { connected: true, error: null },
-  // Sample mode demonstrates the indicator (LiveIndicator labels it a demonstration); nothing streams.
+  // Sample mode demonstrates the feed (Machine and sync labels it a demonstration); nothing streams.
   connection: getConnectionStatus({ now: 0 }),
 })
 

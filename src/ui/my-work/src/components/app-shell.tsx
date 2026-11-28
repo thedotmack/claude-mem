@@ -8,21 +8,24 @@ import { CircleAlertIcon, LibraryIcon, RefreshCwIcon } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { isServedFromCloud } from '@/live/served-from'
 import { MEMORY_PLACE } from '../../../app-places'
 import { AppBottomBar, AppTopBar, usePageHeadingBeforeLoad } from './app-bar'
+import { TechnicalDetails } from './error-details'
 
 /**
  * `above`: what sits over the bar (the cloud trial banner, an offer, the sample strip). `heading`: the page's h1, shown
- * unless `headingHidden` (a focus area's page names its area in its own header). `below`: what floats over the page (the
- * request drawer). `data-slot="work-shell"` turns on the scroll padding in index.css that keeps a focused control clear
- * of the bar and the phone's bottom bar.
+ * unless `headingHidden` (a focus area's page names its area in its own header); `aboveHeading` and `belowHeading` sit
+ * right over and under it (a page's crumb, the failure line). `compact`: the page sits in Codex's narrower column
+ * (Find work, Workspace, Machine and sync). `below`: what floats over the page (the request drawer).
+ * `data-slot="work-shell"` turns on the scroll padding in index.css that keeps a focused control clear of the bar and
+ * the phone's bottom bar.
  */
-export function ShellFrame({ above, heading, headingHidden = false, mainRef, below, children }: {
-  above?: ReactNode; heading: string; headingHidden?: boolean; mainRef?: Ref<HTMLElement>; below?: ReactNode; children: ReactNode
+export function ShellFrame({ above, heading, headingHidden = false, aboveHeading, belowHeading, compact = false, mainRef, below, children }: {
+  above?: ReactNode; heading: string; headingHidden?: boolean; aboveHeading?: ReactNode; belowHeading?: ReactNode; compact?: boolean
+  mainRef?: Ref<HTMLElement>; below?: ReactNode; children: ReactNode
 }) {
   const { t } = useI18n()
   return (
@@ -33,9 +36,11 @@ export function ShellFrame({ above, heading, headingHidden = false, mainRef, bel
       </a>
       {above}
       <AppTopBar />
-      <div className="mx-auto w-full max-w-page px-4 pt-6 md:px-14 md:pt-12 md:pb-16">
+      <div className={cn('mx-auto w-full px-4 pt-6 md:px-14 md:pt-12 md:pb-16', compact ? 'max-w-compact' : 'max-w-page')}>
         <main ref={mainRef} id="main-content" tabIndex={-1} className="min-w-0 space-y-4 outline-none md:space-y-5">
+          {aboveHeading}
           <h1 className={cn('text-page-title-phone md:text-page-title', headingHidden && 'sr-only')}>{heading}</h1>
+          {belowHeading}
           {children}
         </main>
       </div>
@@ -109,15 +114,7 @@ export function ShellReadError({ cause, onRetry, focusRetry = false }: { cause: 
           <Button ref={retryRef} onClick={onRetry}><RefreshCwIcon aria-hidden="true" />{t('Try again')}</Button>
           <Button asChild variant="outline"><a href={MEMORY_PLACE.address}><LibraryIcon aria-hidden="true" />{t('Open Memory')}</a></Button>
         </div>
-        <Collapsible>
-          {/* A quiet text button (Codex's `textbtn`): the details are for whoever has to fix it, not the next step. */}
-          <CollapsibleTrigger asChild>
-            <Button variant="ghost" size="sm" className="-ml-2 text-accent-foreground">{t('Technical details')}</Button>
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <p className="mt-2 rounded-md bg-muted px-3 py-2 font-mono text-xs break-words text-foreground/80">{cause}</p>
-          </CollapsibleContent>
-        </Collapsible>
+        <TechnicalDetails cause={cause} />
       </section>
     </ShellFrame>
   )

@@ -13,15 +13,17 @@ failOnCiWithoutChrome('CI requires Chrome for the My Work home page regressions.
 
 /**
  * Phase 3 of the pro-max-v16 plan, on the real components with the app's compiled stylesheet:
- * - the refresh line's four states (c-bits-refresh-controls): what each says, that a failure is one alert in plain
- *   words with its raw cause folded under Details, that the worker's own sentences show as they are, that Try again
- *   comes with no prop wherever this page can start a refresh, and that every press shows its outcome (a fake source,
- *   never a worker); Details is 44px on a touch phone;
+ * - the focus review's four states (Machine and sync, design pass Phase 4; it replaced the refresh line on six pages):
+ *   what each says, that a failure says when it failed and how old the review on screen is in plain words with its raw
+ *   cause folded under Technical details, that the worker's own sentences show as they are, that Try review again shows
+ *   wherever this page can start a review, and that every press shows its outcome (a fake source, never a worker);
+ *   Technical details is 44px on a touch phone;
  * - the change ticker (c-live-motion-change-ticker): its pause by button, hover and keyboard focus; its line is the
  *   Button primitive, 44px on touch; while the feed connects it says so, and Reconnect shows only where it can help;
  * - the home page (page-01) on the sample: what needs you comes first, with exactly one solid orange button on the
  *   first screen (G1), Shipped is one folded line until opened (G4), and the build story's recap tells times in the
- *   page's one clock; a suggested area's page also has one orange button;
+ *   page's one clock; a suggested area's page also has one orange button; the focus board has no search box and no
+ *   artwork control of its own (Find work and Workspace hold them, design pass Phase 4);
  * - Reply (G2) on a request whose conversation cannot be continued lands on the drawer's line saying so.
  */
 
@@ -34,7 +36,7 @@ let page: DevToolsPage | undefined;
 const fixtureErrors: string[] = [];
 let markReady: () => void = () => {};
 
-/** The refresh record behind each of the line's states (RefreshLineState is the one list; the fixture draws one each). */
+/** The refresh record behind each of the review's states (RefreshLineState is the one list; the fixture draws one each). */
 const CAUSE = 'Claude Code: reviews: g_8f5a02b65d34: database is locked';
 const NO_AGENT = 'No logged-in Claude Code, Codex or Gemini on this computer yet.';
 const REFRESH_CASES: Record<RefreshLineState, object> = {
@@ -59,7 +61,7 @@ beforeAll(async () => {
     import { createRoot } from './src/ui/my-work/node_modules/react-dom/client';
     import { MotionConfig } from './src/ui/my-work/node_modules/motion/react';
     import { TooltipProvider } from './src/ui/my-work/src/components/ui/tooltip';
-    import { RefreshStatus } from './src/ui/my-work/src/components/bits';
+    import { FocusReview } from './src/ui/my-work/src/pages/machine-sync';
     import { ChangeTicker } from './src/ui/my-work/src/components/live-motion';
     import { RequestDetail } from './src/ui/my-work/src/components/request-detail';
     import { MyWork } from './src/ui/my-work/src/pages/my-work';
@@ -77,7 +79,7 @@ beforeAll(async () => {
     // The sample, with its refresh counted instead of run, and answered as the test says (window.nextAnswer): Try again
     // starts one refresh and nothing else. A page this computer's worker serves ('local') is the one that can start
     // one; the views that need it say so.
-    const local = view === 'refresh-default' || view === 'ticker-connection' || view === 'reply';
+    const local = view === 'refresh' || view === 'refresh-default' || view === 'ticker-connection' || view === 'reply';
     const source = Object.create(sampleSource, local ? { sourceKind: { value: 'local' } } : {});
     window.refreshStarts = 0;
     window.nextAnswer = { state: 'running' };
@@ -102,19 +104,19 @@ beforeAll(async () => {
     const Providers = ({ children }) => <MotionConfig reducedMotion="user"><TooltipProvider delayDuration={150}>{children}</TooltipProvider></MotionConfig>;
     if (view === 'refresh') {
       root.render(<Providers><main style={{ padding: 16, display: 'grid', gap: 24, maxWidth: 900 }}>
-        {REFRESH_LINE_STATES.map((name) => <section key={name} data-case={name}><RefreshStatus refresh={cases[name]} run={run} label="Last reviewed" ids={['R14.12']} canStartRefresh /></section>)}
+        {REFRESH_LINE_STATES.map((name) => <section key={name} data-case={name}><FocusReview refresh={cases[name]} run={run} learning={null} goalsRun={null} goalsReadError={null} /></section>)}
       </main></Providers>);
     } else if (view === 'refresh-default') {
-      // No button prop, as My Rules and Past focus mount it; the record changes when the test says (window.setRefresh).
+      // The record changes when the test says (window.setRefresh), as the worker's refresh.json does.
       function DefaultLine() {
         const [refresh, setRefresh] = React.useState(cases.failed);
         window.setRefresh = setRefresh;
-        return <RefreshStatus refresh={refresh} run={run} label="Last reviewed" ids={['R14.12']} />;
+        return <FocusReview refresh={refresh} run={run} learning={null} goalsRun={null} goalsReadError={null} />;
       }
       const raw = { state: 'waiting-for-agent', finishedAt: null, error: 'None of the allowed agents (Codex) is logged in on this computer.' };
       root.render(<Providers><main style={{ padding: 16, display: 'grid', gap: 24, maxWidth: 900 }}>
         <section data-case="default"><DefaultLine /></section>
-        <section data-case="waiting-other"><RefreshStatus refresh={raw} run={run} label="Last reviewed" ids={['R14.12']} /></section>
+        <section data-case="waiting-other"><FocusReview refresh={raw} run={run} learning={null} goalsRun={null} goalsReadError={null} /></section>
       </main></Providers>);
     } else if (view === 'ticker' || view === 'ticker-connection') {
       root.render(<Providers><main style={{ padding: 16, maxWidth: 1100 }}><ChangeTicker onOpen={ignore} /></main></Providers>);
@@ -145,7 +147,7 @@ beforeAll(async () => {
         state.work.connection = getConnectionStatus({ now: performance.now(), ...evidence });
       });
     } else if (view === 'board') {
-      // Twelve kept areas: past the board's search threshold (eight) and its first four.
+      // Twelve kept areas: past the board's first four.
       const areas = Array.from({ length: 12 }, (_, index) => ({ id: 'fa-' + index, name: (index % 2 ? 'Viewer ' : 'Docs ') + index, goal: null,
         status: 'kept', ownerRank: index + 1, priorityRank: null, source: 'owner', mergedInto: null, evidence: null, timesAsked: null, latestAt: null, quotes: [], asks: [] }));
       // Every area a press opened, in order, so a test can tell a press that opened its card from one that did nothing.
@@ -153,7 +155,7 @@ beforeAll(async () => {
       function Board() {
         const [expandAllOn, setExpandAllOn] = React.useState(0);
         window.showAllAreas = () => setExpandAllOn((value) => value + 1);
-        return <FocusOverview areas={areas} requests={[]} onOpenArea={(id) => window.openedAreas.push(id)} artwork={new URLSearchParams(location.search).get('artwork') ?? 'compact'} onArtworkChange={ignore} expandAllOn={expandAllOn} />;
+        return <FocusOverview areas={areas} requests={[]} onOpenArea={(id) => window.openedAreas.push(id)} artwork={new URLSearchParams(location.search).get('artwork') ?? 'compact'} expandAllOn={expandAllOn} />;
       }
       root.render(<Providers><main style={{ padding: 16, maxWidth: 1200 }}><Board /></main></Providers>);
     } else if (view === 'suggested') {
@@ -176,8 +178,8 @@ beforeAll(async () => {
       root.render(<Providers><main style={{ padding: 16 }}><MyWork focusAreaId={null} onOpen={ignore} onOpenFocus={ignore} onOpenRules={ignore} /></main></Providers>);
     }
     (function waitForPage() {
-      const drawn = view === 'refresh' ? document.querySelectorAll('[data-refresh-line]').length === REFRESH_LINE_STATES.length
-        : view === 'refresh-default' ? document.querySelectorAll('[data-refresh-line]').length === 2
+      const drawn = view === 'refresh' ? document.querySelectorAll('[data-focus-review]').length === REFRESH_LINE_STATES.length
+        : view === 'refresh-default' ? document.querySelectorAll('[data-focus-review]').length === 2
           : view === 'ticker' ? document.querySelector('[data-ticker="changes"]')
             : view === 'ticker-connection' ? document.querySelector('[data-ticker]')
               : view === 'board' ? document.querySelector('.focus-area-card')
@@ -285,105 +287,107 @@ async function waitFor(expression: string, what: string, timeoutMs = 5_000, show
   throw new Error(`Timed out waiting for ${what}${shown ? `; the page showed ${JSON.stringify(await page!.evaluate(shown))}` : ''}`);
 }
 
-/** What one refresh line shows, read in the page. */
+/** What one focus review shows, read in the page. */
 const readLine = (name: string) => page!.evaluate(`(() => {
   const line = window.lineOf(${JSON.stringify(name)});
-  const root = line.querySelector('[data-refresh-line]');
-  const button = [...line.querySelectorAll('button')].find((element) => /Refresh now|Try again/.test(element.textContent));
+  const root = line.querySelector('[data-focus-review]');
+  const button = [...line.querySelectorAll('button')].find((element) => /Review now|Try review again/.test(element.textContent));
   return {
-    state: root?.getAttribute('data-refresh-line'),
+    state: root?.getAttribute('data-focus-review'),
     text: window.visibleText(line),
+    status: line.querySelector('[data-focus-review] [role="status"]')?.innerText ?? null,
     alerts: [...line.querySelectorAll('[role="alert"]')].map((alert) => alert.innerText),
     button: button ? { text: button.textContent, ariaDisabled: button.getAttribute('aria-disabled') } : null,
-    details: [...line.querySelectorAll('[data-slot="collapsible-fold-trigger"]')].map((trigger) => ({ expanded: trigger.getAttribute('aria-expanded'), height: trigger.getBoundingClientRect().height })),
+    details: [...line.querySelectorAll('button[aria-expanded]')].filter((trigger) => trigger.textContent.trim() === 'Technical details')
+      .map((trigger) => ({ expanded: trigger.getAttribute('aria-expanded'), height: trigger.getBoundingClientRect().height })),
     spinning: [...line.querySelectorAll('svg')].filter((svg) => getComputedStyle(svg).animationName !== 'none').length,
   };
 })()`);
-const pressTryAgain = (name: string) => page!.evaluate(`[...window.lineOf(${JSON.stringify(name)}).querySelectorAll('button')].find((element) => element.textContent === 'Try again').click()`);
+const pressTryAgain = (name: string) => page!.evaluate(`[...window.lineOf(${JSON.stringify(name)}).querySelectorAll('button')].find((element) => element.textContent === 'Try review again').click()`);
 
-(chromeExecutablePath ? it : it.skip)('the refresh line says each of its four states, and a failure is one plain alert with Try again and folded Details', async () => {
+(chromeExecutablePath ? it : it.skip)('the focus review says each of its four states; a failure says when, how old the review is, and folds its cause under Technical details', async () => {
   await openFixture('source=sample&view=refresh', { width: 1100, height: 900 });
   try {
-    expect(await page!.evaluate('document.querySelectorAll("[data-refresh-line]").length')).toBe(REFRESH_LINE_STATES.length);
+    expect(await page!.evaluate('document.querySelectorAll("[data-focus-review]").length')).toBe(REFRESH_LINE_STATES.length);
     const upToDate = await readLine('up-to-date');
     expect(upToDate.state).toBe('up-to-date');
-    expect(upToDate.text).toContain('Last refreshed');
+    expect(upToDate.status).toContain('Last reviewed at');
     expect(upToDate.alerts).toEqual([]);
-    expect(upToDate.button).toEqual({ text: 'Refresh now', ariaDisabled: null });
+    expect(upToDate.button).toEqual({ text: 'Review now', ariaDisabled: null });
 
     const updating = await readLine('updating');
     expect(updating.state).toBe('updating');
-    expect(updating.text).toContain('Updating your goals and progress');
-    // The worker runs it: the button waits and says why beside it; one spinner turns, not two (rule 8).
+    expect(updating.status).toContain('Reviewing your goals and progress now');
+    // The worker runs it: the button waits and the line above says why; one spinner turns, not two (rule 8).
     expect(updating.button?.ariaDisabled).toBe('true');
     expect(updating.spinning).toBe(1);
 
     // The worker's own sentence for why it waits is the visible line (#5535), nothing folded.
     const waiting = await readLine('waiting-for-agent');
     expect(waiting.state).toBe('waiting-for-agent');
-    expect(waiting.text).toContain(`Waiting to refresh: ${NO_AGENT}`);
+    expect(waiting.status).toBe(`Waiting to review: ${NO_AGENT}`);
+    expect(waiting.text).toContain('Configure My Work to use an API provider');
     expect(waiting.alerts).toEqual([]);
     expect(waiting.details).toEqual([]);
 
     const failed = await readLine('failed');
     expect(failed.state).toBe('failed');
-    // One alert: when it failed and how old the shown review is, in plain words; no internal id, no database message.
-    expect(failed.alerts).toHaveLength(1);
-    expect(failed.alerts[0]).toContain('Could not refresh at');
-    expect(failed.alerts[0]).toContain('Last reviewed');
+    // When it failed and how old the review on screen is, in plain words; no internal id, no database message.
+    expect(failed.status).toMatch(/^The .+ review failed\.$/);
+    expect(failed.text).toContain('Your last reviewed view is from');
     expect(failed.text).not.toContain('g_8f5a02b65d34');
     expect(failed.text).not.toContain('database is locked');
-    expect(failed.button?.text).toBe('Try again');
+    expect(failed.button?.text).toBe('Try review again');
     expect(failed.details.map((detail: { expanded: string }) => detail.expanded)).toEqual(['false']);
-    // Details opens on the raw cause, in monospace.
-    await page!.evaluate(`window.lineOf('failed').querySelector('[data-slot="collapsible-fold-trigger"]').click()`);
-    await waitFor(`window.visibleText(window.lineOf('failed')).includes('database is locked')`, 'the raw cause under Details');
+    // Technical details opens on the raw cause, in monospace.
+    await page!.evaluate(`[...window.lineOf('failed').querySelectorAll('button[aria-expanded]')].find((button) => button.textContent.trim() === 'Technical details').click()`);
+    await waitFor(`window.visibleText(window.lineOf('failed')).includes('database is locked')`, 'the raw cause under Technical details');
     const cause = await page!.evaluate(`(() => { const shown = [...window.lineOf('failed').querySelectorAll('p')].find((element) => element.textContent.includes('database is locked')); return getComputedStyle(shown).fontFamily })()`);
     expect(cause).toMatch(/mono|Menlo|Courier/i);
-    // Try again starts one refresh through the page's source (a counting fake here, never a worker).
+    // Try review again starts one review through the page's source (a counting fake here, never a worker).
     expect(await page!.evaluate('window.refreshStarts')).toBe(0);
     await pressTryAgain('failed');
-    await waitFor('window.refreshStarts === 1', 'Try again to start a refresh');
+    await waitFor('window.refreshStarts === 1', 'Try review again to start a review');
     expect(fixtureErrors).toEqual([]);
   } finally { await closeFixture(); }
   // The whole test takes about 2s here (2026-11-16); 60s for a slow CI runner.
 }, 60_000);
 
-(chromeExecutablePath ? it : it.skip)('with no prop the refresh line still offers Try again, and every press shows its outcome', async () => {
+(chromeExecutablePath ? it : it.skip)('every press of Try review again shows its outcome: nothing new, a run, a newer failure, a refused start', async () => {
   await openFixture('view=refresh-default', { width: 1100, height: 900 });
   try {
-    // My Rules and Past focus mount it with no prop: this page can start a refresh, so the failure carries Try again.
-    expect((await readLine('default')).button).toEqual({ text: 'Try again', ariaDisabled: null });
-    // Nothing was due: the worker keeps its failed record, and the line says so instead of looking dead.
+    // This page's worker can start a review, so the failure carries Try review again.
+    expect((await readLine('default')).button).toEqual({ text: 'Try review again', ariaDisabled: null });
+    // Nothing was due: the worker keeps its failed record, and the panel says so instead of looking dead.
     await page!.evaluate(`window.nextAnswer = { state: 'idle' }`);
     await pressTryAgain('default');
-    await waitFor(`window.visibleText(window.lineOf('default')).includes('Nothing new to refresh')`, 'the nothing-new outcome');
+    await waitFor(`window.visibleText(window.lineOf('default')).includes('Nothing new to review')`, 'the nothing-new outcome');
     expect((await readLine('default')).state).toBe('failed');
-    // A run started: the line reads updating at once, before the worker's record says so.
+    // A run started: the panel reads updating at once, before the worker's record says so.
     await page!.evaluate(`window.nextAnswer = { state: 'running' }`);
     await pressTryAgain('default');
-    await waitFor(`window.lineOf('default').querySelector('[data-refresh-line="updating"]')`, 'the line to read updating');
-    expect((await readLine('default')).text).toContain('Updating your goals and progress');
-    // The worker's record catches up with a new failure: the line shows it, at its own time.
+    await waitFor(`window.lineOf('default').querySelector('[data-focus-review="updating"]')`, 'the panel to read updating');
+    expect((await readLine('default')).status).toContain('Reviewing your goals and progress now');
+    // The worker's record catches up with a new failure: the panel shows it, at its own time.
     await page!.evaluate(`window.setRefresh({ state: 'failed', finishedAt: 'Nov 16 at 2:36 pm', finishedAtIso: '2026-11-16T22:36:00.000Z', error: 'a newer cause' })`);
-    await waitFor(`window.lineOf('default').querySelector('[data-refresh-line="failed"]')`, 'the newer failure');
+    await waitFor(`window.lineOf('default').querySelector('[data-focus-review="failed"]')`, 'the newer failure');
     const newer = await readLine('default');
-    expect(newer.alerts[0]).toContain(await page!.evaluate(`new Date('2026-11-16T22:36:00.000Z').toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).replace(/\\s?(AM|PM)$/, (_, half) => ' ' + half.toLowerCase())`));
+    expect(newer.status).toContain(await page!.evaluate(`new Date('2026-11-16T22:36:00.000Z').toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).replace(/\\s?(AM|PM)$/, (_, half) => ' ' + half.toLowerCase())`));
     // A start the worker refused with a raw error: a plain line, the raw text folded under Details (G17).
     const raw = "EACCES: permission denied, open '/Users/someone/.claude-mem/work-view/refresh.json'";
     await page!.evaluate(`window.nextAnswer = { refuse: ${JSON.stringify(raw)}, status: 500 }`);
     await pressTryAgain('default');
-    await waitFor(`window.lineOf('default').querySelectorAll('[role="alert"]').length === 2`, 'the refusal alert');
+    await waitFor(`window.lineOf('default').querySelectorAll('[role="alert"]').length === 1`, 'the refusal alert');
     const refused = await readLine('default');
-    expect(refused.alerts[1]).toContain('Refresh could not start. The worker refused it.');
+    expect(refused.alerts[0]).toContain('The review could not start. The worker refused it.');
     expect(refused.text).not.toContain('EACCES');
     // A refusal sentence the route sends on purpose shows as it is.
     await page!.evaluate(`window.nextAnswer = { refuse: 'Refresh is unavailable until setup finishes.', status: 409 }`);
     await pressTryAgain('default');
-    await waitFor(`window.visibleText(window.lineOf('default')).includes('Refresh could not start: Refresh is unavailable until setup finishes.')`, 'the known refusal');
-    // A waiting reason that is not one of the worker's fixed sentences goes under Details below the plain line.
+    await waitFor(`window.visibleText(window.lineOf('default')).includes('The review could not start: Refresh is unavailable until setup finishes.')`, 'the known refusal');
+    // A waiting reason that is not one of the worker's fixed sentences goes under Technical details below the plain line.
     const other = await readLine('waiting-other');
-    expect(other.text).toContain('Waiting for an agent to run the refresh');
+    expect(other.status).toContain('Waiting for an agent to run the review');
     expect(other.text).not.toContain('Codex');
     expect(other.details.map((detail: { expanded: string }) => detail.expanded)).toEqual(['false']);
     expect(await page!.evaluate('window.refreshStarts')).toBe(4);
@@ -392,11 +396,11 @@ const pressTryAgain = (name: string) => page!.evaluate(`[...window.lineOf(${JSON
   // About 3s here (2026-11-16); 60s for a slow CI runner.
 }, 60_000);
 
-(chromeExecutablePath ? it : it.skip)('on a touch phone the Details row is 44px tall, as the fold row and the touch rule make it', async () => {
+(chromeExecutablePath ? it : it.skip)('on a touch phone Technical details is 44px tall, as the Button\'s touch rule makes it', async () => {
   await openFixture('view=refresh-default', PHONE);
   try {
-    const heights = await page!.evaluate(`[...document.querySelectorAll('[data-slot="collapsible-fold-trigger"]')].map((trigger) => trigger.getBoundingClientRect().height)`);
-    // The failed line's Details and the waiting line's Details (a reason not shown as it is).
+    const heights = await page!.evaluate(`[...document.querySelectorAll('button[aria-expanded]')].filter((trigger) => trigger.textContent.trim() === 'Technical details').map((trigger) => trigger.getBoundingClientRect().height)`);
+    // The failed review's and the waiting review's (a reason not shown as it is).
     expect(heights).toHaveLength(2);
     for (const height of heights) expect(height).toBeGreaterThanOrEqual(44);
     expect(fixtureErrors).toEqual([]);
@@ -599,23 +603,18 @@ const pressTryAgain = (name: string) => page!.evaluate(`[...window.lineOf(${JSON
   // About 2s here (2026-11-16); 60s for a slow CI runner.
 }, 60_000);
 
-(chromeExecutablePath ? it : it.skip)('a search on the focus board says it filters, and "All N" ends it to show every area', async () => {
+(chromeExecutablePath ? it : it.skip)('the focus board has no search box or artwork control of its own, and "All N" shows every area', async () => {
   await openFixture('source=sample&view=board', { width: 1200, height: 900 });
   try {
-    const board = () => page!.evaluate(`({ cards: document.querySelectorAll('.focus-area-card').length, query: document.querySelector('.focus-area-search input').value, filtering: document.querySelector('.focus-area-filtering [role="status"]')?.textContent ?? null })`);
+    // Finding an area by its words is Find work's (the bar, Cmd K); the artwork choice is Workspace's (design pass Phase 4).
+    const board = () => page!.evaluate(`({ cards: document.querySelectorAll('.focus-area-card').length, search: document.querySelectorAll('.focus-overview input').length,
+      artwork: [...document.querySelectorAll('.focus-overview [role="group"], .focus-overview [role="radiogroup"]')].length })`);
     // The board opens on its first four areas.
-    expect(await board()).toEqual({ cards: 4, query: '', filtering: null });
-    // Typing filters it, and the board says so with a way back.
-    await page!.evaluate(`document.querySelector('.focus-area-search input').focus()`);
-    await page!.send('Input.insertText', { text: 'Viewer' });
-    await waitFor(`document.querySelector('.focus-area-filtering [role="status"]')`, 'the filtering line');
-    const filtered = await board();
-    expect(filtered.cards).toBe(6);
-    expect(filtered.filtering).toBe('6 of 12 focus areas match “Viewer”');
-    // "All N" (the rail's link to the whole board) shows every area: the search ends.
+    expect(await board()).toEqual({ cards: 4, search: 0, artwork: 0 });
+    // "All N" (the bar's Focus areas) shows every area.
     await page!.evaluate('window.showAllAreas()');
     await waitFor(`document.querySelectorAll('.focus-area-card').length === 12`, 'every area to show');
-    expect(await board()).toEqual({ cards: 12, query: '', filtering: null });
+    expect(await board()).toEqual({ cards: 12, search: 0, artwork: 0 });
     expect(fixtureErrors).toEqual([]);
   } finally { await closeFixture(); }
   // About 1s here (2026-11-16); 60s for a slow CI runner.

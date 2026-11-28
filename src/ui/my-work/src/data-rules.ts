@@ -65,6 +65,18 @@ export interface OwnerRule {
   records: RuleRecord[]
 }
 
+/**
+ * A rule in use: on, and written or approved by the owner. These are the rules MY-RULES.md holds, the file agents load;
+ * a learned rule waits in My Rules until the owner decides it. The one definition in My Work (Find work, My Rules and
+ * its file preview, rule receipts ask it). The worker writes the file with the same test
+ * (src/services/work-view/my-rules.mjs renderRulesFile); the page cannot import the worker's module, so
+ * tests/ui-mywork-interpolation.test.ts checks the two agree on every status and every setter.
+ */
+export const ruleInUse = (rule: Pick<OwnerRule, 'status' | 'setBy'>) => rule.status === 'on' && (rule.setBy === 'owner' || rule.setBy === 'approved')
+
+/** A rule's element on My Rules, which a link to that rule scrolls to (Find work's rule results). */
+export const ruleElementId = (ruleId: string) => `rule-${ruleId}`
+
 export const SAMPLE_OWNER_RULES: OwnerRule[] = [
   // Everywhere
   { id: 'autonomy', scopeId: 'everywhere', setBy: 'owner', when: 'my directive is clear', then: 'Execute it. Don’t follow up with a question.', timesSeen: 11, latestAt: 'Oct 20', latestDaysAgo: 0, source: 'you', status: 'on',

@@ -1,4 +1,4 @@
-import type { OwnerRule, RuleDraft, RuleScope } from '../data-rules.ts'
+import { ruleInUse, type OwnerRule, type RuleDraft, type RuleScope } from '../data-rules.ts'
 
 /**
  * What a person decided on a waiting rule. The one definition: the queue's words and looks are Records over it, and
@@ -26,7 +26,7 @@ export function currentRuleDecisions(rules: OwnerRule[], saved: Record<string, S
   for (const rule of rules) {
     const receipt = saved[rule.id]
     if (!receipt || receipt.version !== ruleVersion(rule)) continue
-    if (receipt.decision === 'approved' && rule.status === 'on' && rule.setBy !== 'learned') current[rule.id] = 'approved'
+    if (receipt.decision === 'approved' && ruleInUse(rule)) current[rule.id] = 'approved'
     if (receipt.decision === 'rejected' && rule.status === 'dismissed') current[rule.id] = 'rejected'
   }
   return current

@@ -58,6 +58,34 @@
     --text-brand-phone: 1.25rem;
     --text-brand-phone--letter-spacing: -0.058em;
     --text-brand-phone--font-weight: 660;
+    /*
+     * Find work, Workspace and Machine and sync (design pass Phase 4) sit in Codex's narrower column (`.compact`: 1064px
+     * with its 56px sides, as --container-page is 1296px with them). A section's heading is 26px (22px on a phone), a panel's 28px (24px), both at weight 575;
+     * a row's title 17px at 565 (design.css `.sectionline h2`, `h2`, `.rowtitle`).
+     */
+    --container-compact: 66.5rem;
+    --text-section-title: 1.625rem;
+    --text-section-title--line-height: 1.13;
+    --text-section-title--letter-spacing: -0.043em;
+    --text-section-title--font-weight: 575;
+    --text-section-title-phone: 1.375rem;
+    --text-section-title-phone--line-height: 1.13;
+    --text-section-title-phone--letter-spacing: -0.043em;
+    --text-section-title-phone--font-weight: 575;
+    --text-panel-title: 1.75rem;
+    --text-panel-title--line-height: 1.13;
+    --text-panel-title--letter-spacing: -0.043em;
+    --text-panel-title--font-weight: 575;
+    --text-panel-title-phone: 1.5rem;
+    --text-panel-title-phone--line-height: 1.13;
+    --text-panel-title-phone--letter-spacing: -0.043em;
+    --text-panel-title-phone--font-weight: 575;
+    --text-row-title: 1.0625rem;
+    --text-row-title--line-height: 1.35;
+    --text-row-title--letter-spacing: -0.016em;
+    --text-row-title--font-weight: 565;
+    /* Two panels side by side, the second at least 240px (design.css `.split`): Workspace and Machine and sync (`grid-cols-panels`). */
+    --grid-template-columns-panels: minmax(0, 1.35fr) minmax(15rem, 0.65fr);
 }
 
 @theme inline {

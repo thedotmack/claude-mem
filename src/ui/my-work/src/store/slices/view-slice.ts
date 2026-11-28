@@ -9,10 +9,10 @@ import type { MyWorkPlaceId } from '../../../../app-places.ts'
 import type { SliceCreator } from '../create-store.ts'
 import type { OpenRequest, Page, ScrollTarget, Section, StoreEnvironment, ViewSlice, ViewState } from '../store-types.ts'
 
-interface Route { page: Page; section: Section; focusChoice: string | null; requestId: string | null; theme: ThemeChoice | null }
+interface Route { page: Page; section: Section; focusChoice: string | null; requestId: string | null; theme: ThemeChoice | null; findQuery: string | null }
 
 /** The part of the view an address names. */
-export type RoutePlace = Pick<ViewState, 'section' | 'focusChoice' | 'openRequest'>
+export type RoutePlace = Pick<ViewState, 'section' | 'focusChoice' | 'openRequest' | 'findQuery'>
 
 /** Addresses from before the bar: the two places on the home page that had their own address are pages now. */
 const OLD_HOME_ANCHOR_PAGES: Record<string, Section> = { '#focus-areas': 'focus', '#all-requests': 'requests' }
@@ -29,9 +29,10 @@ const pageScroll = (section: Section): ScrollTarget => {
 
 /**
  * `?setup=1` is the installer handoff; `?view=` a page other than My Work; `?focus=` an area; `?request=` the open
- * request; `?theme=` the theme for this visit. `/#focus-areas` and `/#all-requests`, the home page's anchors before the
- * bar, read as `?view=focus` and `?view=requests`. A page's own details (a tab, a filter, Find's words) join the address
- * in the design pass phase that first reads them, each typed from its one definition.
+ * request; `?theme=` the theme for this visit; `?q=` the words typed in Find work (only on `?view=find`; empty, or on
+ * any other page, it reads as none). `/#focus-areas` and `/#all-requests`, the home page's anchors before the bar, read
+ * as `?view=focus` and `?view=requests`. A page's other details (a tab, a filter) join the address in the design pass
+ * phase that first reads them, each typed from its one definition.
  */
 export function readRoute(url: URL): Route {
   const view = url.searchParams.get('view') as Section | null
@@ -46,6 +47,7 @@ export function readRoute(url: URL): Route {
     requestId: url.searchParams.get('request') || null,
     // G8: `?theme=` wins over the saved choice for this visit only (view.themeForThisVisit; never saved).
     theme: isThemeChoice(theme) ? theme : null,
+    findQuery: section === 'find' ? url.searchParams.get('q') || null : null,
   }
 }
 
@@ -56,16 +58,17 @@ export function writeRoute(url: URL, view: RoutePlace): URL {
   set('view', view.section === 'work' ? null : view.section)
   set('focus', view.section === 'work' ? view.focusChoice : null)
   set('request', view.openRequest?.id ?? null)
+  set('q', view.section === 'find' ? view.findQuery : null)
   next.hash = ''
   return next
 }
 
 /**
- * The bar's place each page sits under, which the bar marks. Until the design pass builds them (phases 4 and 7),
- * Workspace, Machine and sync, Find work and Build story open My Work's home page, so they mark My Work
- * (components/app-bar.tsx heads them My Work too).
+ * The bar's place each page sits under, which the bar marks. Workspace and Machine and sync sit under the bar's "…"
+ * and Find work under its own Find work link, which mark themselves (components/app-bar.tsx), so no place is marked
+ * there. Until the design pass builds it (Phase 7), Build story opens My Work's home page, so it marks My Work.
  */
-const PLACE_OF_SECTION: Record<Section, MyWorkPlaceId> = {
+const PLACE_OF_SECTION: Record<Section, MyWorkPlaceId | null> = {
   work: 'work',
   focus: 'focus',
   suggested: 'focus',
@@ -74,13 +77,13 @@ const PLACE_OF_SECTION: Record<Section, MyWorkPlaceId> = {
   requests: 'requests',
   'review-stack': 'review-stack',
   rules: 'rules',
-  workspace: 'work',
-  machine: 'work',
-  find: 'work',
+  workspace: null,
+  machine: null,
+  find: null,
 }
 
-/** The place the bar marks for this view: a focus area's page (and Other's) sits under Focus areas. */
-export function activePlace(view: Pick<ViewState, 'section' | 'focusChoice'>): MyWorkPlaceId {
+/** The place the bar marks for this view (none on a page reached from the bar's utilities): a focus area's page (and Other's) sits under Focus areas. */
+export function activePlace(view: Pick<ViewState, 'section' | 'focusChoice'>): MyWorkPlaceId | null {
   if (view.section === 'work' && view.focusChoice) return 'focus'
   return PLACE_OF_SECTION[view.section]
 }
@@ -125,6 +128,7 @@ export const createViewSlice = (environment: StoreEnvironment): SliceCreator<Vie
       section: route.section,
       focusChoice: route.focusChoice,
       openRequest: route.requestId ? { id: route.requestId, fromLiveFeed: null, fallback: null } : null,
+      findQuery: route.findQuery,
       scrollAsk: openingScroll ? scrollAsk(openingScroll) : null,
       workspace: { mode: 'home', team: false, connected: false },
       showSpec: false,
@@ -139,8 +143,11 @@ export const createViewSlice = (environment: StoreEnvironment): SliceCreator<Vie
       focusArtwork: 'compact',
     },
 
-    goToPage: (page) => navigate({ section: page, focusChoice: null }, { scroll: pageScroll(page) }),
-    goToFocus: (focusAreaId) => navigate({ section: 'work', focusChoice: focusAreaId, openRequest: null }, { scroll: { to: 'top' } }),
+    goToPage: (page, options) => navigate({ section: page, focusChoice: null, findQuery: null },
+      { scroll: options?.elementId ? { to: 'element', elementId: options.elementId } : pageScroll(page) }),
+    goToFocus: (focusAreaId) => navigate({ section: 'work', focusChoice: focusAreaId, openRequest: null, findQuery: null }, { scroll: { to: 'top' } }),
+    // Each word typed replaces the address instead of adding a history entry: Back leaves Find work, not one letter.
+    setFindQuery: (query) => navigate({ findQuery: query === '' ? null : query }, { replace: true }),
 
     openRequestDrawer: (request, options) => {
       const open: OpenRequest = { id: request.id, fromLiveFeed: requestInFeed(request.id) !== null, fallback: request, ...(options?.reply ? { replyAsked: true } : {}) }
@@ -178,6 +185,7 @@ export const createViewSlice = (environment: StoreEnvironment): SliceCreator<Vie
         state.view.section = next.section
         state.view.focusChoice = next.focusChoice
         state.view.openRequest = !next.requestId ? null : open?.id === next.requestId ? open : { id: next.requestId, fromLiveFeed: null, fallback: null }
+        state.view.findQuery = next.findQuery
         // Back and Forward land where the person left that page, once it has drawn again (App.tsx, lib/scroll-ask.ts).
         if (savedScrollY !== null) state.view.scrollAsk = scrollAsk({ to: 'position', y: savedScrollY })
       })

@@ -1,4 +1,4 @@
-// The classic viewer's GitHub star count follows My Work's rules (src/ui/my-work/src/live/github-star-count.ts): GitHub
+// The classic viewer's GitHub star count (src/ui/viewer/hooks/useGitHubStars.ts): GitHub
 // is asked at most once a page and at most once an hour across reloads, never while it says this address is over its
 // limit, the read gives up at GitHub's own request limit, and no count shows (with the reason in the console) when
 // GitHub gives none.

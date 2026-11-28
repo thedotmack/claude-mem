@@ -22,5 +22,5 @@ export function placeLinkPress(go: () => void) {
  */
 export function usePageHref(section: Section): string {
   useStore((state) => state.view.themeForThisVisit)
-  return writeRoute(new URL(window.location.href), { section, focusChoice: null, openRequest: null }).href
+  return writeRoute(new URL(window.location.href), { section, focusChoice: null, openRequest: null, findQuery: null }).href
 }
