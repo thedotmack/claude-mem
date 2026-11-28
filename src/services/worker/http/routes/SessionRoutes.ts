@@ -994,6 +994,15 @@ export class SessionRoutes extends BaseRouteHandler {
 
     if (!cleanedPrompt || cleanedPrompt.trim() === '') {
       recordWorkStatePrivacy(store.db, telemetryAttribution, true);
+      // Anchor the redacted turn with an empty tombstone row. Without it the
+      // turn has no user_prompts row, so the next ingest resolves this turn's
+      // prompt number to the previous public prompt (MAX(prompt_number)),
+      // PrivacyCheckValidator reads that public text, and the private turn's
+      // tool content is ingested and dispatched to the paid observer under a
+      // public prompt number. The tombstone resolves to '' in the validator,
+      // which suppresses via the existing entirely-private branch;
+      // #2794's absent-row semantics for raced session inits are untouched.
+      store.savePrivatePromptTombstone(contentSessionId, sessionDbId, promptNumber, eventOccurredAtEpochMs);
       logger.debug('HOOK', 'Session init - prompt entirely private', {
         sessionId: sessionDbId,
         promptNumber,

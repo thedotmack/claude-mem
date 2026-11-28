@@ -4095,6 +4095,29 @@ export class SessionStore {
     return result.lastInsertRowid as number;
   }
 
+  /**
+   * A turn whose entire prompt redacted to nothing must still anchor its
+   * prompt number. Without a row, the next ingest's
+   * getPromptNumberFromUserPrompts(..., at-or-before) resolves that turn to
+   * the PREVIOUS public prompt's number, PrivacyCheckValidator reads that
+   * public text, and the private turn's tool content is ingested and
+   * dispatched to the paid observer under a public prompt number. An empty
+   * tombstone row makes the number resolve to '' and hit the validator's
+   * existing entirely-private suppression branch instead, while #2794's
+   * absent-row semantics for raced session inits stay untouched (that case
+   * still has no row at all). No prompt text is stored, and the readers that
+   * surface prompt text (getLatestPromptTextFromUserPrompts, context
+   * injection) already filter empty rows out.
+   *
+   * Returns false when this prompt number is already anchored — a hook retry
+   * whose first response was lost — so re-running the init never double-inserts.
+   */
+  savePrivatePromptTombstone(contentSessionId: string, sessionDbId: number, promptNumber: number, createdAtEpoch?: number | null): boolean {
+    if (this.getUserPrompt(contentSessionId, promptNumber, sessionDbId) !== null) return false;
+    this.saveUserPrompt(contentSessionId, promptNumber, '', sessionDbId, undefined, undefined, createdAtEpoch ?? undefined);
+    return true;
+  }
+
   /** The native key claims one prompt atomically, including across worker restarts.
    * Equal text with a different key is a new real turn. No time window applies.
    * It is scoped by the DB session (platform_source + content_session_id).
